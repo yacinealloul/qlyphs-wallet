@@ -1,0 +1,46 @@
+{
+  "name": "@qotc/wallet-extension",
+  "version": "0.5.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
+    "e2e": "node test/browser.mjs",
+    "test:ui": "node test/ui.mjs",
+    "test:lifecycle": "node test/browser-lifecycle-live.mjs",
+    "test:explorer": "node test/explorer.mjs",
+    "test:ui:live": "node test/live-ui.mjs",
+    "test:onboarding:live": "node test/onboarding-live.mjs",
+    "test:accounts:live": "node test/accounts-live.mjs",
+    "test:connection:live": "node test/connection-live.mjs",
+    "test:accounts:hd": "node test/hd-accounts-live.mjs",
+    "test:popup": "node test/popup.mjs",
+    "test:sidebar": "node test/sidebar.mjs",
+    "preview:ui": "node test/preview.mjs",
+    "test:motion": "node test/motion.mjs",
+    "test:hover": "node test/hover.mjs",
+    "test:interactions": "node test/interaction-audit.mjs"
+  },
+  "dependencies": {
+    "@qotc/chain": "workspace:*",
+    "@qotc/native": "workspace:*",
+    "@quantus-network/wasm": "^0.3.1",
+    "@scure/bip39": "^2.4.0",
+    "geist": "^1.7.2",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^24.13.5",
+    "@types/qrcode": "^1.5.6",
+    "esbuild": "0.28.2",
+    "jsqr": "^1.4.0",
+    "typescript": "~6.0.3"
+  }
+}

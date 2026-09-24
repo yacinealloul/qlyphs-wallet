@@ -1,0 +1,289 @@
+@layer controls {
+  /* Shared interaction recipes. A control keeps its foreground and border through
+   rest, hover and press. Solid surfaces never turn transparent on interaction. */
+  :root {
+    --control-accent: #ff946e;
+    --control-neutral: #242629;
+    --control-neutral-hover: #2c2e32;
+    --control-neutral-press: #34363a;
+    --control-edge: #414449;
+    --control-ghost-hover: #ffffff08;
+    --control-ghost-press: #ffffff10;
+    --control-focus: var(--control-accent);
+    --control-error: #ff9c8d;
+  }
+  /* The wallet reads as an app, not a page: no stray text selection. Fields stay editable. */
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  input,
+  textarea,
+  [contenteditable] {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  button {
+    --rest: var(--control-accent);
+    --hover: #ffa17f;
+    --press: #ffac8e;
+    --ink: #101112;
+    --edge: transparent;
+    background-color: var(--rest);
+    border-color: var(--edge);
+    color: var(--ink);
+    transition: background-color 120ms ease-out;
+    touch-action: manipulation;
+  }
+  button.secondary,
+  body[data-app='explorer'] button {
+    --rest: var(--control-neutral);
+    --hover: var(--control-neutral-hover);
+    --press: var(--control-neutral-press);
+    --ink: var(--text);
+    --edge: var(--control-edge);
+  }
+  button:is(
+    .icon,
+    .input-icon,
+    .pill,
+    .text-button,
+    .header-account,
+    .account-choice,
+    .account-menu-action,
+    .asset-row,
+    .setting-toggle
+  ),
+  .wallet-menu-nav > button,
+  .wallet-menu-secondary > button,
+  .wallet-menu-footer > button,
+  body[data-app='explorer'] .history-row {
+    --rest: transparent;
+    --hover: var(--control-ghost-hover);
+    --press: var(--control-ghost-press);
+    --ink: var(--text);
+    --edge: transparent;
+  }
+  button:is(.icon, .input-icon, .pill, .text-button) {
+    --ink: var(--muted);
+  }
+  /* The options trigger belongs to its row: no detached dark tile. Keep it lit
+   while the popover is open, including when the pointer moves into the menu. */
+  button.account-options {
+    --rest: transparent;
+  }
+  button.account-options[aria-expanded='true'] {
+    --rest: #ffffff10;
+    --hover: #ffffff14;
+    --press: #ffffff18;
+    --ink: var(--text);
+  }
+  button:is(.backup-reminder, .ecosystem) {
+    --rest: #211e1c;
+    --hover: #292521;
+    --press: #312c27;
+    --edge: #554238;
+    --ink: var(--text);
+  }
+  .accounts-actions button.secondary {
+    --rest: #ff946e08;
+    --hover: #ff946e14;
+    --press: #ff946e20;
+    --ink: var(--control-accent);
+    --edge: #ff946e70;
+  }
+  .review-actions button.secondary {
+    --rest: transparent;
+    --hover: var(--control-ghost-hover);
+    --press: var(--control-ghost-press);
+    --ink: var(--text);
+    --edge: var(--control-edge);
+  }
+  .display-options button[aria-pressed='true'] {
+    --rest: #30241f;
+    --hover: #382b25;
+    --press: #40322b;
+    --ink: #ffc2a9;
+    --edge: var(--control-accent);
+  }
+  .wallet-menu-nav > button[aria-current='page'],
+  body[data-app='explorer'] .history-row[aria-current='true'] {
+    --rest: #ff946e0a;
+    --hover: #ff946e14;
+    --press: #ff946e20;
+  }
+  .wallet-menu-footer > button {
+    --hover: #ff946e0c;
+    --press: #ff946e18;
+    --ink: var(--control-accent);
+  }
+  .input-icon[aria-pressed='true'] {
+    --ink: var(--control-accent);
+  }
+  button[data-copied='true']:not(.wide) {
+    --ink: var(--green, #9bddba);
+  }
+  button[role='tab'] {
+    --rest: transparent;
+    --hover: var(--control-ghost-hover);
+    --press: var(--control-ghost-press);
+    --ink: var(--muted);
+  }
+  button[role='tab'][aria-selected='true'] {
+    --ink: var(--control-accent);
+  }
+  button.round {
+    --rest: transparent;
+    --hover: transparent;
+    --press: transparent;
+    --ink: var(--text);
+  }
+  .round > span {
+    background-color: var(--control-neutral);
+    border-color: var(--control-edge);
+    transition: background-color 120ms ease-out;
+  }
+  .round:first-child > span {
+    background-color: var(--control-accent);
+    border-color: transparent;
+  }
+  body[data-app='explorer'] .search-row button {
+    --rest: var(--control-accent);
+    --hover: #ffa17f;
+    --press: #ffac8e;
+    --ink: #101112;
+    --edge: transparent;
+  }
+  summary {
+    border-radius: 10px;
+    transition: background-color 120ms ease-out;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    button:hover:not(:disabled) {
+      background-color: var(--hover);
+    }
+    .round:hover:not(:disabled) > span {
+      background-color: var(--control-neutral-hover);
+    }
+    .round:first-child:hover:not(:disabled) > span {
+      background-color: #ffa17f;
+    }
+    summary:hover {
+      background-color: var(--control-ghost-hover);
+    }
+    :is(input, textarea, select):not([type='checkbox']):hover:not(:disabled):not(:focus),
+    .amount-input:hover:not(:focus-within) {
+      border-color: #787c82;
+    }
+    input::file-selector-button:hover {
+      background-color: var(--control-neutral-hover);
+    }
+  }
+  button:active:not(:disabled) {
+    background-color: var(--press);
+    transform: none;
+    transition-duration: 60ms;
+  }
+  .round:active:not(:disabled) > span {
+    background-color: var(--control-neutral-press);
+    transform: none;
+  }
+  .round:first-child:active:not(:disabled) > span {
+    background-color: #ffac8e;
+  }
+  summary:active {
+    background-color: var(--control-ghost-press);
+  }
+  :is(button, a, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--control-focus);
+    outline-offset: 2px;
+  }
+  :is(.tabs, #wallet-menu, .account-menu) button:focus-visible {
+    outline-offset: -2px;
+  }
+  :is(input, textarea, select):not([type='checkbox']),
+  .amount-input {
+    border-color: #64686f;
+    transition: border-color 120ms ease-out;
+  }
+  :is(input, textarea, select):not([type='checkbox']):focus,
+  .amount-input:focus-within {
+    border-color: var(--control-focus);
+    outline: 2px solid var(--control-focus);
+    outline-offset: -2px;
+  }
+  .amount-input input:focus {
+    outline: none;
+  }
+  /* Validation remains visible under the pointer and while correcting a field. */
+  :is(input, textarea, select)[aria-invalid='true'],
+  :is(input, textarea, select)[aria-invalid='true']:focus,
+  .amount-input:has(input[aria-invalid='true']) {
+    border-color: var(--control-error);
+    outline-color: var(--control-error);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    :is(input, textarea, select)[aria-invalid='true']:hover,
+    .amount-input:has(input[aria-invalid='true']):hover {
+      border-color: var(--control-error);
+    }
+  }
+  .field-error {
+    color: var(--control-error);
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  /* The review heading receives reading focus, but is not an interactive control. */
+  #review-title:focus-visible {
+    outline: none;
+  }
+  button[data-busy-disabled='true'] {
+    cursor: progress;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    button,
+    summary,
+    input,
+    textarea,
+    select,
+    .round > span {
+      transition: none;
+    }
+  }
+}
+
+@layer controls {
+  /* The tracker is a quiet card that opens Activity, not a call to action. */
+  button.tx-tracker {
+    --rest: var(--card);
+    --hover: var(--raised);
+    --press: var(--control-neutral-press);
+    --ink: var(--text);
+    --edge: var(--line);
+  }
+  button.tx-tracker[data-stage='finalized'] {
+    --edge: color-mix(in srgb, var(--green) 45%, var(--line));
+  }
+  button.tx-tracker[data-stage='failed'] {
+    --edge: color-mix(in srgb, var(--danger) 45%, var(--line));
+  }
+}
+
+@layer controls {
+  #reset-error[data-tone='ok'] {
+    color: var(--green);
+  }
+}
+
+/* Announced actions (Swap, Qlyphs) keep a quiet, see-through surface in every state. */
+@layer controls {
+  button.round[data-soon] {
+    --ink: var(--muted);
+  }
+  .round[data-soon] > span,
+  .round[data-soon]:hover > span,
+  .round[data-soon]:active > span {
+    background-color: transparent;
+  }
+}

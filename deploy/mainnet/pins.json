@@ -1,0 +1,12 @@
+{
+  "genesis": "0xfb5487c0be6ae4ade2d41d16e50465129861636c2b8d61fa94d7a19631626fba",
+  "runtime": {
+    "specVersion": 153,
+    "transactionVersion": 6,
+    "codeHash": "0x78389c85e3698b7e24cf292907f2eec0657297fd8a4d82669cf357974f15ec56"
+  },
+  "activation": {
+    "height": 102161,
+    "hash": "0x1b5a65e48492995c77d2030c1e63c0694513eddc8844d6e51107d554b616c68e"
+  }
+}

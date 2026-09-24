@@ -1,0 +1,22 @@
+**/node_modules
+**/.next
+**/.next-e2e
+**/.data
+**/coverage
+.git
+.env
+.env.*
+!.env.example
+e2e/test-results
+e2e/playwright-report
+apps/app/public/quantus_wasm_bg.wasm
+
+# Attestation keys/passphrases are runtime secrets, never build inputs.
+**/*.pem
+**/*.passphrase
+**/*.key
+**/secrets/
+**/test-results/
+**/playwright-report/
+**/__pycache__/
+**/*.pyc

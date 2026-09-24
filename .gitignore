@@ -1,0 +1,8 @@
+node_modules
+dist
+apps/extension/dist-*/
+keys-release/
+*.tsbuildinfo
+.env*
+.DS_Store
+*.log

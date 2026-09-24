@@ -1,0 +1,16 @@
+packages:
+  - apps/extension
+  - apps/keys
+  - apps/native
+  - packages/chain
+  - packages/native
+  - packages/provider
+  - packages/sdk
+  - packages/shared
+
+onlyBuiltDependencies:
+  - '@node-rs/argon2'
+  - '@tailwindcss/oxide'
+  - esbuild
+  - sharp
+  - unrs-resolver

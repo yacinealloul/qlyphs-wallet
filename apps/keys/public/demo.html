@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qlyphs Keys · Demo</title>
+    <link rel="stylesheet" href="demo.css" />
+    <script type="module" src="demo.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>Qlyphs Keys demo</h1>
+      <p class="muted">A dapp that uses the Qlyphs Keys popup.</p>
+      <div class="row">
+        <button id="connect" type="button">Connect</button>
+        <button id="connector" type="button">Connect via SDK</button>
+        <button id="disconnect" type="button" disabled>Disconnect</button>
+        <button id="send" type="button" disabled>Send 0</button>
+      </div>
+      <dl>
+        <dt>Status</dt>
+        <dd id="status">Not connected</dd>
+        <dt>Account</dt>
+        <dd id="account" class="mono">—</dd>
+        <dt>Network</dt>
+        <dd id="network" class="mono">—</dd>
+      </dl>
+      <ol id="log" class="mono"></ol>
+    </main>
+  </body>
+</html>

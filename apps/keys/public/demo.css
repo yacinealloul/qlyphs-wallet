@@ -1,0 +1,80 @@
+:root {
+  color-scheme: dark;
+  --bg: #0e0e0e;
+  --card: #181818;
+  --line: #2c2b29;
+  --text: #e8e6e0;
+  --muted: #a3a098;
+  --flare: #ff6b35;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+}
+body {
+  margin: 0;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+}
+main {
+  width: min(560px, 100% - 32px);
+}
+h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+.muted {
+  color: var(--muted);
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 20px 0;
+}
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+button:first-child {
+  background: var(--flare);
+  border-color: var(--flare);
+  color: #0e0e0e;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0 0 20px;
+}
+dt {
+  color: var(--muted);
+}
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.mono {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+ol {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  color: var(--muted);
+  max-height: 40dvh;
+  overflow: auto;
+}

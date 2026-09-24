@@ -1,0 +1,1189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Qlyphs Wallet · Development</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="controls.css" />
+    <script type="module" src="ui.js"></script>
+  </head>
+  <body>
+    <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <symbol id="i-mark" viewBox="0 0 24 24">
+          <path
+            d="M18.7 11a7.7 7.7 0 1 0-7.7 7.7"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.6"
+            stroke-linecap="round"
+          />
+          <rect
+            x="14.6"
+            y="14.6"
+            width="6.6"
+            height="6.6"
+            rx="1.5"
+            fill="var(--flare)"
+            stroke="none"
+          />
+        </symbol>
+        <symbol id="i-up" viewBox="0 0 24 24"><path d="M7 17 17 7M7 7h10v10" /></symbol>
+        <symbol id="i-down" viewBox="0 0 24 24"><path d="m17 7-10 10M7 7v10h10" /></symbol>
+        <symbol id="i-swap" viewBox="0 0 24 24">
+          <path d="M4 8h16m-4-4 4 4-4 4M20 16H4m4-4-4 4 4 4" />
+        </symbol>
+        <symbol id="i-copy" viewBox="0 0 24 24">
+          <rect x="8" y="8" width="12" height="12" rx="3" />
+          <path d="M15 4H6a2 2 0 0 0-2 2v9" />
+        </symbol>
+        <symbol id="i-lock" viewBox="0 0 24 24">
+          <rect x="5" y="10" width="14" height="11" rx="3" />
+          <path d="M8 10V7a4 4 0 0 1 8 0v3m-4 2v3" />
+        </symbol>
+        <symbol id="i-refresh" viewBox="0 0 24 24">
+          <path d="M20 7v5h-5M4 17v-5h5M5 8a8 8 0 0 1 13-3l2 3M4 16l2 3a8 8 0 0 0 13-3" />
+        </symbol>
+        <symbol id="i-eye" viewBox="0 0 24 24">
+          <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z" />
+          <circle cx="12" cy="12" r="3" />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></symbol>
+        <symbol id="i-edit" viewBox="0 0 24 24">
+          <path d="m16 4 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15v5Z" />
+        </symbol>
+        <symbol id="i-back" viewBox="0 0 24 24"><path d="m14 6-6 6 6 6" /></symbol>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="10.5" cy="10.5" r="6.5" />
+          <path d="m16 16 5 5" />
+        </symbol>
+        <symbol id="i-more" viewBox="0 0 24 24">
+          <circle cx="12" cy="5" r="1" />
+          <circle cx="12" cy="12" r="1" />
+          <circle cx="12" cy="19" r="1" />
+        </symbol>
+        <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" /></symbol>
+        <symbol id="i-user" viewBox="0 0 24 24">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4 21c.7-4.2 3.4-6 8-6s7.3 1.8 8 6" />
+        </symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+        <symbol id="i-shield" viewBox="0 0 24 24">
+          <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z" />
+          <path d="m8 12 3 3 5-6" />
+        </symbol>
+        <symbol id="i-clock" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 2" />
+        </symbol>
+        <symbol id="i-wallet" viewBox="0 0 24 24">
+          <rect x="3" y="5" width="18" height="15" rx="3" />
+          <path d="M21 10h-6v5h6M4 5l13-3v3" />
+        </symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24">
+          <path d="M4 7h16M4 17h16" />
+          <circle cx="9" cy="7" r="3" fill="var(--bg)" />
+          <circle cx="15" cy="17" r="3" fill="var(--bg)" />
+        </symbol>
+        <symbol id="i-fingerprint" viewBox="0 0 24 24">
+          <path
+            d="M12 11v3c0 3-1 5-2 7M8 20c1-2 1-4 1-7a3 3 0 0 1 6 0c0 3 0 5 1 7M5 17v-4a7 7 0 0 1 14 0v3M4 8a9 9 0 0 1 16 0M12 16v2m7 2v-1"
+          />
+        </symbol>
+        <symbol id="i-bell" viewBox="0 0 24 24">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+        </symbol>
+        <symbol id="i-expand" viewBox="0 0 24 24">
+          <path d="M14 3h7v7m0-7L10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5" />
+        </symbol>
+        <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6" /></symbol>
+        <symbol id="i-sidebar" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="16" rx="4" />
+          <path d="M15 4v16" />
+        </symbol>
+        <symbol id="i-link" viewBox="0 0 24 24">
+          <path
+            d="m10 13 4-4M8 15l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 3 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"
+            transform="translate(1 1)"
+          />
+        </symbol>
+      </defs>
+    </svg>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true"
+          ><svg><use href="#i-mark" /></svg></span
+        ><span
+          >Qlyphs<small><span id="build-version"></span></small
+        ></span>
+      </div>
+      <button
+        id="open-accounts"
+        hidden
+        class="header-account"
+        type="button"
+        aria-haspopup="dialog"
+        aria-label="Switch account"
+      >
+        <span id="header-wallet-avatar" class="account-avatar" aria-hidden="true"
+          ><svg><use href="#i-mark" /></svg
+        ></span>
+        <span
+          ><strong id="active-account-name">Account 1</strong
+          ><small><i class="network-dot"></i><span data-network-name>Quantus Devnet</span></small></span
+        >
+        <svg class="account-chevron" aria-hidden="true"><use href="#i-back" /></svg>
+      </button>
+      <span class="badge"><i></i>DEVNET</span
+      ><button
+        id="refresh"
+        class="icon"
+        hidden
+        aria-label="Refresh balances"
+        title="Refresh balances"
+      >
+        <svg><use href="#i-refresh" /></svg></button
+      ><button id="lock" class="icon" hidden aria-label="Lock wallet" title="Lock wallet">
+        <svg><use href="#i-lock" /></svg></button
+      ><button
+        id="return-unlock"
+        class="icon"
+        hidden
+        aria-label="Unlock wallet"
+        title="Unlock wallet"
+      >
+        <svg><use href="#i-lock" /></svg>
+      </button>
+      <button
+        id="open-menu"
+        class="icon"
+        hidden
+        aria-label="Open menu"
+        aria-haspopup="dialog"
+        aria-controls="wallet-menu"
+        aria-expanded="false"
+        title="Menu"
+      >
+        <svg><use href="#i-menu" /></svg>
+      </button>
+      <button
+        id="expand-wallet"
+        class="icon"
+        aria-label="Open wallet in a tab"
+        title="Open wallet in a tab"
+      >
+        <svg><use href="#i-expand" /></svg>
+      </button>
+    </header>
+    <div class="dev-notice" data-dev-only>Development network <span>·</span> Test assets only</div>
+    <main id="main">
+      <div id="feedback">
+        <p id="message" role="status" aria-live="polite">Opening your wallet…</p>
+        <div id="network-help" hidden>
+          <div class="network-actions">
+            <button id="retry-wallet-network" class="secondary">Retry connection</button>
+            <button
+              id="inspect-network"
+              class="secondary"
+              aria-expanded="false"
+              aria-controls="connection-details"
+            >
+              Network details
+            </button>
+            <button id="reload-extension" class="secondary" hidden>Reload extension</button>
+          </div>
+          <div class="network-switch" role="group" aria-label="Network" data-network-switch hidden>
+              <button type="button" class="secondary" data-switch-network="mainnet" aria-pressed="false">Mainnet</button>
+              <button type="button" class="secondary" data-switch-network="development" aria-pressed="false">Development</button>
+            </div>
+          <p id="network-reload-hint" class="field-hint" hidden></p>
+          <div id="connection-details" hidden>
+            <p id="connection-diagnosis" class="muted" role="status"></p>
+            <dl id="connection-values"></dl>
+            <p class="muted">
+              Retry checks the connection again. It keeps your wallet linked to its saved network.
+            </p>
+          </div>
+        </div>
+      </div>
+      <section id="setup" class="setup-flow" hidden>
+        <div id="setup-welcome" class="wizard-screen">
+          <div class="wizard-content welcome-content">
+            <div class="sculpture welcome-sculpture" aria-hidden="true">
+              <canvas data-sculpture></canvas>
+            </div>
+            <h1>Your wallet.<br />Your space.</h1>
+            <p class="intro">Your QTC.<br />At home on Quantus.</p>
+          </div>
+          <div class="wizard-actions">
+            <button id="use-network" class="wide">
+              Get started <svg><use href="#i-up" /></svg>
+            </button>
+            <button id="retry-network" class="secondary wide" hidden>Retry connection</button>
+            <button id="show-setup-network" class="text-button wide" type="button" data-mainnet="Network details">
+              Development network details
+            </button>
+            <div class="network-switch" role="group" aria-label="Network" data-network-switch hidden>
+              <button type="button" class="secondary" data-switch-network="mainnet" aria-pressed="false">Mainnet</button>
+              <button type="button" class="secondary" data-switch-network="development" aria-pressed="false">Development</button>
+            </div>
+            <p class="legal" data-mainnet="Independent, unaudited wallet.">Independent, unaudited wallet. Test funds only.</p>
+          </div>
+        </div>
+        <div id="setup-network" class="wizard-screen" hidden>
+          <div class="wizard-nav">
+            <button id="back-setup-network" class="icon" aria-label="Back to welcome">
+              <svg><use href="#i-back" /></svg></button
+            ><span>Connection</span>
+          </div>
+          <div class="wizard-content">
+            <h1 tabindex="-1" data-mainnet="Your network">Your test network</h1>
+            <p class="intro" data-mainnet="Your wallet connects to Quantus mainnet.">Your wallet connects to your local Quantus network.</p>
+            <dl id="network-details"></dl>
+          </div>
+        </div>
+      </section>
+      <section id="new-wallet" class="setup-flow" hidden>
+        <div class="wizard-nav">
+          <button id="onboarding-back" class="icon" type="button" aria-label="Back" hidden>
+            <svg><use href="#i-back" /></svg>
+          </button>
+          <span id="onboarding-progress">Set up your wallet</span>
+        </div>
+        <div data-onboarding-screen="choice" class="wizard-screen">
+          <div class="wizard-content choice-content">
+            <div class="sculpture welcome-sculpture" aria-hidden="true">
+              <canvas data-sculpture="still"></canvas>
+            </div>
+            <h1 tabindex="-1">Make yourself<br />at home.</h1>
+            <p class="intro">Start fresh, or bring your wallet with you.</p>
+          </div>
+          <div class="wizard-actions">
+            <button id="choose-create" class="wide" type="button">
+              Create a wallet <svg><use href="#i-up" /></svg>
+            </button>
+            <button id="choose-import" class="secondary wide" type="button">Import a wallet</button>
+            <button id="choose-carry" class="secondary wide" type="button" hidden>
+              Use my development wallet
+            </button>
+          </div>
+        </div>
+        <form id="create-form" data-onboarding-screen="create" class="wizard-screen" hidden>
+          <div class="wizard-content">
+            <h1 id="create-password-title" tabindex="-1">Set your password</h1>
+            <p id="create-password-intro" class="intro">
+              One password unlocks all your wallets on this device.
+            </p>
+            <label
+              >Password<span class="input-wrap"
+                ><input
+                  id="new-password"
+                  type="password"
+                  autocomplete="new-password"
+                  minlength="6"
+                  maxlength="256"
+                  required
+                  placeholder="At least 6 characters"
+                  aria-describedby="password-hint" /><button
+                  type="button"
+                  class="input-icon"
+                  data-password="new-password"
+                  aria-label="Show password"
+                  aria-pressed="false"
+                >
+                  <svg><use href="#i-eye" /></svg></button></span
+            ></label>
+            <div class="password-strength"><i id="password-meter"></i></div>
+            <p id="password-hint" class="field-hint" aria-live="polite">
+              6+ characters. Use a unique password.
+            </p>
+            <label
+              >Confirm password<span class="input-wrap"
+                ><input
+                  id="confirm-password"
+                  aria-describedby="confirm-hint"
+                  type="password"
+                  autocomplete="new-password"
+                  minlength="6"
+                  maxlength="256"
+                  required
+                  placeholder="Enter it again" /><button
+                  type="button"
+                  class="input-icon"
+                  data-password="confirm-password"
+                  aria-label="Show password"
+                  aria-pressed="false"
+                >
+                  <svg><use href="#i-eye" /></svg></button></span
+            ></label>
+            <p id="confirm-hint" class="field-hint confirm-hint" aria-live="polite"></p>
+          </div>
+          <div class="wizard-actions">
+            <button type="submit" class="wide">
+              Create wallet <svg><use href="#i-up" /></svg>
+            </button>
+          </div>
+        </form>
+        <div data-onboarding-screen="import-choice" class="wizard-screen" hidden>
+          <div class="wizard-content">
+            <h1 tabindex="-1">Bring your wallet</h1>
+            <p class="intro">Choose how you want to restore it.</p>
+            <button id="choose-phrase" class="import-option secondary" type="button">
+              <svg><use href="#i-lock" /></svg
+              ><span>Recovery phrase<small>Your secret recovery words</small></span
+              ><svg><use href="#i-up" /></svg>
+            </button>
+            <button id="choose-backup" class="import-option secondary" type="button">
+              <svg><use href="#i-down" /></svg
+              ><span>Encrypted backup<small>A Qlyphs wallet JSON file</small></span
+              ><svg><use href="#i-up" /></svg>
+            </button>
+            <p class="legal" data-mainnet="Compatible with the legacy Quantus ML-DSA-87 recovery path.">
+              Compatible with the legacy Quantus ML-DSA-87 recovery path. Test wallets only.
+            </p>
+          </div>
+        </div>
+        <form id="import-form" class="wizard-form">
+          <div data-onboarding-screen="phrase" class="wizard-screen" hidden>
+            <div class="wizard-content">
+              <h1 tabindex="-1">Your recovery phrase</h1>
+              <p class="intro">Enter your words in their original order.</p>
+              <label
+                >Recovery phrase<span id="phrase-word-count" class="field-count" aria-live="polite"
+                  >0 words</span
+                ><textarea
+                  id="import-phrase"
+                  aria-describedby="phrase-hint"
+                  maxlength="512"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  required
+                  placeholder="Separate each word with a space"
+                ></textarea>
+              </label>
+              <p id="phrase-hint" class="field-hint" aria-live="polite">
+                Keep these words private. Never share them.
+              </p>
+            </div>
+            <div class="wizard-actions">
+              <button id="import-next" type="button" class="wide">
+                Continue <svg><use href="#i-up" /></svg>
+              </button>
+            </div>
+          </div>
+          <div data-onboarding-screen="import-password" class="wizard-screen" hidden>
+            <div class="wizard-content">
+              <h1 id="import-password-title" tabindex="-1">Secure this device</h1>
+              <p id="import-password-intro" class="intro">
+                Choose one password to unlock all your wallets on this device.
+              </p>
+              <label
+                >New password<span class="input-wrap"
+                  ><input
+                    id="import-password"
+                    aria-describedby="import-password-hint"
+                    type="password"
+                    minlength="6"
+                    maxlength="256"
+                    required
+                    autocomplete="new-password"
+                    placeholder="At least 6 characters" /><button
+                    type="button"
+                    class="input-icon"
+                    data-password="import-password"
+                    aria-label="Show password"
+                    aria-pressed="false"
+                  >
+                    <svg><use href="#i-eye" /></svg></button></span
+              ></label>
+              <p id="import-password-hint" class="field-hint" aria-live="polite">
+                6+ characters. Your recovery phrase stays the same.
+              </p>
+            </div>
+            <div class="wizard-actions">
+              <button type="submit" class="wide">
+                Import wallet <svg><use href="#i-up" /></svg>
+              </button>
+            </div>
+          </div>
+        </form>
+        <form id="restore-form" class="wizard-form">
+          <div data-onboarding-screen="backup" class="wizard-screen" hidden>
+            <div class="wizard-content">
+              <h1 tabindex="-1">Choose your backup</h1>
+              <p class="intro">Select the encrypted file you saved from Qlyphs.</p>
+              <label
+                >Backup file<input
+                  id="backup-file"
+                  type="file"
+                  accept=".json,application/json"
+                  required
+                  aria-describedby="backup-file-hint"
+              /></label>
+              <p id="backup-file-hint" class="field-hint" aria-live="polite">
+                JSON file · Up to 8 KB
+              </p>
+            </div>
+            <div class="wizard-actions">
+              <button id="restore-next" type="button" class="wide">
+                Continue <svg><use href="#i-up" /></svg>
+              </button>
+            </div>
+          </div>
+          <div data-onboarding-screen="restore-password" class="wizard-screen" hidden>
+            <div class="wizard-content">
+              <h1 tabindex="-1">Unlock your backup</h1>
+              <p class="intro">Use the password that protected this file.</p>
+              <label
+                >Backup password<span class="input-wrap"
+                  ><input
+                    id="restore-password"
+                    aria-describedby="restore-password-hint"
+                    type="password"
+                    minlength="6"
+                    maxlength="256"
+                    required
+                    autocomplete="current-password" /><button
+                    type="button"
+                    class="input-icon"
+                    data-password="restore-password"
+                    aria-label="Show password"
+                    aria-pressed="false"
+                  >
+                    <svg><use href="#i-eye" /></svg></button></span
+              ></label>
+              <p id="restore-password-hint" class="field-hint" aria-live="polite">
+                This is the password used when you saved your backup.
+              </p>
+            </div>
+            <div class="wizard-actions">
+              <button type="submit" class="wide">
+                Restore wallet <svg><use href="#i-up" /></svg>
+              </button>
+            </div>
+          </div>
+        </form>
+        <form id="carry-form" data-onboarding-screen="carry" class="wizard-screen" hidden>
+          <div class="wizard-content">
+            <h1 tabindex="-1">Use your development wallet</h1>
+            <p class="intro">All your accounts, same addresses, now on Quantus mainnet.</p>
+            <label
+              >Wallet password<span class="input-wrap"
+                ><input
+                  id="carry-password"
+                  aria-describedby="carry-password-hint"
+                  type="password"
+                  minlength="6"
+                  maxlength="256"
+                  required
+                  autocomplete="current-password" /><button
+                  type="button"
+                  class="input-icon"
+                  data-password="carry-password"
+                  aria-label="Show password"
+                  aria-pressed="false"
+                >
+                  <svg><use href="#i-eye" /></svg></button></span
+            ></label>
+            <p id="carry-password-hint" class="field-hint" aria-live="polite">
+              The password that unlocks it on the development network. It becomes the mainnet password.
+            </p>
+          </div>
+          <div class="wizard-actions">
+            <button type="submit" class="wide">
+              Use this wallet <svg><use href="#i-up" /></svg>
+            </button>
+          </div>
+        </form>
+      </section>
+      <section id="recovery" class="setup-flow" hidden>
+        <div class="wizard-nav">
+          <button
+            id="recovery-back"
+            class="icon"
+            type="button"
+            aria-label="Previous backup step"
+            hidden
+          >
+            <svg><use href="#i-back" /></svg></button
+          ><span id="recovery-progress">Back up your wallet</span>
+        </div>
+        <div class="wizard-screen">
+          <div class="wizard-content">
+            <h1 id="recovery-title" tabindex="-1">Your way back in</h1>
+            <p id="recovery-description" class="intro">
+              Your recovery words restore your wallet if you lose access to this device.
+            </p>
+            <div id="recovery-warning" class="backup-note">
+              <svg><use href="#i-shield" /></svg>
+              <p>
+                Write them down somewhere private.<br />Anyone with these words can access your
+                funds. Never share them with a site or support.
+              </p>
+            </div>
+            <div id="phrase" class="secret" aria-label="Recovery phrase" hidden></div>
+            <label id="recovery-check" class="check" hidden
+              ><input type="checkbox" id="saved-phrase" /><span
+                >I saved all my words, in order, somewhere private.</span
+              ></label
+            >
+          </div>
+          <div class="wizard-actions">
+            <button id="recovery-next" class="wide" type="button">
+              Show recovery words <svg><use href="#i-up" /></svg>
+            </button>
+            <button id="acknowledge" class="wide" disabled hidden>
+              Open wallet <svg><use href="#i-check" /></svg>
+            </button>
+          </div>
+        </div>
+      </section>
+      <section id="unlock" class="onboarding" hidden>
+        <h1 id="unlock-title">Welcome back</h1>
+        <p id="unlock-intro" class="intro" hidden>
+          One password unlocks all your wallets on this device.
+        </p>
+        <button id="unlock-passkey" class="secondary wide" hidden>
+          <svg><use href="#i-fingerprint" /></svg> Unlock with passkey
+        </button>
+        <p id="passkey-tab-hint" class="field-hint" hidden>
+          Continues in a dedicated extension tab.
+        </p>
+        <div id="passkey-divider" class="divider" hidden>or use your password</div>
+        <form id="unlock-form">
+          <label
+            >Password
+            <span class="input-wrap"
+              ><input
+                id="password"
+                type="password"
+                minlength="6"
+                maxlength="256"
+                required
+                autocomplete="current-password"
+                aria-describedby="password-error"
+                placeholder="Enter your password" /><button
+                type="button"
+                class="input-icon"
+                data-password="password"
+                aria-label="Show password"
+                aria-pressed="false"
+              >
+                <svg><use href="#i-eye" /></svg></button></span
+          ></label>
+          <p id="password-error" role="status" aria-live="polite"></p>
+          <button id="unlock-submit" type="submit" class="wide">Unlock Qlyphs</button>
+        </form>
+        <button id="cancel-unlock" type="button" class="text-button wide" hidden>
+          Cancel request
+        </button>
+        <button id="watch-wallet" class="text-button wide" hidden>
+          View balances without unlocking
+        </button>
+        <button id="open-reset" class="text-button wide" hidden>
+          Forgot password? Start fresh
+        </button>
+      </section>
+      <section id="confirmation" hidden>
+        <div class="review-content" tabindex="0" aria-label="Transaction review details">
+          <div class="review-heading">
+            <div class="review-heading-text">
+              <h1 id="review-title" tabindex="-1">Confirm operation</h1>
+              <p id="review-origin" class="origin"></p>
+            </div>
+          </div>
+          <p id="review-amount" class="review-amount" hidden></p>
+          <div id="review-qlyph" class="review-qlyph" hidden></div>
+          <div id="review-summary"></div>
+          <p id="review-warning" class="review-note"></p>
+          <details class="review-disclosure review-technical">
+            <summary>Full transaction details</summary>
+            <pre id="review-full"></pre>
+          </details>
+          <p id="expires" class="muted"></p>
+        </div>
+        <div class="actions review-actions">
+          <button id="reject" class="secondary">Reject</button><button id="approve">Approve</button>
+        </div>
+      </section>
+      <section id="tx-result" class="tx-result" hidden>
+        <div class="tx-result-body" role="status" aria-live="polite">
+          <div id="tx-result-seal" class="tx-seal" data-stage="signing" aria-hidden="true">
+            <svg viewBox="0 0 64 64">
+              <circle class="tx-seal-track" cx="32" cy="32" r="28" />
+              <circle class="tx-seal-arc" cx="32" cy="32" r="28" pathLength="100" />
+              <path class="tx-seal-check" d="m20 33 8 8 16-17" pathLength="100" />
+              <path class="tx-seal-cross" d="m24 24 16 16M40 24 24 40" pathLength="100" />
+            </svg>
+          </div>
+          <h1 id="tx-result-title" tabindex="-1">Sending…</h1>
+          <p id="tx-result-amount" class="tx-result-amount" hidden></p>
+          <p id="tx-result-to" class="tx-result-to" hidden></p>
+          <ol id="tx-result-steps" class="tx-steps" data-step="0" aria-label="Progress">
+            <li>Sent</li>
+            <li>In a block</li>
+            <li>Finalized</li>
+          </ol>
+          <p id="tx-result-detail" class="tx-result-detail">Signing and sending to the network</p>
+          <button id="tx-result-hash" class="pill tx-result-hash" type="button" hidden>
+            <span class="mono"></span><svg><use href="#i-copy" /></svg>
+          </button>
+        </div>
+        <div class="actions review-actions">
+          <button id="tx-result-explorer" class="secondary" type="button" hidden>
+            View in explorer</button
+          ><button id="tx-result-done" type="button">Done</button>
+        </div>
+      </section>
+      <section id="wallet" hidden>
+        <div class="wallet-home">
+          <div class="account-bar">
+            <button id="copy-address" class="pill" title="Copy address">
+              <span id="address" class="mono"></span><svg><use href="#i-copy" /></svg>
+            </button>
+          </div>
+          <div class="balance">
+            <div class="balance-label">
+              Available balance
+              <button
+                id="hide-balance"
+                class="icon tiny"
+                aria-label="Hide balances"
+                aria-pressed="false"
+              >
+                <svg><use href="#i-eye" /></svg>
+              </button>
+            </div>
+            <strong id="balance" aria-live="polite">—</strong>
+            <!-- One fixed-height line under the balance: notes cross-fade, layout never moves. -->
+            <div class="balance-note">
+              <p id="reserved" class="note muted"></p>
+              <p id="incoming" class="note incoming" aria-live="polite">
+                <svg class="incoming-spinner" viewBox="0 0 16 16" aria-hidden="true">
+                  <circle cx="8" cy="8" r="6" pathLength="100" /></svg
+                ><span id="incoming-text"></span>
+              </p>
+              <p id="balance-delta" class="note balance-delta" aria-live="polite"></p>
+            </div>
+          </div>
+          <div class="quick">
+            <button id="show-send" class="round" type="button">
+              <span
+                ><svg><use href="#i-up" /></svg></span
+              >Send</button
+            ><button id="show-receive" class="round" type="button">
+              <span
+                ><svg><use href="#i-down" /></svg></span
+              >Receive</button
+            ><button
+              id="show-swap"
+              class="round"
+              type="button"
+              data-soon="swap"
+              aria-disabled="true"
+              aria-describedby="soon-bubble"
+              aria-label="Swap, coming soon"
+            >
+              <span
+                ><svg><use href="#i-swap" /></svg><i class="soon-pill" aria-hidden="true">Soon</i></span
+              >Swap</button
+            ><button
+              id="open-dapp"
+              class="round"
+              type="button"
+              data-soon="qlyphs"
+              aria-disabled="true"
+              aria-describedby="soon-bubble"
+              aria-label="Qlyphs, coming soon"
+            >
+              <span
+                ><svg><use href="#i-mark" /></svg><i class="soon-pill" aria-hidden="true">Soon</i></span
+              >Qlyphs
+            </button>
+            <div id="soon-bubble" class="soon-bubble" role="status" aria-live="polite" hidden>
+              <strong id="soon-title"></strong><span id="soon-text"></span>
+            </div>
+          </div>
+          <p id="wallet-state" class="wallet-status"></p>
+          <button id="backup-reminder" class="callout backup-reminder" hidden>
+            Finish backing up your wallet <svg><use href="#i-up" /></svg>
+          </button>
+        </div>
+        <details id="receive-panel" class="flow">
+          <summary>
+            <svg><use href="#i-back" /></svg> Back to wallet
+          </summary>
+          <div class="flow-shell">
+            <div class="flow-content receive-content">
+              <h1>Receive assets</h1>
+              <div class="qr-card">
+                <canvas
+                  id="receive-qr"
+                  aria-label="QR code containing your Quantus address"
+                  role="img"
+                ></canvas>
+              </div>
+              <div class="receive-address-block">
+                <span class="field-label">Your wallet address</span
+                ><span id="receive-address" class="address-box mono"></span>
+              </div>
+              <p class="transfer-note" data-mainnet="Only send assets on Quantus mainnet.">Only send assets on this Quantus development network.</p>
+            </div>
+            <div class="flow-actions">
+              <button id="copy-receive" class="wide">
+                Copy address <svg><use href="#i-copy" /></svg>
+              </button>
+            </div>
+          </div>
+        </details>
+        <details id="send-panel" class="flow">
+          <summary>
+            <svg><use href="#i-back" /></svg> Back to wallet
+          </summary>
+          <form id="send-form" class="flow-shell" novalidate>
+            <div class="flow-content">
+              <h1 id="send-title">Send QTC</h1>
+              <label
+                >Asset to send<select id="send-asset" required>
+                  <option value="qtc">QTC · Native token</option>
+                </select></label
+              >
+              <label
+                ><span class="transfer-caption"
+                  ><span id="send-to-label">Recipient</span
+                  ><span
+                    id="send-to-error"
+                    class="transfer-feedback field-error"
+                    aria-live="polite"
+                  ></span></span
+                ><input
+                  id="send-to"
+                  aria-labelledby="send-to-label"
+                  aria-describedby="send-to-error"
+                  required
+                  maxlength="80"
+                  spellcheck="false"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  placeholder="Quantus address or account ID"
+              /></label>
+              <label
+                ><span class="transfer-caption"
+                  ><span id="send-amount-label">Amount</span
+                  ><span
+                    id="send-amount-error"
+                    class="transfer-feedback field-error"
+                    aria-live="polite"
+                  ></span></span
+                ><span class="amount-input"
+                  ><input
+                    id="send-amount"
+                    aria-labelledby="send-amount-label"
+                    required
+                    inputmode="decimal"
+                    autocomplete="off"
+                    placeholder="0.00"
+                    aria-describedby="send-available send-amount-error"
+                  /><span id="send-unit">QTC</span></span
+                ></label
+              >
+              <p id="send-available" class="field-hint"></p>
+            </div>
+            <div class="flow-actions">
+              <button type="submit" class="wide">
+                Review transfer <svg><use href="#i-up" /></svg>
+              </button>
+            </div>
+          </form>
+        </details>
+        <div class="wallet-content">
+          <nav class="tabs" role="tablist" aria-label="Wallet navigation">
+            <button
+              id="tab-tokens"
+              type="button"
+              role="tab"
+              data-tab="tokens-tab"
+              aria-controls="tokens-tab"
+              aria-selected="true"
+            >
+              <svg><use href="#i-wallet" /></svg>Assets</button
+            ><button
+              id="tab-activity"
+              type="button"
+              role="tab"
+              data-tab="activity-tab"
+              aria-controls="activity-tab"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              <svg><use href="#i-clock" /></svg>Activity</button
+            ><button
+              id="tab-settings"
+              type="button"
+              role="tab"
+              data-tab="settings-tab"
+              aria-controls="settings-tab"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              <svg><use href="#i-settings" /></svg>Settings
+            </button>
+          </nav>
+          <div id="tokens-tab" role="tabpanel" aria-labelledby="tab-tokens" tabindex="0">
+            <div class="list-heading"><span>Your assets</span><span id="asset-count">—</span></div>
+            <div id="tokens">
+              <div class="skeleton"></div>
+              <div class="skeleton"></div>
+            </div>
+            <p id="sync-state" class="field-hint">Fetching balances…</p>
+            <button
+              id="explore-qlyphs"
+              class="ecosystem"
+              type="button"
+              data-soon="qlyphs"
+              aria-disabled="true"
+            >
+              <span class="ecosystem-mark"
+                ><svg><use href="#i-mark" /></svg></span
+              ><span>Qlyphs<small>Your Qlyphs apps, one tap from your wallet.</small></span
+              ><i class="soon-pill soon-pill-inline" aria-hidden="true">Coming soon</i>
+            </button>
+          </div>
+          <div id="activity-tab" role="tabpanel" aria-labelledby="tab-activity" tabindex="0" hidden>
+            <div class="list-heading">
+              <span>Recent activity</span
+              ><button
+                id="open-explorer"
+                class="text-button"
+                aria-label="Open local explorer in a new tab"
+                data-mainnet-label="Open explorer in a new tab"
+              >
+                Explorer <svg><use href="#i-expand" /></svg>
+              </button>
+            </div>
+            <div id="history"></div>
+          </div>
+          <div id="settings-tab" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
+            <div class="list-heading"><span>Settings</span></div>
+            <div id="display-settings" class="card" hidden>
+              <h2 class="display-title">Open wallet in</h2>
+              <div class="display-options" role="group" aria-label="Wallet display mode">
+                <button id="display-sidebar" class="secondary" aria-pressed="true">
+                  <svg><use href="#i-sidebar" /></svg>Side panel
+                </button>
+                <button id="display-popup" class="secondary" aria-pressed="false">
+                  <svg><use href="#i-expand" /></svg>Popup
+                </button>
+              </div>
+              <p class="field-hint">Choose what opens from the toolbar icon.</p>
+            </div>
+            <div id="network-settings" class="card" hidden>
+              <h2 class="display-title">Network</h2>
+              <div class="display-options" role="group" aria-label="Network">
+                <button class="secondary" data-switch-network="mainnet" aria-pressed="false">Mainnet</button>
+                <button class="secondary" data-switch-network="development" aria-pressed="false">
+                  Development
+                </button>
+              </div>
+              <p class="field-hint">
+                Each network keeps its own wallet. Switching locks the wallet and restarts it.
+              </p>
+              <button id="carry-accounts" class="secondary wide" type="button" hidden>
+                Bring my development accounts
+              </button>
+            </div>
+            <details id="passkey-panel" class="card security-card">
+              <summary>
+                <span class="setting-heading"
+                  ><svg><use href="#i-fingerprint" /></svg
+                  ><span
+                    >Passkey unlock<small id="passkey-status">Password protected</small></span
+                  ></span
+                ><span class="setting-pill" id="passkey-badge">OPTIONAL</span>
+              </summary>
+              <p class="muted">
+                Unlock with a compatible passkey, using your device or password manager. Your
+                password remains available.
+              </p>
+              <div id="passkey-in-popup">
+                <button id="manage-passkey" class="secondary wide">
+                  <svg><use href="#i-expand" /></svg> Set up in a dedicated tab
+                </button>
+                <p class="field-hint">Keeps the wallet open during the device prompt.</p>
+              </div>
+              <form id="passkey-form" hidden>
+                <label
+                  >Confirm wallet password<input
+                    id="passkey-password"
+                    type="password"
+                    minlength="6"
+                    maxlength="256"
+                    autocomplete="current-password"
+                    required
+                    placeholder="Your current password" /></label
+                ><button id="enroll-passkey" type="submit" class="wide">
+                  <svg><use href="#i-fingerprint" /></svg> Create a passkey
+                </button>
+              </form>
+              <form id="remove-passkey-form" hidden>
+                <label
+                  >Confirm wallet password<input
+                    id="remove-passkey-password"
+                    type="password"
+                    minlength="6"
+                    maxlength="256"
+                    autocomplete="current-password"
+                    required
+                    placeholder="Your current password" /></label
+                ><button type="submit" class="secondary wide">Remove passkey unlock</button>
+              </form>
+              <p class="field-hint">
+                Linked to this browser’s wallet. Keep your recovery phrase and password. Your device
+                must support passkey encryption (PRF).
+              </p>
+            </details>
+            <details id="notifications-panel" class="card">
+              <summary>
+                <span class="setting-heading"
+                  ><svg><use href="#i-bell" /></svg
+                  ><span
+                    >Desktop notifications<small id="notification-status"
+                      >Off · Your choice</small
+                    ></span
+                  ></span
+                >
+              </summary>
+              <p class="muted">
+                Know when an operation from this wallet is finalized or needs attention, even after
+                closing the popup.
+              </p>
+              <button
+                id="notification-toggle"
+                class="setting-toggle"
+                type="button"
+                role="switch"
+                aria-checked="false"
+              >
+                <span>Transaction notifications</span
+                ><span class="switch-track" aria-hidden="true"></span>
+              </button>
+              <p class="field-hint">
+                Private by default: no balances, addresses or token names. Chrome and your system
+                control delivery.
+              </p>
+              <button id="test-notification" class="secondary wide" hidden>
+                Send a test notification
+              </button>
+            </details>
+            <details class="card">
+              <summary>
+                <span>Connected sites<small>Manage access to your public address</small></span>
+              </summary>
+              <div id="sites"></div>
+            </details>
+            <details class="card">
+              <summary>
+                <span>Account & network<small data-mainnet="Quantus mainnet · Account 1">Quantus development · Account 1</small></span>
+              </summary>
+              <pre id="account-details"></pre>
+            </details>
+            <details class="card">
+              <summary>
+                <span>Encrypted backup<small>Back up the selected wallet</small></span>
+              </summary>
+              <p class="muted">
+                Includes this wallet and its accounts. Back up other wallets separately.
+              </p>
+              <button id="export" class="secondary wide">Download encrypted backup</button>
+            </details>
+            <details id="reveal-panel" class="card">
+              <summary>
+                <span>Recovery phrase<small>Unlock your wallet to reveal privately</small></span>
+              </summary>
+              <p class="muted">Re-enter your password to view your recovery words.</p>
+              <form id="reveal-form">
+                <label
+                  >Password
+                  <input
+                    id="reveal-password"
+                    type="password"
+                    required
+                    minlength="6"
+                    maxlength="256"
+                    autocomplete="current-password" /></label
+                ><button type="submit" class="secondary wide">Reveal recovery phrase</button>
+              </form>
+            </details>
+            <div class="settings-about">
+              <svg><use href="#i-mark" /></svg>
+              <p>Qlyphs Wallet <span id="about-version"></span></p>
+            </div>
+            <p class="legal" data-mainnet="Independent Qlyphs wallet, not the official Quantus wallet. No security audit. Keep your recovery phrase offline and only approve transactions you understand.">
+              Independent Qlyphs wallet, not the official Quantus wallet. No security audit. Mainnet
+              is disabled. Never import real funds.
+            </p>
+          </div>
+        </div>
+      </section>
+      <footer>
+        <svg><use href="#i-shield" /></svg> Keys stay on your device.<span
+          class="footer-square"
+        ></span>
+      </footer>
+    </main>
+    <dialog id="wallet-menu" aria-labelledby="wallet-menu-title">
+      <div class="wallet-menu-heading">
+        <h2 id="wallet-menu-title">Menu</h2>
+        <button id="close-menu" class="icon" type="button" aria-label="Close menu">
+          <svg aria-hidden="true"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <div class="wallet-menu-account">
+        <span id="menu-account-avatar" class="account-avatar" aria-hidden="true"></span>
+        <span
+          ><strong id="menu-account-name"></strong
+          ><small id="menu-account-address" class="mono"></small
+        ></span>
+      </div>
+      <div class="wallet-menu-content">
+        <nav class="wallet-menu-nav" aria-label="Wallet menu">
+          <button id="menu-assets" type="button">
+            <svg aria-hidden="true"><use href="#i-wallet" /></svg><span>Assets</span
+            ><svg class="wallet-menu-current" aria-hidden="true"><use href="#i-check" /></svg>
+          </button>
+          <button id="menu-activity" type="button">
+            <svg aria-hidden="true"><use href="#i-clock" /></svg><span>Activity</span
+            ><svg class="wallet-menu-current" aria-hidden="true"><use href="#i-check" /></svg>
+          </button>
+          <button id="menu-accounts" type="button">
+            <svg aria-hidden="true"><use href="#i-user" /></svg><span>Accounts</span>
+          </button>
+          <button id="menu-settings" type="button">
+            <svg aria-hidden="true"><use href="#i-settings" /></svg><span>Settings</span
+            ><svg class="wallet-menu-current" aria-hidden="true"><use href="#i-check" /></svg>
+          </button>
+        </nav>
+        <div class="wallet-menu-secondary">
+          <button id="menu-explorer" type="button">
+            <svg aria-hidden="true"><use href="#i-search" /></svg><span>Transaction explorer</span>
+          </button>
+          <button id="menu-open-tab" type="button">
+            <svg aria-hidden="true"><use href="#i-expand" /></svg><span>Open in a tab</span>
+          </button>
+        </div>
+      </div>
+      <div class="wallet-menu-footer">
+        <button id="menu-lock" type="button">
+          <svg aria-hidden="true"><use href="#i-lock" /></svg><span>Lock wallet</span>
+        </button>
+        <p class="wallet-menu-version">
+          <span><i class="network-dot" aria-hidden="true"></i><span data-network-name>Quantus Devnet</span></span
+          ><span id="menu-version"></span>
+        </p>
+      </div>
+    </dialog>
+    <dialog id="accounts-dialog" aria-labelledby="accounts-title">
+      <div class="accounts-heading">
+        <button id="close-accounts" class="icon" type="button" aria-label="Back to wallet">
+          <svg><use href="#i-back" /></svg>
+        </button>
+        <h2 id="accounts-title">Accounts</h2>
+      </div>
+      <div id="accounts-overview" class="accounts-overview">
+        <div class="accounts-search">
+          <svg aria-hidden="true"><use href="#i-search" /></svg>
+          <input
+            id="account-search"
+            type="search"
+            placeholder="Search accounts"
+            aria-label="Search accounts by name or address"
+            autocomplete="off"
+          />
+        </div>
+        <div class="accounts-list-heading">
+          <span>Your accounts</span><span id="accounts-count"></span>
+        </div>
+        <div id="accounts-list" class="accounts-list"></div>
+        <div id="accounts-empty" class="accounts-empty" role="status" hidden>
+          <svg aria-hidden="true"><use href="#i-search" /></svg><strong>No accounts found</strong>
+          <p>Try another name or address.</p>
+        </div>
+        <p id="accounts-error" class="field-hint field-error" role="status"></p>
+        <div class="accounts-actions">
+          <button
+            id="add-account"
+            class="secondary wide"
+            type="button"
+            aria-describedby="add-account-hint"
+          >
+            <svg aria-hidden="true"><use href="#i-plus" /></svg> Add account
+          </button>
+          <p id="add-account-hint">Same wallet, same recovery phrase.</p>
+          <button id="add-wallet" class="text-button wide" type="button">Add another wallet</button>
+          <p id="add-wallet-hint" class="field-hint">
+            Separate recovery phrases. One unlock for all your wallets.
+          </p>
+        </div>
+      </div>
+      <form id="account-name-form" hidden>
+        <p class="account-name-intro">Choose a name that makes this wallet easy to recognize.</p>
+        <label
+          >Account name<input
+            id="account-name"
+            autocomplete="off"
+            maxlength="32"
+            required
+            aria-describedby="account-name-hint"
+        /></label>
+        <p id="account-name-hint" class="field-hint" aria-live="polite">
+          Only visible in this extension.
+        </p>
+        <div class="actions">
+          <button id="cancel-account-name" class="secondary" type="button">Cancel</button
+          ><button type="submit">Save name</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="reset-dialog" aria-labelledby="reset-title">
+      <h2 id="reset-title">Start with a new wallet</h2>
+      <p>
+        This creates a different address. It does not recover the old wallet or transfer its assets.
+      </p>
+      <p>
+        First save the encrypted backup. It still needs the original password. An encrypted copy
+        also stays in this browser.
+      </p>
+      <button id="reset-backup" class="secondary wide">Download encrypted backup</button>
+      <label class="check"
+        ><input id="reset-confirm" type="checkbox" />I saved the backup and want a new, empty
+        wallet.</label
+      >
+      <p id="reset-error" class="field-hint field-error" role="status"></p>
+      <div class="actions">
+        <button id="cancel-reset" class="secondary">Cancel</button>
+        <button id="confirm-reset" disabled>Start fresh</button>
+      </div>
+    </dialog>
+    <span id="copy-feedback" class="sr-only" role="status" aria-live="polite"></span>
+    <!-- Docked above the content: following a transfer never pushes the page. -->
+    <button id="tx-tracker" class="tx-tracker" type="button" hidden>
+      <span id="tx-tracker-seal" class="tx-seal small" data-stage="sent" aria-hidden="true">
+        <svg viewBox="0 0 64 64">
+        <circle class="tx-seal-track" cx="32" cy="32" r="28" />
+        <circle class="tx-seal-arc" cx="32" cy="32" r="28" pathLength="100" />
+        <path class="tx-seal-check" d="m20 33 8 8 16-17" pathLength="100" />
+        <path class="tx-seal-cross" d="m24 24 16 16M40 24 24 40" pathLength="100" />
+      </svg>
+      </span>
+      <span class="tx-tracker-text" role="status" aria-live="polite"
+        ><strong id="tx-tracker-title"></strong><small id="tx-tracker-detail"></small
+      ></span>
+      <span id="tx-tracker-steps" class="tx-tracker-steps" data-step="0" aria-hidden="true"
+        ><i></i><i></i><i></i
+      ></span>
+    </button>
+  </body>
+</html>

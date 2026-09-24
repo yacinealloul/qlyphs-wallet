@@ -1,0 +1,33 @@
+{
+  "name": "@qotc/native-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node dist/server.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
+    "e2e": "playwright test",
+    "lint": "eslint src web"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.4.0",
+    "@noble/post-quantum": "0.7.1",
+    "@polkadot/api": "^16.5.6",
+    "@qotc/chain": "workspace:*",
+    "@qotc/native": "workspace:*",
+    "@quantus-network/wasm": "^0.3.1",
+    "@scure/bip39": "^2.4.0",
+    "@qlyphs/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^24.13.5",
+    "esbuild": "0.28.2",
+    "typescript": "~6.0.3"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@qotc/native",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "typecheck": "tsc --noEmit --strict --noUncheckedIndexedAccess --exactOptionalPropertyTypes --target ES2022 --module ESNext --moduleResolution bundler --allowImportingTsExtensions --lib ES2022,DOM src/index.ts",
+    "test": "node --experimental-strip-types --test test/*.test.mjs",
+    "test:integration": "node -e \"if (!process.env.QUANTUS_DEV_RPC_URL) throw Error('A throwaway dev node is required; this command never skips')\" && pnpm --filter @qotc/chain exec vitest run --config vitest.integration.config.ts test-integration/native.test.ts"
+  }
+}

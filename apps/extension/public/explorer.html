@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qlyphs · Local explorer</title>
+    <link rel="stylesheet" href="explorer.css" />
+    <link rel="stylesheet" href="controls.css" />
+    <script type="module" src="explorer.js"></script>
+  </head>
+  <body data-app="explorer">
+    <header>
+      <a href="explorer.html" class="brand"
+        ><img src="icon-32.png" alt="" />Qlyphs <span>Explorer</span></a
+      ><span class="badge" data-mainnet="Quantus mainnet">Local development network</span>
+    </header>
+    <main>
+      <div class="page-heading">
+        <div>
+          <p class="eyebrow">QUANTUS · QLYPHS</p>
+          <h1>Follow your activity.</h1>
+          <p class="muted">Transactions on your wallet’s saved local network.</p>
+        </div>
+        <button id="refresh" type="button">Refresh</button>
+      </div>
+      <form id="search-form">
+        <label for="search">Transaction ID</label>
+        <div class="search-row">
+          <input
+            id="search"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="0x…"
+            required
+            pattern="0x[0-9a-fA-F]{64}"
+            maxlength="66"
+          /><button type="submit">Look up</button>
+        </div>
+      </form>
+      <p id="message" role="status" aria-live="polite"></p>
+      <section id="transaction" hidden aria-labelledby="transaction-heading">
+        <div class="section-heading">
+          <h2 id="transaction-heading" tabindex="-1">Transaction</h2>
+          <button id="copy" type="button">Copy ID</button>
+        </div>
+        <dl id="transaction-values"></dl>
+        <div id="block-details" hidden>
+          <h3>Included in block</h3>
+          <dl id="block-values"></dl>
+          <h3>Execution events</h3>
+          <div id="events"></div>
+          <details>
+            <summary>Encoded call</summary>
+            <pre id="call-data"></pre>
+          </details>
+        </div>
+      </section>
+      <section aria-labelledby="history-heading">
+        <div class="section-heading">
+          <h2 id="history-heading">This wallet</h2>
+          <span id="history-count" class="muted"></span>
+        </div>
+        <p id="history-hint" class="muted">
+          Saved history. Open a transaction to check its current network status.
+        </p>
+        <div id="history"></div>
+      </section>
+      <details class="network">
+        <summary>Network details</summary>
+        <dl id="network-values"></dl>
+      </details>
+      <p class="footnote">Read-only explorer · Test assets only · No signing or recovery data</p>
+    </main>
+  </body>
+</html>

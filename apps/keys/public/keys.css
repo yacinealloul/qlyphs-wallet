@@ -1,0 +1,21 @@
+/* Web-only adjustments; unlayered so they win over the extension's layered styles. */
+#notifications-panel,#reload-extension,#network-reload-hint{display:none!important}
+.keys-overlay{position:fixed;inset:0;width:100%;height:100%;border:0;z-index:2147483647;background:#000}
+body.keys-connect{margin:0;min-height:100dvh;display:grid;place-items:center;background:var(--bg);color:var(--text);font-family:Geist,system-ui,sans-serif}
+body.keys-connect main{display:flex;flex-direction:column;align-items:center;gap:8px;padding:0 16px;text-align:center}
+body.keys-connect .keys-mark{width:40px;height:40px;color:var(--text);margin-bottom:8px}
+body.keys-connect h1{margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em}
+body.keys-connect #site{margin:0;font-family:GeistMono,ui-monospace,monospace;font-size:13px;color:var(--flare)}
+body.keys-connect #site:empty{display:none}
+body.keys-connect #status{margin:0;font-size:14px;color:var(--muted);max-width:32ch}
+/* The wallet as a web page: a centred card on wide screens, edge to edge on phones. */
+html:has(body[data-surface='tab']){display:grid;place-items:center;padding:clamp(16px,4dvh,40px) 16px}
+body[data-surface='tab']{width:440px;height:min(820px,100%);max-height:none;border:1px solid var(--line);border-radius:24px;background:var(--bg);box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 24px 80px -24px rgba(0,0,0,.7)}
+body[data-surface='tab'] .app-header{padding-inline:20px}
+body[data-surface='tab'] main{padding-inline:24px;padding-bottom:20px}
+@media (max-width:520px),(max-height:640px){
+  html:has(body[data-surface='tab']){padding:0}
+  body[data-surface='tab']{width:100%;height:100dvh;border:0;border-radius:0;box-shadow:none}
+  body[data-surface='tab'] .app-header{padding-top:max(12px,env(safe-area-inset-top))}
+  body[data-surface='tab'] main{padding-inline:20px;padding-bottom:max(16px,env(safe-area-inset-bottom))}
+}

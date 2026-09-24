@@ -83,10 +83,26 @@ export const TradeSchema = z.object({
    * (SPEC §3b), snapshotted at match.
    */
   escrowAddress: QuantusAddressSchema,
+  /** `escrowAddress` as a 0x-prefixed 32-byte id, the form a wallet sends QTC to. */
+  escrowAccountId: z
+    .string()
+    .regex(/^0x[0-9a-f]{64}$/)
+    .optional(),
   /** Custodial wallet of the buyer: where `buyerReceives` is released to. */
   buyerQuantusAddress: QuantusAddressSchema,
-  /** Custodial wallet of the seller: the lock leaves it, a refund returns to it. */
+  /** Seller wallet the lock leaves and a refund returns to. */
   sellerPayoutAddress: QuantusAddressSchema,
+  /**
+   * `seller`: the seller sends the lock from `sellerPayoutAddress` (their own wallet) and reports
+   * it. `platform`: the lock is sent for them.
+   */
+  lockBy: z.enum(['seller', 'platform']),
+  /**
+   * While awaiting a seller-sent lock or recovering one after cancellation: `none` reported yet,
+   * the last report is `verifying`, or it was `rejected`. Else null. A cancelled trade only accepts
+   * reports of existing transfers for refund; it never asks the seller to send again.
+   */
+  lockReport: z.enum(['none', 'verifying', 'rejected']).nullable(),
   sellerEvmAddress: EvmAddressSchema,
   buyerEvmAddress: EvmAddressSchema,
   evmFromBlock: z.number().int().min(0),
@@ -170,9 +186,11 @@ export const TradeLogTypeSchema = z.enum([
   'CUSTODY_TRANSFER_SENT',
   'PAYMENT_SUBMITTED',
   'PAYMENT_ISSUE',
+  /** The seller reported the transfer that locks the QTC (`data.txHash`). */
+  'LOCK_SUBMITTED',
+  'LATE_LOCK_VERIFIED',
   // Written by the browser-escrow design only; kept so old audit rows still parse.
   'ESCROW_KEY_SET',
-  'LOCK_SUBMITTED',
   'REFUND_SUBMITTED',
 ]);
 export type TradeLogType = z.infer<typeof TradeLogTypeSchema>;
@@ -199,4 +217,8 @@ export type TradeEventsResponse = z.infer<typeof TradeEventsResponseSchema>;
 
 /** `POST /trades/:id/payment-submitted` — hint only. */
 export const PaymentSubmittedRequestSchema = z.object({ txHash: TxHashSchema });
+
+/** `POST /trades/:id/lock`: the seller sent the lock from their own wallet. */
+export const SellerLockRequestSchema = z.object({ txHash: TxHashSchema });
+export type SellerLockRequest = z.infer<typeof SellerLockRequestSchema>;
 export type PaymentSubmittedRequest = z.infer<typeof PaymentSubmittedRequestSchema>;

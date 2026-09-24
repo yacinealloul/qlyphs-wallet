@@ -533,8 +533,8 @@
             <div id="words-file-note" class="backup-note" hidden>
               <svg><use href="#i-shield" /></svg>
               <p>
-                A downloaded file is easy to copy and sync. Move it to a USB drive or print it, then
-                delete it from this computer, its trash and any cloud folder.
+                This file can be copied or synced. Print it or move it to a USB drive, then delete
+                it from this device, its trash and cloud folders.
               </p>
             </div>
           </div>
@@ -635,7 +635,7 @@
           <ol id="tx-result-steps" class="tx-steps" data-step="0" aria-label="Progress">
             <li>Sent</li>
             <li>In a block</li>
-            <li>Finalized</li>
+            <li>Confirmed</li>
           </ol>
           <p id="tx-result-detail" class="tx-result-detail">Signing and sending to the network</p>
           <button id="tx-result-hash" class="pill tx-result-hash" type="button" hidden>
@@ -657,7 +657,7 @@
           </div>
           <div class="balance">
             <div class="balance-label">
-              Available balance
+              Balance
               <button
                 id="hide-balance"
                 class="icon tiny"
@@ -671,11 +671,6 @@
             <!-- One fixed-height line under the balance: notes cross-fade, layout never moves. -->
             <div class="balance-note">
               <p id="reserved" class="note muted"></p>
-              <p id="incoming" class="note incoming" aria-live="polite">
-                <svg class="incoming-spinner" viewBox="0 0 16 16" aria-hidden="true">
-                  <circle cx="8" cy="8" r="6" pathLength="100" /></svg
-                ><span id="incoming-text"></span>
-              </p>
               <p id="balance-delta" class="note balance-delta" aria-live="polite"></p>
             </div>
           </div>

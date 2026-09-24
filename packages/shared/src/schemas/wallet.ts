@@ -75,6 +75,11 @@ export const WalletSchema = z.object({
   withdrawDailyLimit: PlanckStringSchema,
   /** Already used of the limit in the last 24 h. */
   withdrawnLast24h: PlanckStringSchema,
+  /**
+   * Present when the user sells from their own wallet (a connected Qlyphs Wallet) instead of this
+   * one: that wallet, and what a new sell offer or take may still use out of it.
+   */
+  sellFrom: z.object({ address: QuantusAddressSchema, spendable: PlanckStringSchema }).optional(),
 });
 export type Wallet = z.infer<typeof WalletSchema>;
 

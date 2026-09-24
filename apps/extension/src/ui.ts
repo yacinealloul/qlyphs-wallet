@@ -188,6 +188,8 @@ let resetOwner: string | undefined;
 let resetBackupSaved = false;
 let renamedOwner: string | undefined;
 let balanceRequest = 0;
+let pendingBalanceRequests = 0;
+let lastBalanceRefresh = 0;
 let renderRequest = 0;
 let watchOnly = false,
   privateBalances = false,
@@ -962,15 +964,13 @@ function renderHistory(txs: Tx[]) {
   $('history').replaceChildren(
     ...(txs.length
       ? txs.map((tx) => {
-          const failed =
-            tx.nativeSuccess === false ||
-            !!tx.verdict?.startsWith('rejected') ||
-            ['expired', 'cancelled-before-broadcast'].includes(tx.status);
-          const final = tx.status === 'finalized' && tx.nativeSuccess === true && !failed;
+          const stage = txStage(tx);
+          const failed = stage === 'failed';
+          const confirmed = stage === 'confirmed' || stage === 'finalized';
           const status = failed
             ? 'Failed'
-            : final
-              ? 'Finalized'
+            : confirmed
+              ? 'Confirmed'
               : tx.status === 'broadcast-uncertain'
                 ? 'Check status'
                 : tx.status.replaceAll('-', ' ');
@@ -993,12 +993,12 @@ function renderHistory(txs: Tx[]) {
             requestAnimationFrame(() => pop(heading.querySelector('.status-chip')));
           seenActivity.set(tx.hash, status);
           heading.append(
-            icon(failed ? 'close' : final ? 'check' : 'clock'),
+            icon(failed ? 'close' : confirmed ? 'check' : 'clock'),
             info,
             node(
               'span',
               status.charAt(0).toUpperCase() + status.slice(1),
-              'status-chip' + (failed ? ' error' : final ? ' success' : ''),
+              'status-chip' + (failed ? ' error' : confirmed ? ' success' : ''),
             ),
           );
           const detail = node('div', '', 'activity-detail');
@@ -1186,7 +1186,7 @@ function paintTracker(txs: Tx[]) {
   const text = stageText(stage, tx, finalityOf(tx));
   const amount = tx ? transferLine(tx) : awaitingAmount;
   const verb =
-    stage === 'finalized' || stage === 'included'
+    stage === 'finalized' || stage === 'confirmed' || stage === 'included'
       ? 'Sent'
       : stage === 'failed'
         ? 'Not sent:'
@@ -1206,15 +1206,19 @@ function paintTracker(txs: Tx[]) {
 }
 // While something is in flight, follow it closely; the background journal stays the source of truth.
 setInterval(() => {
-  if (busy || document.hidden) return;
+  if (busy || document.hidden || pendingBalanceRequests) return;
   if (requestId) {
-    if (sent?.hash && !stageDone(sent.stage))
+    // Confirmation completes the visible receipt, but keep observing its actual chain status.
+    if (sent?.hash && sent.stage !== 'finalized' && sent.stage !== 'failed') {
+      pendingBalanceRequests++;
       void call<BalanceView>('balances')
         .then((v) => {
           recordChain(v.chain);
           followResult(v.transactions);
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => pendingBalanceRequests--);
+    }
     return;
   }
   if (awaitingSince && awaitingRequest)
@@ -1231,10 +1235,18 @@ setInterval(() => {
         });
       })
       .catch(() => undefined);
-  // Follow in-flight transfers and locked incoming funds until they settle.
-  if ((!$('tx-tracker').hidden || $('incoming').dataset.visible) && state?.account)
-    void balances(true).catch(() => undefined);
+  refreshBalances();
 }, 4000);
+function refreshBalances(force = false) {
+  if (busy || document.hidden || requestId || !state?.account || pendingBalanceRequests) return;
+  const settling =
+    !$('tx-tracker').hidden || (balanceView && incomingBalance(balanceView.balance) > 0n);
+  // Discover deposits even when nothing is pending, and never supersede a slow refresh on each tick.
+  if (force || settling || Date.now() - lastBalanceRefresh >= 15_000)
+    void balances(true).catch(() => undefined);
+}
+window.addEventListener('focus', () => refreshBalances(true));
+document.addEventListener('visibilitychange', () => refreshBalances(true));
 const assetAmounts = new Map<string, string>();
 function assetRow(
   symbol: string,
@@ -1280,33 +1292,14 @@ function balanceDelta(delta: bigint) {
   clearTimeout(deltaTimer);
   deltaTimer = setTimeout(() => delete element.dataset.visible, 4200);
 }
-function paintIncoming(incoming: bigint) {
-  const element = $('incoming');
-  if (!incoming || privateBalances) {
-    delete element.dataset.visible;
-    return;
-  }
-  const chain = chainSamples[chainSamples.length - 1];
-  const rate = blockRate(chainSamples);
-  const wait =
-    chain && rate
-      ? ` · spendable in ~${Math.max(1, Math.ceil((chain.head - chain.finalized) / rate / 60_000))} min`
-      : ' · locked until final';
-  $('incoming-text').textContent = `+${formatBalance(incoming, 12)} QTC arriving${wait}`;
-  element.title =
-    'Received in a block that is not final yet. It is locked and joins your balance once the network finalizes it.';
-  element.dataset.visible = 'true';
-}
 function paintBalances() {
   const v = balanceView;
   if (!v) return;
-  // Headline = settled funds. Anything received in a block that is not final yet is
-  // shown apart, locked, and joins the balance (with its +received cue) once final.
-  const incoming = incomingBalance(v.balance);
-  const free = BigInt(v.balance.free) - incoming;
+  // Show the current on-chain balance, including successful receipts before finality.
+  // The send form separately uses spendableBalance and retains the finality checks.
+  const free = BigInt(v.balance.free);
   const amount = formatBalance(free, 12);
   const exactAmount = formatUnits(free, 12);
-  paintIncoming(incoming);
   const before = lastBalance && lastBalance.owner === v.owner ? lastBalance.free : undefined;
   lastBalance = { owner: v.owner, free };
   $('balance').replaceChildren(
@@ -1427,6 +1420,8 @@ async function balances(quiet = false) {
   if (!quiet) document.body.dataset.refreshing = 'true';
   const owner = state.account.owner,
     request = ++balanceRequest;
+  pendingBalanceRequests++;
+  lastBalanceRefresh = Date.now();
   try {
     const v = await call<BalanceView>('balances');
     if (
@@ -1459,6 +1454,7 @@ async function balances(quiet = false) {
       );
     throw e;
   } finally {
+    pendingBalanceRequests--;
     if (request === balanceRequest) document.body.dataset.refreshing = 'false';
   }
 }
@@ -1467,7 +1463,7 @@ function resetAccountView() {
   assetAmounts.clear();
   lastBalance = undefined;
   delete $('balance-delta').dataset.visible;
-  delete $('incoming').dataset.visible;
+  lastBalanceRefresh = 0;
   $<HTMLDialogElement>('reset-dialog').close();
   balanceRequest++;
   balanceView = undefined;

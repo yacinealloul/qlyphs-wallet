@@ -118,6 +118,15 @@ hosted explorer configured for the same indexer.
 
 Send checks exclude frozen QTC and reserve estimated fees and the minimum account balance before opening a review and again before signing. A token transfer also requires QTC for fees. Creating a token, minting, inscribing and buying also reserve the Qlyphs fee (and, for a purchase, the price), and the review shows it as a separate **Qlyphs fee** row included in the estimated total. Pending or uncertain submissions continue to block another send until finality or verified expiry; the wallet displays the reason rather than silently retrying.
 
+The headline QTC balance reflects the current on-chain balance, including receipts before finality.
+The send form separately reports spendable funds and those still waiting for finality. Visible wallets
+refresh automatically (about 16 seconds when idle, 4 seconds while settling) and when the page regains
+focus; slow refreshes are allowed to finish. Successful inclusion is displayed as **Confirmed** in the
+receipt and Activity. Actual finality remains in the background journal and governs send checks.
+
+Recovery confirmation keeps the acknowledgement, file-storage advice and both actions visible in
+short popups and sidebars.
+
 ## Connection and use
 
 Open the native app and click **Connect wallet**. If Qlyphs is locked, the extension first shows only the unlock screen; the site review appears after unlocking. Unlocking never approves a connection. **Cancel request** dismisses a locked request without granting access. Approve the site in the extension-owned window. Create/mint tokens, inscribe Quarks and arrange bilateral sales in the web app; inspect and approve each operation in the extension. The popup also sends QTC and transfers displayed tokens. The site receives an account and submitted transaction hash, never a phrase or password. The original embedded web wallet remains available separately.

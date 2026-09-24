@@ -1,5 +1,6 @@
 /** Presentation of a transaction's lifecycle. Pure: status comes only from the background history. */
-export type TxStage = 'signing' | 'approval' | 'sent' | 'included' | 'finalized' | 'failed';
+export type TxStage =
+  'signing' | 'approval' | 'sent' | 'included' | 'confirmed' | 'finalized' | 'failed';
 export interface ProgressTx {
   hash: string;
   label: string;
@@ -18,17 +19,19 @@ export function txStage(tx: ProgressTx): TxStage {
   )
     return 'failed';
   if (tx.status === 'finalized') return tx.nativeSuccess === true ? 'finalized' : 'included';
-  if (tx.status === 'included') return 'included';
+  if (tx.status === 'included') return tx.nativeSuccess === true ? 'confirmed' : 'included';
   return 'sent';
 }
 
-/** Completed steps out of Sent → In a block → Finalized. */
+/** Display completion is successful inclusion; the journal still tracks actual finality. */
 export function stageStep(stage: TxStage): number {
-  return { signing: 0, approval: 0, sent: 1, included: 2, finalized: 3, failed: 0 }[stage];
+  return { signing: 0, approval: 0, sent: 1, included: 2, confirmed: 3, finalized: 3, failed: 0 }[
+    stage
+  ];
 }
 
 export function stageDone(stage: TxStage): boolean {
-  return stage === 'finalized' || stage === 'failed';
+  return stage === 'confirmed' || stage === 'finalized' || stage === 'failed';
 }
 
 export interface ChainHeights {
@@ -103,6 +106,8 @@ export function stageText(
               ? `Final in ${formatEta(final.eta)} · ${final.remaining} blocks`
               : `Final after ${final.remaining} more blocks`,
       };
+    case 'confirmed':
+      return { title: 'Transaction confirmed', detail: 'Included successfully on Quantus' };
     case 'finalized':
       return { title: 'Transaction confirmed', detail: 'Final on Quantus' };
     case 'failed':

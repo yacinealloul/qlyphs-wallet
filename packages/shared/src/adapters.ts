@@ -133,8 +133,24 @@ export interface CustodyAdapter {
     secret: string;
     legs: readonly CustodyLeg[];
   }): Promise<CustodyTransferResult>;
-  /** Restart safety: was the extrinsic with this hash included, and where? */
-  findTransfer(txHash: string, fromBlock: number): Promise<{ block: number } | null>;
+  /**
+   * Was the extrinsic with this hash included and successful, where, and which balance transfers
+   * did it make? Restart safety for transfers signed here, and the proof for ones signed elsewhere.
+   */
+  findTransfer(txHash: string, fromBlock: number): Promise<FoundTransfer | null>;
+}
+
+/** One `Balances.Transfer` an extrinsic made. */
+export interface BalanceTransfer {
+  from: string;
+  to: string;
+  /** Planck. */
+  amount: bigint;
+}
+
+export interface FoundTransfer {
+  block: number;
+  transfers: BalanceTransfer[];
 }
 
 export interface UsdcTransfer {

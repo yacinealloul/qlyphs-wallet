@@ -1,29 +1,4 @@
-/**
- * Trade state machine (SPEC §3b, custodial escrow). Pure: no clock, no I/O. The API applies
- * `transition` inside a DB transaction with a row lock and writes one `trade_events` audit row per
- * accepted event.
- *
- *   AWAITING_LOCK --LOCK_VERIFIED--> AWAITING_PAYMENT --PAYMENT_CONFIRMED--> RELEASING --RELEASE_EXECUTED--> COMPLETED
- *   AWAITING_LOCK --LOCK_FAILED--> CANCELLED     (seller wallet cannot fund the escrow: offer restored, seller warned)
- *   AWAITING_LOCK --LOCK_TIMEOUT--> CANCELLED    (the platform could not move the QTC in time: nobody is warned)
- *   AWAITING_PAYMENT --PAY_TIMEOUT--> REFUNDING --REFUND_EXECUTED--> REFUNDED
- *   AWAITING_PAYMENT | RELEASING | REFUNDING --DISPUTE_OPENED--> DISPUTED --DISPUTE_RESOLVED--> RELEASING | REFUNDING
- *   REFUNDING --PAYMENT_CONFIRMED--> DISPUTED   (never refund a paid trade automatically)
- *   DISPUTED --PAYMENT_CONFIRMED--> DISPUTED    (recorded for the admin)
- *   AWAITING_PAYMENT | RELEASING | REFUNDING --ESCROW_INVALIDATED--> DISPUTED   (escrow accounting or a custody transfer needs a human)
- *
- * Brokered trades (`kind: 'broker'`, the platform's market maker selling QTC it buys on SafeTrade
- * just in time) are born AWAITING_PAYMENT, with nothing locked:
- *
- *   AWAITING_PAYMENT --PAYMENT_CONFIRMED--> AWAITING_DELIVERY --DELIVERY_LOCKED--> RELEASING --> COMPLETED
- *   AWAITING_PAYMENT --PAY_TIMEOUT--> CANCELLED              (nothing was locked, nothing to refund)
- *   AWAITING_DELIVERY --DELIVERY_TIMEOUT--> DISPUTED        (paid, not delivered in time: a human decides)
- *   DISPUTED (escrow empty) --DISPUTE_RESOLVED--> AWAITING_DELIVERY (deliver) | REFUNDED (USDC returned by hand)
- *
- * The lock is automatic: the worker moves `amount` from the seller's custodial wallet into the
- * platform escrow wallet. The browser-escrow states and events of the first design keep their
- * names, so rows written before §3b still parse.
- */
+/** Pure trade state transitions and effects; callers supply context and execute accepted effects. */
 
 export const TRADE_STATES = [
   'AWAITING_LOCK',
@@ -43,6 +18,7 @@ export type TerminalTradeState = (typeof TERMINAL_TRADE_STATES)[number];
 
 export const TRADE_EVENT_TYPES = [
   'LOCK_VERIFIED',
+  'LATE_LOCK_VERIFIED',
   'LOCK_FAILED',
   'LOCK_TIMEOUT',
   'PAYMENT_CONFIRMED',
@@ -63,12 +39,13 @@ export type DisputeOpener = 'seller' | 'buyer' | 'admin' | 'system';
 export type TradeEvent =
   /** The seller wallet → escrow wallet transfer has `QUANTUS_CONFIRMATIONS`. */
   | { type: 'LOCK_VERIFIED' }
+  /** A seller-sent lock confirmed after cancellation: return it without reopening the sale. */
+  | { type: 'LATE_LOCK_VERIFIED' }
   /** The seller's wallet cannot fund the lock (emptied after the match). Nothing moved. */
   | { type: 'LOCK_FAILED'; reason: string }
   /**
-   * `lockDeadline` passed with nothing sent. `nothingDeposited` is kept for rows of the first
-   * design (the seller never funded the escrow); the custodial worker passes `false`, because a
-   * lock that was not even attempted is the platform's failure, not the seller's.
+   * `lockDeadline` passed with no recorded transfer. `nothingDeposited`: the lock was the seller's to send, so the seller is warned. `false` when the lock was to be sent for them: a
+   * lock that was not even attempted is not the seller's failure.
    */
   | { type: 'LOCK_TIMEOUT'; nothingDeposited: boolean }
   /**
@@ -100,6 +77,10 @@ export type TradeKind = (typeof TRADE_KINDS)[number];
 export interface TradeContext {
   kind: TradeKind;
   escrowFunded: boolean;
+  /** Only seller-sent locks may be recovered after cancellation. */
+  recoverableLock?: boolean;
+  /** Cancellation already returned this fill to the offer. */
+  offerRestored?: boolean;
 }
 
 const P2P: TradeContext = { kind: 'p2p', escrowFunded: true };
@@ -173,6 +154,11 @@ function next(state: TradeState, event: TradeEvent, ctx: TradeContext): Accepted
     case 'LOCK_VERIFIED':
       return state === 'AWAITING_LOCK'
         ? { state: 'AWAITING_PAYMENT', effects: [{ type: 'SET_PAY_DEADLINE' }] }
+        : null;
+
+    case 'LATE_LOCK_VERIFIED':
+      return state === 'CANCELLED' && !broker && ctx.recoverableLock && ctx.escrowFunded
+        ? { state: 'REFUNDING', effects: [{ type: 'START_REFUND' }] }
         : null;
 
     case 'LOCK_FAILED':
@@ -266,7 +252,10 @@ function next(state: TradeState, event: TradeEvent, ctx: TradeContext): Accepted
 
     case 'REFUND_EXECUTED':
       return state === 'REFUNDING'
-        ? { state: 'REFUNDED', effects: [{ type: 'RESTORE_OFFER_REMAINING' }] }
+        ? {
+            state: 'REFUNDED',
+            effects: ctx.offerRestored ? [] : [{ type: 'RESTORE_OFFER_REMAINING' }],
+          }
         : null;
 
     case 'DISPUTE_OPENED':
@@ -306,7 +295,13 @@ export function transition(
   event: TradeEvent,
   ctx: TradeContext = P2P,
 ): TransitionResult {
-  if (isTerminal(state)) {
+  const recovery =
+    state === 'CANCELLED' &&
+    event.type === 'LATE_LOCK_VERIFIED' &&
+    ctx.kind === 'p2p' &&
+    ctx.recoverableLock &&
+    ctx.escrowFunded;
+  if (isTerminal(state) && !recovery) {
     return {
       ok: false,
       error: {
@@ -375,7 +370,7 @@ export const TRANSITION_TABLE: Readonly<
     DISPUTE_RESOLVED: ['RELEASING', 'REFUNDING', 'AWAITING_DELIVERY', 'REFUNDED'],
   },
   COMPLETED: {},
-  CANCELLED: {},
+  CANCELLED: { LATE_LOCK_VERIFIED: ['REFUNDING'] },
   REFUNDED: {},
 };
 

@@ -49,6 +49,18 @@ interface DappPort {
   message: ReturnType<typeof event<(m: unknown) => void>>;
   disconnect: ReturnType<typeof event<() => void>>;
 }
+/** The wallet is served at a clean `/`, but the shared background checks senders against the
+ * extension's page name: `/ui.html?surface=tab` for the wallet tab, `/ui.html?request=<id>` for a
+ * confirmation. Pages report their real address; the hub names them for the background here, once.
+ * Any other page (`/connect`) keeps its address and so gets no wallet-page rights. */
+function extensionPageURL(url: string): string {
+  const u = new URL(url);
+  if (u.origin !== ORIGIN || u.pathname !== '/') return u.href;
+  const request = u.searchParams.get('request');
+  u.pathname = '/ui.html';
+  u.search = request === null ? '?surface=tab' : '?request=' + encodeURIComponent(request);
+  return u.href;
+}
 const hosts = new Map<string, Host>();
 const docs = new Map<MessagePort, { sender: Sender; windowId: number }>();
 const dappPorts = new Map<string, DappPort>();
@@ -227,7 +239,7 @@ function accept(port: MessagePort | undefined) {
         overlays: new Set(),
         ports: new Set(),
         seen: ++seen,
-        sender: { id: RUNTIME_ID, url: m.url, origin: ORIGIN, frameId: 0, documentId: m.documentId, tab: { id: tabId, windowId } },
+        sender: { id: RUNTIME_ID, url: extensionPageURL(m.url), origin: ORIGIN, frameId: 0, documentId: m.documentId, tab: { id: tabId, windowId } },
       };
       hosts.set(id, host);
       port.postMessage({ type: 'welcome', tabId, windowId } satisfies HubToHost);
@@ -267,7 +279,7 @@ function accept(port: MessagePort | undefined) {
         h.overlays.add(m.windowId);
         attachDoc(
           doc,
-          { id: RUNTIME_ID, url: c.url, origin: ORIGIN, frameId: 0, documentId: m.documentId, tab: { id: h.tabId, windowId: m.windowId } },
+          { id: RUNTIME_ID, url: extensionPageURL(c.url), origin: ORIGIN, frameId: 0, documentId: m.documentId, tab: { id: h.tabId, windowId: m.windowId } },
           m.windowId,
         );
         c.ok({ id: m.windowId });

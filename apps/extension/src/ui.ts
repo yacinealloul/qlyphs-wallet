@@ -654,7 +654,7 @@ function recoveryStep(page: number, focus = true) {
   $('recovery-description').textContent = intro
     ? 'Your recovery words restore your wallet if you lose access to this device.'
     : confirm
-      ? 'Keep your words offline. Qlyphs cannot recover them for you.'
+      ? 'Keep your words offline. Qlyphs cannot recover them for you: lose them and the wallet is gone.'
       : 'Write these down in order. Keep them private.';
   $('recovery-warning').hidden = !intro;
   $('phrase').hidden = intro || confirm;
@@ -662,6 +662,8 @@ function recoveryStep(page: number, focus = true) {
     (word as HTMLElement).hidden = intro || confirm || Math.floor(i / 12) !== recoveryPage - 1;
   });
   $('recovery-check').hidden = !confirm;
+  $('words-file-note').hidden = !confirm;
+  $('download-words').hidden = !confirm;
   $('acknowledge').hidden = !confirm;
   $('recovery-next').hidden = confirm;
   $('recovery-next').replaceChildren(
@@ -2165,17 +2167,36 @@ document.addEventListener('click', hideSoon);
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') hideSoon();
 });
-function downloadBackup(v: unknown, owner: string) {
-  const blob = new Blob([JSON.stringify(v, null, 2)], {
-      type: 'application/json',
-    }),
-    url = URL.createObjectURL(blob),
+function saveFile(content: string, type: string, name: string) {
+  const url = URL.createObjectURL(new Blob([content], { type })),
     a = document.createElement('a');
   a.href = url;
-  a.download = `qlyphs-wallet-${owner.slice(2, 10)}.json`;
+  a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+function downloadBackup(v: unknown, owner: string) {
+  saveFile(JSON.stringify(v, null, 2), 'application/json', `qlyphs-wallet-${owner.slice(2, 10)}.json`);
+}
+// Plain-text copy of the words on screen, at the user's request. The file is as sensitive as the
+// words themselves, so it carries its own warning and the UI asks to move it offline.
+click('download-words', async () => {
+  const words = [...$('phrase').children].map((word) => word.textContent!.trim());
+  const account = state?.account;
+  const text = [
+    'Qlyphs Wallet recovery words',
+    ...(account ? [`Address: ${account.address}`] : []),
+    '',
+    ...words.map((word, i) => `${String(i + 1).padStart(2, ' ')}. ${word}`),
+    '',
+    'Anyone with these words controls this wallet and its funds.',
+    'Keep this file offline: move it to a USB drive or print it, then delete it from',
+    'this computer, its trash and any cloud folder. Qlyphs never asks for these words.',
+    '',
+  ].join('\n');
+  saveFile(text, 'text/plain', `qlyphs-recovery-words${account ? '-' + account.owner.slice(2, 10) : ''}.txt`);
+  message('Words downloaded. Move the file offline, then delete it from this computer.', false, true);
+});
 click('export', async () => {
   const owner = state!.account!.owner;
   const v = await call('backup');

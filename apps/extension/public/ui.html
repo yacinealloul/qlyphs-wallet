@@ -520,8 +520,8 @@
             <div id="recovery-warning" class="backup-note">
               <svg><use href="#i-shield" /></svg>
               <p>
-                Write them down somewhere private.<br />Anyone with these words can access your
-                funds. Never share them with a site or support.
+                Write them down on paper, in order, and keep them offline.<br />Anyone with these
+                words can access your funds. Never share them with a site or support.
               </p>
             </div>
             <div id="phrase" class="secret" aria-label="Recovery phrase" hidden></div>
@@ -530,10 +530,20 @@
                 >I saved all my words, in order, somewhere private.</span
               ></label
             >
+            <div id="words-file-note" class="backup-note" hidden>
+              <svg><use href="#i-shield" /></svg>
+              <p>
+                A downloaded file is easy to copy and sync. Move it to a USB drive or print it, then
+                delete it from this computer, its trash and any cloud folder.
+              </p>
+            </div>
           </div>
           <div class="wizard-actions">
             <button id="recovery-next" class="wide" type="button">
               Show recovery words <svg><use href="#i-up" /></svg>
+            </button>
+            <button id="download-words" class="text-button wide" type="button" hidden>
+              Download words (.txt)
             </button>
             <button id="acknowledge" class="wide" disabled hidden>
               Open wallet <svg><use href="#i-check" /></svg>

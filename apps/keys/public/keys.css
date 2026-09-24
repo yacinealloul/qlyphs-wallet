@@ -19,3 +19,8 @@ body[data-surface='tab'] main{padding-inline:24px;padding-bottom:20px}
   body[data-surface='tab'] .app-header{padding-top:max(12px,env(safe-area-inset-top))}
   body[data-surface='tab'] main{padding-inline:20px;padding-bottom:max(16px,env(safe-area-inset-bottom))}
 }
+/* Shown over the page when an older wallet worker is still running (host.ts). */
+.keys-outdated{position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;background:var(--bg);color:var(--text);text-align:center;font-family:Geist,system-ui,sans-serif}
+.keys-outdated h1{margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em}
+.keys-outdated p{margin:0;max-width:36ch;font-size:14px;line-height:1.5;color:var(--muted)}
+.keys-outdated button{margin-top:8px;padding:10px 20px;border:0;border-radius:999px;background:var(--flare);color:#111;font:inherit;font-weight:600;cursor:pointer}

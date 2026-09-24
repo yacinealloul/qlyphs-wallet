@@ -10,7 +10,7 @@ export type HostToHub =
   | { type: 'port-close'; portId: number }
   | { type: 'bye' };
 export type HubToHost =
-  | { type: 'welcome'; tabId: number; windowId: number }
+  | { type: 'welcome'; tabId: number; windowId: number; version: string }
   | { type: 'reply'; callId: number; value: unknown }
   | { type: 'open'; windowId: number; url: string }
   | { type: 'remove'; windowId: number }

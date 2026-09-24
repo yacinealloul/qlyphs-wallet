@@ -30,6 +30,24 @@ const hold = (name: string, options: LockOptions = {}) =>
     });
   });
 
+function outdated() {
+  const notice = document.createElement('div');
+  notice.className = 'keys-outdated';
+  notice.setAttribute('role', 'alert');
+  const title = document.createElement('h1');
+  title.textContent = 'Qlyphs Keys was updated';
+  const text = document.createElement('p');
+  text.textContent =
+    'Another Qlyphs Keys tab or window is still running the previous version. Close every other Qlyphs Keys tab and window, then reload this page. Your wallet stays saved on this device.';
+  const reload = document.createElement('button');
+  reload.type = 'button';
+  reload.textContent = 'Reload';
+  reload.addEventListener('click', () => location.reload());
+  notice.append(title, text, reload);
+  document.body.append(notice);
+  reload.focus();
+}
+
 export async function boot(): Promise<Host> {
   if (window.top !== window) throw Error('Qlyphs Keys cannot run inside another page.');
   if (!navigator.locks) throw Error('This browser is not supported.');
@@ -95,13 +113,13 @@ export async function boot(): Promise<Host> {
     send({ type: 'attach', windowId, documentId: crypto.randomUUID() }, [ch.port1]);
     overlayChanged();
   };
-  const welcome = new Promise<void>((ready) => {
+  const welcome = new Promise<unknown>((ready) => {
     port.onmessage = (e: MessageEvent) => {
       const m = e.data as HubToHost;
       if (!m || typeof m !== 'object') return;
       switch (m.type) {
         case 'welcome':
-          ready();
+          ready(m.version);
           return;
         case 'reply':
           calls.get(m.callId)?.(m.value);
@@ -127,7 +145,13 @@ export async function boot(): Promise<Host> {
   });
   port.start();
   send({ type: 'hello', hostId, lock, url: location.href, documentId: crypto.randomUUID() });
-  await welcome;
+  // The wallet worker is shared by every keys page and lives until the last one closes, so after a
+  // release an open tab can keep an older worker running. Talking to it would fail on every call;
+  // say what to do instead. Never stop the older worker from here: it may be mid-submission.
+  if ((await welcome) !== QLYPHS_VERSION) {
+    outdated();
+    throw Error('Qlyphs Keys was updated; close its other tabs and windows');
+  }
   window.addEventListener('message', (event) => {
     if (event.origin !== location.origin || !event.data || typeof event.data !== 'object') return;
     const { channel, type } = event.data as { channel?: unknown; type?: unknown };

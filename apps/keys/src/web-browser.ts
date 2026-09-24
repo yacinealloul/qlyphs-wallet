@@ -242,7 +242,7 @@ function accept(port: MessagePort | undefined) {
         sender: { id: RUNTIME_ID, url: extensionPageURL(m.url), origin: ORIGIN, frameId: 0, documentId: m.documentId, tab: { id: tabId, windowId } },
       };
       hosts.set(id, host);
-      port.postMessage({ type: 'welcome', tabId, windowId } satisfies HubToHost);
+      port.postMessage({ type: 'welcome', tabId, windowId, version: QLYPHS_VERSION } satisfies HubToHost);
       // Granted only once the page holding it has gone, however it went.
       void navigator.locks.request(m.lock, () => gone(id));
       return;

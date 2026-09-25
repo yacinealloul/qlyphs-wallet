@@ -14,10 +14,11 @@ import {
   DEFAULT_PAY_TIMEOUT_MIN,
   DEFAULT_QUANTUS_CONFIRMATIONS,
   DEFAULT_QUANTUS_EXPLORER_URL,
-  DEFAULT_USDC_ADDRESS,
+  DEFAULT_USDT_ADDRESS,
   DEFAULT_WITHDRAW_DAILY_LIMIT_PLANCK,
   API_PORT,
 } from './constants';
+import { usdt0Chain } from './usdt0';
 
 const DEV_SESSION_SECRET = 'dev-only-session-secret-change-me-0000000000';
 /** Mock mode only: 32 bytes, hex. Wallet secrets sealed under it protect play money. */
@@ -96,8 +97,17 @@ const EnvSchema = z.object({
   USDC_ADDRESS: z
     .string()
     .regex(/^0x[0-9a-fA-F]{40}$/, 'must be a 20-byte hex address')
-    .default(DEFAULT_USDC_ADDRESS),
+    .default(DEFAULT_USDT_ADDRESS),
+  USDT_ADDRESS: z
+    .string()
+    .regex(/^0x[0-9a-fA-F]{40}$/, 'must be a 20-byte hex address')
+    .optional(),
   EVM_EXPLORER_URL: origin.default(DEFAULT_EVM_EXPLORER_URL),
+  /**
+   * More USDT0 networks a swap can be paid on, on top of `EVM_CHAIN_ID`: `chainId=rpcUrl` pairs,
+   * comma separated (`10=https://…,137=https://…`). With `EVM_MODE=mock`, bare chain ids.
+   */
+  SWAP_CHAINS: z.string().optional(),
 
   QUANTUS_CONFIRMATIONS: intString(0, 10_000).default(DEFAULT_QUANTUS_CONFIRMATIONS),
   EVM_CONFIRMATIONS: intString(0, 10_000).default(DEFAULT_EVM_CONFIRMATIONS),
@@ -188,6 +198,55 @@ const EnvSchema = z.object({
 
 type ParsedEnv = z.infer<typeof EnvSchema>;
 
+export interface SwapChainConfig {
+  chainId: number;
+  /** Null only in mock mode. */
+  rpcUrl: string | null;
+  tokenAddress: string;
+  explorerUrl: string;
+  confirmations: number;
+}
+
+/** `SWAP_CHAINS` → the networks it names. Unknown ids, duplicates and missing URLs are issues. */
+export function parseSwapChains(
+  raw: string | undefined,
+  options: { evmMode: 'mock' | 'viem'; primaryChainId: number },
+): { chains: SwapChainConfig[]; issues: string[] } {
+  const chains: SwapChainConfig[] = [];
+  const issues: string[] = [];
+  for (const entry of (raw ?? '').split(',').map((e) => e.trim()).filter((e) => e !== '')) {
+    const at = entry.indexOf('=');
+    const idText = (at === -1 ? entry : entry.slice(0, at)).trim();
+    const url = at === -1 ? null : entry.slice(at + 1).trim();
+    const chainId = /^\d{1,10}$/.test(idText) ? Number(idText) : NaN;
+    const known = Number.isNaN(chainId) ? undefined : usdt0Chain(chainId);
+    if (!known) {
+      issues.push(`SWAP_CHAINS: ${idText} is not a supported USDT0 network`);
+      continue;
+    }
+    if (chainId === options.primaryChainId || chains.some((c) => c.chainId === chainId)) {
+      issues.push(`SWAP_CHAINS: ${chainId} is listed twice (EVM_CHAIN_ID counts)`);
+      continue;
+    }
+    if (url !== null && !/^https?:\/\/[^\s,]+$/.test(url)) {
+      issues.push(`SWAP_CHAINS: the RPC URL of ${chainId} must be an http(s) URL`);
+      continue;
+    }
+    if (url === null && options.evmMode === 'viem') {
+      issues.push(`SWAP_CHAINS: ${chainId} needs an RPC URL (${chainId}=https://…)`);
+      continue;
+    }
+    chains.push({
+      chainId,
+      rpcUrl: url === null ? null : url.replace(/\/+$/, ''),
+      tokenAddress: known.contract,
+      explorerUrl: known.explorerUrl,
+      confirmations: known.confirmations,
+    });
+  }
+  return { chains, issues };
+}
+
 export interface AppConfig {
   nodeEnv: ParsedEnv['NODE_ENV'];
   isProduction: boolean;
@@ -215,6 +274,8 @@ export interface AppConfig {
     explorerUrl: string;
     confirmations: number;
   };
+  /** Extra networks a swap can be paid on (never the `evm` one), each with its own watcher. */
+  swapChains: SwapChainConfig[];
   feeBps: number;
   lockTimeoutMin: number;
   payTimeoutMin: number;
@@ -319,6 +380,12 @@ function crossFieldIssues(env: ParsedEnv): string[] {
   if (env.EVM_MODE === 'viem' && !env.EVM_RPC_URL) {
     issues.push('EVM_RPC_URL: required when EVM_MODE=viem');
   }
+  issues.push(
+    ...parseSwapChains(env.SWAP_CHAINS, {
+      evmMode: env.EVM_MODE,
+      primaryChainId: env.EVM_CHAIN_ID,
+    }).issues,
+  );
   if (env.MAIL_TRANSPORT === 'resend') {
     if (!env.RESEND_API_KEY) issues.push('RESEND_API_KEY: required when MAIL_TRANSPORT=resend');
     if (!env.MAIL_FROM) issues.push('MAIL_FROM: required when MAIL_TRANSPORT=resend');
@@ -425,10 +492,14 @@ export function safeParseConfig(env: Record<string, string | undefined>): Config
       evm: {
         rpcUrl: e.EVM_RPC_URL ?? null,
         chainId: e.EVM_CHAIN_ID,
-        usdcAddress: e.USDC_ADDRESS,
+        usdcAddress: e.USDT_ADDRESS ?? e.USDC_ADDRESS,
         explorerUrl: e.EVM_EXPLORER_URL,
         confirmations: e.EVM_CONFIRMATIONS,
       },
+      swapChains: parseSwapChains(e.SWAP_CHAINS, {
+        evmMode: e.EVM_MODE,
+        primaryChainId: e.EVM_CHAIN_ID,
+      }).chains,
       feeBps: e.FEE_BPS,
       lockTimeoutMin: e.LOCK_TIMEOUT_MIN,
       payTimeoutMin: e.PAY_TIMEOUT_MIN,

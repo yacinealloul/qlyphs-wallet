@@ -17,7 +17,7 @@ export const PRICE_TICK_MICRO = 10_000n;
 
 export const BPS_DENOMINATOR = 10_000n;
 
-export const DEFAULT_FEE_BPS = 200;
+export const DEFAULT_FEE_BPS = 0;
 export const DEFAULT_MIN_FILL_PLANCK = PLANCK_PER_QTC;
 /**
  * 1.25 QTC, sent on top of the amount to the per-trade escrow key to cover chain fees and burns.
@@ -47,6 +47,8 @@ export const DEFAULT_EVM_CONFIRMATIONS = 12;
 
 export const DEFAULT_EVM_CHAIN_ID = 42161;
 export const DEFAULT_USDC_ADDRESS = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831';
+/** USDT (USDT0) on Arbitrum One, with six decimal places. */
+export const DEFAULT_USDT_ADDRESS = '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9';
 export const DEFAULT_QUANTUS_EXPLORER_URL = 'https://explorer.quantus.com';
 export const DEFAULT_EVM_EXPLORER_URL = 'https://arbiscan.io';
 

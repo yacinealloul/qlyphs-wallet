@@ -8,5 +8,6 @@ export * from './trade';
 export * from './dispute';
 export * from './admin';
 export * from './market';
+export * from './swap';
 export * from './stream';
 export * from './dev';

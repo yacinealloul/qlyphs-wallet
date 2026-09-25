@@ -9,6 +9,19 @@ import {
   QuantusAddressSchema,
 } from './primitives';
 
+/** A network a swap can be paid on. The first listed is the one peer-to-peer trades settle on. */
+export const PaymentChainSchema = z.object({
+  chainId: z.number().int().positive(),
+  name: z.string(),
+  tokenAddress: EvmAddressSchema,
+  explorerUrl: z.url(),
+  nativeSymbol: z.string(),
+  /** Public endpoint for a wallet to add the network; null when none is known. */
+  rpcUrl: z.url().nullable(),
+  confirmations: z.number().int().min(0),
+});
+export type PaymentChain = z.infer<typeof PaymentChainSchema>;
+
 /** `GET /config` — everything the frontends need to mirror server rules. */
 export const PublicConfigSchema = z.object({
   feeBps: z.number().int().min(0),
@@ -29,6 +42,9 @@ export const PublicConfigSchema = z.object({
   evmExplorerUrl: z.url(),
   evmChainId: z.number().int().positive(),
   usdcAddress: EvmAddressSchema,
+  quoteCurrency: z.enum(['USDC', 'USDT']).optional(),
+  /** Networks a swap can be paid on, `evmChainId` first. */
+  paymentChains: z.array(PaymentChainSchema).default([]),
   /** The platform escrow hot wallet and the fee account, published on /transparency. */
   escrowAddress: QuantusAddressSchema,
   feeAccount: QuantusAddressSchema,

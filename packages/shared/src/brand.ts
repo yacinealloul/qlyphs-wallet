@@ -32,7 +32,7 @@ export const PRODUCTS = {
   otc: {
     name: `${BRAND.name} OTC`,
     suffix: 'OTC',
-    description: 'Buy and sell QTC directly against USDC.',
+    description: 'Buy and sell QTC directly against USDT.',
     domain: `otc.${BRAND.domain}`,
   },
 } as const satisfies Record<string, BrandProduct>;

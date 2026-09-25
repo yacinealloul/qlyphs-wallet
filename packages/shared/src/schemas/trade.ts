@@ -68,6 +68,10 @@ export const TradeSchema = z.object({
   amount: PlanckStringSchema,
   price: PriceStringSchema,
   quoteTotal: MicroStringSchema,
+  quoteCurrency: z.enum(['USDC', 'USDT']).optional(),
+  paymentTokenAddress: EvmAddressSchema.optional(),
+  /** EVM network the payment is sent on (`PublicConfig.paymentChains`). */
+  paymentChainId: z.number().int().positive().optional(),
   fee: PlanckStringSchema,
   /** `amount - fee` */
   buyerReceives: PlanckStringSchema,
@@ -152,6 +156,7 @@ export const PublicTradeSchema = z.object({
   amount: PlanckStringSchema,
   price: PriceStringSchema,
   quoteTotal: MicroStringSchema,
+  quoteCurrency: z.enum(['USDC', 'USDT']).optional(),
   completedAt: IsoDateSchema,
   paymentTxHash: TxHashSchema.nullable(),
   releaseTxHash: TxHashSchema.nullable(),

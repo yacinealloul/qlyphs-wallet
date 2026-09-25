@@ -27,6 +27,7 @@ export const OfferSchema = z.object({
   id: IdSchema,
   side: OfferSideSchema,
   price: PriceStringSchema,
+  quoteCurrency: z.enum(['USDC', 'USDT']).optional(),
   amount: PlanckStringSchema,
   remaining: PlanckStringSchema,
   minFill: PlanckStringSchema,
@@ -49,6 +50,7 @@ export type MyOffer = z.infer<typeof MyOfferSchema>;
 /** `POST /offers` — `minFill` defaults to MIN_FILL_PLANCK and must be ≤ amount. */
 export const CreateOfferRequestSchema = z
   .object({
+    quoteCurrency: z.literal('USDT'),
     side: OfferSideSchema,
     price: PriceStringSchema,
     amount: PositivePlanckStringSchema,
@@ -95,6 +97,7 @@ export type MyOfferListResponse = z.infer<typeof MyOfferListResponseSchema>;
  * selling needs the amount available in their custodial wallet (SPEC §3b).
  */
 export const TakeOfferRequestSchema = z.object({
+  quoteCurrency: z.literal('USDT'),
   amount: PositivePlanckStringSchema,
   confirmDeviation: z.boolean().optional(),
   privateToken: TokenSchema.optional(),

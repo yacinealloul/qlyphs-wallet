@@ -171,7 +171,12 @@ export interface UsdcTransfer {
 export interface EvmAdapter {
   head(): Promise<number>;
   isValidAddress(a: string): boolean;
-  findUsdcTransfers(p: { from?: string; to: string; fromBlock: number }): Promise<UsdcTransfer[]>;
+  findUsdcTransfers(p: {
+    from?: string;
+    to: string;
+    fromBlock: number;
+    tokenAddress?: string;
+  }): Promise<UsdcTransfer[]>;
   explorerUrl(kind: 'tx' | 'address', id: string): string;
 }
 

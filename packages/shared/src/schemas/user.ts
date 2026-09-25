@@ -40,6 +40,8 @@ export const MeSchema = PublicUserSchema.extend({
   canTrade: z.boolean(),
   /** Trading needs a connected Qlyphs Wallet (`receiveAddress`); it cannot be switched back to the custodial one. */
   walletRequired: z.boolean().default(false),
+  /** The platform's market maker account: it sells through the swap and cannot buy from it. */
+  marketMaker: z.boolean().default(false),
   role: UserRoleSchema,
   /**
    * The user's custodial QTC wallet (SPEC §3b), created at sign-up and held by the platform.

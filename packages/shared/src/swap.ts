@@ -72,3 +72,19 @@ export function maxSwapBudget(asks: readonly SwapAsk[]): bigint {
   }
   return max;
 }
+
+/** Smallest USDT budget a single swap can spend, micro: the cheapest minimum fill. 0 when none. */
+export function minSwapBudget(asks: readonly SwapAsk[]): bigint {
+  let min = 0n;
+  for (const ask of asks) {
+    const smallest = ask.minFill < ask.remaining ? ask.minFill : ask.remaining;
+    // Rounded up to the cent, so the budget shown buys at least the minimum.
+    const exact = (smallest * ask.price + PLANCK_PER_QTC - 1n) / PLANCK_PER_QTC;
+    const total = ((exact + CENT - 1n) / CENT) * CENT;
+    if (total > 0n && (min === 0n || total < min)) min = total;
+  }
+  return min;
+}
+
+/** Rounds micro down to whole cents, the precision a swap budget is typed in. */
+export const floorToCent = (micro: bigint): bigint => micro - (micro % CENT);

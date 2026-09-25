@@ -1,28 +1,32 @@
-/** Swap: buy QTC for USDT in one step, against the cheapest open ask (`/swap`). */
+/** Swap: buy QTC for USDT in one step, priced from the exchange book (`/swap`). */
 import { z } from 'zod';
-import { IdSchema, PlanckStringSchema, PositivePlanckStringSchema, PriceStringSchema } from './primitives';
+import { PlanckStringSchema, PositivePlanckStringSchema, PriceStringSchema } from './primitives';
 
-/** One open ask a swap can fill. */
-export const SwapLevelSchema = z.object({
-  offerId: IdSchema,
+/** One exchange ask level the swap price walks through. */
+export const SwapBookLevelSchema = z.object({
   price: PriceStringSchema,
-  remaining: PlanckStringSchema,
-  minFill: PlanckStringSchema,
+  amount: PositivePlanckStringSchema,
 });
-export type SwapLevel = z.infer<typeof SwapLevelSchema>;
+export type SwapBookLevelView = z.infer<typeof SwapBookLevelSchema>;
 
-/** `GET /swap/quote`. `available: false` → `reason` says why no swap can start right now. */
+/**
+ * `GET /swap/quote`. The price of an amount is its average fill cost across `asks` plus
+ * `markupBps` (see `swapPrice`). `available: false` → `reason` says why no swap can start now.
+ */
 export const SwapQuoteResponseSchema = z.object({
   available: z.boolean(),
   reason: z.string().nullable(),
-  /** Cheapest first. */
-  levels: z.array(SwapLevelSchema),
+  markupBps: z.number().int().min(0),
+  minAmount: PlanckStringSchema,
+  maxAmount: PlanckStringSchema,
+  /** Best first. */
+  asks: z.array(SwapBookLevelSchema),
 });
 export type SwapQuoteResponse = z.infer<typeof SwapQuoteResponseSchema>;
 
 /**
- * `POST /swap`: buy `amount` planck at no more than `maxPrice` (the quote the buyer saw). The
- * server picks the cheapest ask that can take the whole amount.
+ * `POST /swap`: buy `amount` planck at no more than `maxPrice`, the price the buyer saw. The
+ * server prices the amount again from the latest book and refuses when it rose above.
  */
 export const SwapRequestSchema = z.object({
   amount: PositivePlanckStringSchema,

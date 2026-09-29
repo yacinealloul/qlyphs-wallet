@@ -1,8 +1,8 @@
-# Development wallet architecture and threat model
+# Wallet architecture and threat model
 
 ## Reused protocol, not a new chain
 
-The extension imports the active QLYP-v1 command parser, canonical encoders, Quantus address/extrinsic codec and pinned WASM glue from this repository. Earlier JSON experiments and the separate QTC/USDC OTC application are not the active native asset protocol. It changes neither token consensus rules nor the QLYP-v1 fee rules (deploy 1 QTC, mint 0.01 QTC, 1% sale fee paid by the buyer, all to the fixed Qlyphs fee account; see `docs/native/SPEC.md`). `sendQtc` is a native transfer, not a token purchase. Purchases require finalized bilateral reservations and canonical batch settlement.
+The extension imports the active QLYP-v1 command parser, canonical encoders, Quantus address/extrinsic codec and pinned WASM glue from this repository. It changes neither token consensus rules nor the QLYP-v1 fee rules (deploy 1 QTC, mint 0.01 QTC, inscription 0.1 QTC, 1% sale fee paid by the buyer, all to the fixed Qlyphs fee account). `sendQtc` is a native transfer, not a token purchase. Purchases require finalized bilateral reservations and canonical batch settlement.
 
 ## Privilege boundaries
 
@@ -24,37 +24,44 @@ The legacy scheme remains ML-DSA-87 at `m/44'/189189'/0'/0'/0'`. Changing SDK, g
 
 Unlocking establishes an absolute five-minute deadline. Privileged signing checks the deadline and session epoch at actual use; alarms are only a supplementary cleanup mechanism. Dapp traffic cannot extend the deadline. A terminated background starts locked and never reconstructs an unlocked session from storage. Pending approvals are memory-only and are invalidated on loss of their context.
 
-A mutex serializes transaction preparation/signing for the account. Saved unresolved transactions prevent the next nonce. The wallet computes and persists the signed transaction hash, intent, nonce and mortal validity boundary before network submission. It then persists an uncertain-broadcast state before touching the submission API. Neither restart nor a lost response automatically signs or pays again. Public history reconciles against the configured service, which independently persists hashes before broadcasting. A never-broadcast record can be cancelled safely; an ambiguous record needs observed finality or validity expiry before a new operation. This conservative design favors blocking over duplicate payment.
+A mutex serializes transaction preparation/signing for the account. Saved unresolved transactions prevent the next nonce. The wallet computes and persists the signed transaction hash, intent, nonce and mortal validity boundary before network submission. It then persists an uncertain-broadcast state before touching the submission API. Neither restart nor a lost response automatically signs or pays again. Public history reconciles against the configured service. The wallet does not treat a lost reply as proof of submission failure. A never-broadcast record can be cancelled safely; an ambiguous record needs observed finality or validity expiry before a new operation. This conservative design favors blocking over duplicate payment.
 
 ## Explicit trust model
 
-The extension still trusts the configured development full node for consensus and runtime execution.
+The extension still trusts the configured full node for consensus and runtime execution.
 Displayed balances, metadata, history and fee estimates rely on the configured API and remain
 unsigned/provisional. It does not run an independent full node, indexer or light client inside the browser.
 
-Canonical **purchases** additionally require QPA1 agreement from every compiled witness operator.
+Development **purchases** additionally require QPA1 agreement from every compiled witness operator.
 The extension background owns the random challenge, fixed aggregation endpoint, public trust pins
 and IndexedDB high-water cursor. It verifies signatures, network/activation/rules/runtime, bounded
 lifetime, same finalized snapshot, rollback/equivocation rules and exact purchase bytes before
 using the signing key. After waiting it repeats cancellation, account, permission, session epoch
 and deadline checks. Trust pins are not accepted from page messages, storage or API responses.
-A package without a compiled policy refuses purchases. Missing/divergent/invalid attestations never
+A development package without a compiled policy refuses purchases. Mainnet and switchable builds reject a policy and disable purchases pending mainnet witness validation. Missing/divergent/invalid attestations never
 fall back to the unsigned view or an ordinary QTC payment.
 
-Witnesses are attestations by configured operators, not a proof of honest computation. The primary
-and Python witness remain dependent on their full nodes, metadata and shared rules; collusion or
+Witnesses are attestations by configured operators, not a proof of honest computation. Witness operators remain dependent on their full nodes, metadata and rules; collusion or
 compromise of all trusted signers can lie. An authentic state digest alone is not a consensus state
 proof. A malicious privileged extension update can replace this entire verification boundary.
-See `docs/native/pq/README.md` for key distribution/rotation, expiry, operational dependencies and
-the fact that PQ signatures do not make store/update authentication post-quantum.
+Trust-key rotation and revocation require a reviewed rebuilt wallet and trusted update distribution.
+Old clients do not learn new revocations automatically. Post-quantum transaction and witness signatures
+do not make browser-store or update authentication post-quantum.
 
-Fee quotes are estimates tied to the runtime and review block, not a signed fee cap. The confirmation separates native network fee, non-refundable native charge, refundable native deposit and the Qlyphs fee. The Qlyphs fee is the QLYP-v1 protocol fee (1 QTC per deploy, 0.01 QTC per mint, 1% of the price on a purchase), a protocol constant rather than a configurable value: it is paid only to the fixed Qlyphs fee account defined in `docs/native/SPEC.md`, a call carrying any other fee amount or recipient is invalid under the protocol, and the wallet recomputes the fee itself and refuses to sign when the service quotes a different amount.
+Fee quotes are estimates tied to the runtime and review block, not a signed fee cap. The confirmation separates native network fee, non-refundable native charge, refundable native deposit and the Qlyphs fee. The Qlyphs fee is the QLYP-v1 protocol fee (1 QTC per deploy, 0.01 QTC per mint, 0.1 QTC per inscription, 1% of the price on a purchase, rounded up), a protocol constant rather than a configurable value: it is paid only to the fixed Qlyphs fee account defined in the shared protocol code, a call carrying any other fee amount or recipient is invalid under the protocol, and the wallet recomputes the fee itself and refuses to sign when the service quotes a different amount.
 
-## Attack coverage and outstanding gates
+## Validation and remaining limits
 
-The unit suite covers vault authentication/migration, lock deadlines/epochs, malformed provider inputs, origin/frame checks, one-time bounded requests, canonical native transfer encoding and exact extension-origin allowlists. The installed-browser harness exercises real generated/restored identities, native transfers, token lifecycle, bilateral settlement, selected hostile RPC/API mutations, explicit refusal, lost submission responses and extension update/relock. These are **test definitions**: consult CI artifacts for which checks actually ran and passed.
+Build and typecheck instructions are in [the extension README](../../apps/extension/README.md#local-verification).
+The public export contains wallet code and reproducible release tooling; the separate installed-browser
+integration environment is not included. A passing build does not establish transaction-lifecycle,
+hostile-browser, hardware-authenticator or operating-system notification coverage. Those claims need
+results for the exact release, browser, SDK and network tested.
 
-Remaining public-release work includes independent security review, a complete hostile-browser matrix (including account/tab races and suspension at every await), reproducible dependency/build provenance and licensing review, robust long-history/asset pagination, pinned non-loopback testnet configuration with explicit trust onboarding, and store review. No mainnet release, bridge, AMM or generic signer is authorized here. Multi-account support is limited to the development extension and the pinned Quantus HD derivation. An externally controlled indexer remains a material trust assumption even after these engineering gates.
+Independent security review and store review remain outstanding. Long history and asset pagination
+have explicit limits. The configured node and unsigned data service remain material trust assumptions.
+No arbitrary-byte signer, bridge or AMM interface is exposed. Derived accounts use the pinned Quantus
+HD derivation on the selected network.
 
 ## Primary references checked during implementation
 
@@ -67,7 +74,12 @@ Remaining public-release work includes independent security review, a complete h
 
 Documentation can evolve; runtime behavior is ultimately checked against the exact packaged browser/SDK and CI evidence, not a version label alone.
 
-## Derived development accounts
+## Derived accounts and network separation
+
+A switchable build keeps separate network manifests, grants and histories. Its explicit carry action
+can reuse development phrases and addresses on mainnet, re-encrypting vault metadata for that genesis.
+Network separation does not imply independent private keys; phrase compromise affects every network
+where that phrase is reused.
 
 An independent wallet owns a v1/v2 authenticated root vault at index 0. Derived account records share that encrypted vault and carry a public index and identity; they never store raw private keys. The background verifies the derived identity against the decrypted phrase on password/passkey unlock and same-wallet account switching. It signs with the selected account index and checks the parsed signer against the reviewed owner before broadcast. All account selections invalidate pending approvals and rotate the session epoch without extending the common unlock deadline. Both same-wallet and cross-wallet selections retain installation access, and both are blocked during signing. Dapps cannot derive accounts or extend an unlock session.
 
@@ -82,7 +94,7 @@ A legacy installation links a separately protected root only after verifying its
 ## Multi-application developer provider
 
 The additive provider protocol keeps `version: 1` compatibility and advertises v2
-capabilities. Allowed loopback origins are compiled separately from fixed RPC/API/PQ
+capabilities. Allowed origins (loopback HTTP on development, public HTTPS on mainnet) are compiled separately from fixed RPC/API/PQ
 pins; being injected does not grant account access. The controller projects each live
 document's state independently, only after durable approval and only for the unlocked
 selected account. It never sends account names/counts, hidden identities, derivation
@@ -96,4 +108,4 @@ state only. Abort cancellation targets an existing request on the same document 
 never implies rollback after signing starts. Existing persisted uncertain-broadcast
 nonce blocking and all HD, backup, session and PQ boundaries remain in force. SDK
 public reads remain unsigned and cannot configure extension RPCs. See
-[the contract](PROVIDER.md) and executed validation vs gates.
+[the provider contract](PROVIDER.md).

@@ -6,14 +6,7 @@
   "engines": {
     "node": ">=24"
   },
-  "scripts": {
-    "build": "node build.mjs",
-    "start": "node dist/server.mjs",
-    "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test test/*.test.mjs",
-    "e2e": "playwright test",
-    "lint": "eslint src web"
-  },
+  "scripts": {},
   "dependencies": {
     "@noble/hashes": "2.4.0",
     "@noble/post-quantum": "0.7.1",

@@ -5,8 +5,8 @@ signs Qlyphs operations (Quarks, fair-mint tokens, bilateral token sales) for th
 **0.5.1**. A Qlyphs product, not an official Quantus wallet. QLYP-v1 assets are an indexed token overlay,
 not runtime-native `pallet_assets` balances; the bilateral market is not an AMM or open-taker order book.
 
-Status: mainnet builds are prepared but mainnet is not activated yet, and purchases stay refused on
-mainnet until the post-quantum witnesses are validated there ([MAINNET.md](../../docs/MAINNET.md)).
+Mainnet builds require reviewed network pins. Purchases stay refused on mainnet until the
+post-quantum witnesses are validated there ([MAINNET.md](../../docs/MAINNET.md)).
 The development build is for local chains only; do not import an account holding real funds into it.
 
 **Fees.** QLYP-v1 charges a Qlyphs fee, paid to the Qlyphs fee account in the same signed extrinsic:
@@ -40,20 +40,20 @@ or restore an encrypted backup. New transactions require an unlocked wallet and 
 Node 24, pnpm **10.23.0**, Python 3 for ZIP packaging, and the locked workspace
 (`pnpm install --frozen-lockfile`), from the repository root.
 
-**Mainnet.** Requires a pins file (genesis, runtime, activation block; format and how to obtain it in
-[MAINNET.md](../../docs/MAINNET.md), checked with `node apps/native/scripts/mainnet-compat.mjs <rpc>`).
-Without pins the mainnet build fails.
+**Mainnet.** Requires reviewed genesis, runtime and activation pins. The repository contains
+[`deploy/mainnet/pins.json`](../../deploy/mainnet/pins.json); see [mainnet notes](../../docs/MAINNET.md)
+for their meaning and limits. Without an explicit pins file the mainnet build fails.
 
 ```sh
-QLYPHS_EXTENSION_NETWORK=mainnet QLYPHS_EXTENSION_PINS=/absolute/path/pins.json \
+QLYPHS_EXTENSION_NETWORK=mainnet QLYPHS_EXTENSION_PINS="$PWD/deploy/mainnet/pins.json" \
   pnpm --filter @qotc/wallet-extension build
 ```
 
 The mainnet build accepts only https origins and defaults to app/API `https://app.qlyphs.com`, RPC
 `https://rpc1-mainnet.quantus.com` and explorer `https://qlyphs.com/explorer`. Its manifest is named "Qlyphs
 Wallet", carries no development `key` (the store assigns the Chrome ID) and uses the Firefox ID
-`wallet@qlyphs.com`. The indexer must list the resulting extension origin in `NATIVE_EXTENSION_ORIGINS`.
-Purchases also need `NATIVE_PQ_POLICY_FILE` (see Post-quantum purchase verification).
+`wallet@qlyphs.com`. The configured service must accept the installed extension’s exact origin.
+Mainnet and switchable builds reject `NATIVE_PQ_POLICY_FILE`; purchases remain disabled.
 
 **Development** (no env): the default build, unchanged. It accepts only loopback HTTP origins, defaults
 to API `http://127.0.0.1:4400`, RPC `http://127.0.0.1:9955` and explorer `http://localhost:3000/explorer`,
@@ -86,35 +86,28 @@ QLYPHS_EXTENSION_NETWORK=switchable QLYPHS_EXTENSION_PINS=/path/to/pins.json \
 
 It opens on mainnet. The user switches in Settings, on the welcome screen, or next to a connection
 error; no page can switch it. Switching locks the wallet, disconnects every site and loads the
-other network's wallet: each network keeps its own (`wallet` for development, `wallet:mainnet`),
-so nothing created or signed for one is ever used on the other.
+other network's stored wallet (`wallet` for development, `wallet:mainnet` for mainnet). Network
+pins, site grants and transaction history remain separate.
+
+The explicit **Use development wallet** action on mainnet can reuse development recovery phrases
+and derived addresses. It re-encrypts available wallets for the mainnet genesis; development grants,
+passkeys and history are not copied. Linked wallets, or wallets opened by the supplied password, can
+be carried; inaccessible wallets stay on development. This separates network state, not key identity.
+A recovery phrase exposed during development is equally exposed if reused for mainnet funds.
 
 ## Development network
 
-```sh
-pnpm --filter @qotc/native-app build
-pnpm --filter @qotc/wallet-extension build
-# Terminal 1: the verified official Quantus v1.0.1 development binary
-quantus-node --dev --base-path /tmp/qlyphs-wallet-chain --rpc-port 9955
-# Terminal 2:
-cd apps/native
-NATIVE_DEV_FAUCET=1 \
-NATIVE_EXTENSION_ORIGINS=chrome-extension://hnbehkbocninnepohoponooocfhdjjpf \
-node dist/server.mjs
-```
+Development builds expect compatible local services at the compiled API and RPC origins. The
+public wallet export contains the wallet and its shared client modules; it does not contain a runnable
+indexer server, faucet or hosted explorer. Building the wallet does not start those services.
+The exact dapp origin and port must match the build's allowlist. The configured service must also
+accept the installed extension's origin; Firefox assigns a profile-specific `moz-extension://` origin.
 
-Visit **http://127.0.0.1:4400**, not `localhost`. The public application origin, build-time dapp origin
-and API Host must agree exactly. Do not expose the unauthenticated development node RPC publicly.
-Use the dapp's developer faucet for test QTC. Native QTC balances are queried from the node through the
-API; token balances are interpreted by the configured indexer.
+Explorer links (menu, activity and notifications) open the configured web explorer, with the selected
+network in the URL. Set `QLYPHS_EXTENSION_EXPLORER` when building if the default development explorer
+is not available. Do not expose an unauthenticated development RPC publicly.
 
-Firefox assigns a profile-specific `moz-extension://<UUID>` origin. Take it from the add-on's
-**Manifest URL** on the debugging page, add it to the server's comma-separated
-`NATIVE_EXTENSION_ORIGINS` and restart only the API process, keeping its database and chain.
-
-Explorer links (menu, activity and notifications) open the web explorer in `apps/web`; run
-`pnpm --filter @qotc/web dev` alongside the native service, or set `QLYPHS_EXTENSION_EXPLORER` to a
-hosted explorer configured for the same indexer.
+## Balances and transaction review
 
 Send checks exclude frozen QTC and reserve estimated fees and the minimum account balance before opening a review and again before signing. A token transfer also requires QTC for fees. Creating a token, minting, inscribing and buying also reserve the Qlyphs fee (and, for a purchase, the price), and the review shows it as a separate **Qlyphs fee** row included in the estimated total. Pending or uncertain submissions continue to block another send until finality or verified expiry; the wallet displays the reason rather than silently retrying.
 
@@ -129,32 +122,32 @@ short popups and sidebars.
 
 ## Connection and use
 
-Open the native app and click **Connect wallet**. If Qlyphs is locked, the extension first shows only the unlock screen; the site review appears after unlocking. Unlocking never approves a connection. **Cancel request** dismisses a locked request without granting access. Approve the site in the extension-owned window. Create/mint tokens, inscribe Quarks and arrange bilateral sales in the web app; inspect and approve each operation in the extension. The popup also sends QTC and transfers displayed tokens. The site receives an account and submitted transaction hash, never a phrase or password. The original embedded web wallet remains available separately.
+Open an allowed dapp and click **Connect wallet**. If Qlyphs is locked, the extension first shows only the unlock screen; the site review appears after unlocking. Unlocking never approves a connection. **Cancel request** dismisses a locked request without granting access. Approve the site in the extension-owned window. Create/mint tokens, inscribe Quarks and arrange bilateral sales in the web app; inspect and approve each operation in the extension. The popup also sends QTC and transfers displayed tokens. The site receives an account and submitted transaction hash, never a phrase or password. Qlyphs Keys provides a separate web-wallet connection using the same provider contract.
 
 A five-minute absolute unlock deadline is not extended by dapp messages. Browser suspension or a background restart locks the wallet sooner. After a restart, reopen the wallet, unlock explicitly, reload/reconnect the dapp if necessary, and inspect saved history. Unknown submission outcomes must not be treated as failures or retried with a new nonce.
 
 ## Post-quantum purchase verification
 
-Purchases require the same QPA1 attestations in the extension's privileged background
-that the embedded web wallet requires in its signing worker. The extension creates its own
-challenge, verifies both configured ML-DSA-87 witnesses against compiled public pins, checks
-the finalized reservation against the exact purchase bytes, and persists its authenticated
-high-water checkpoint in extension-owned IndexedDB. A dapp cannot supply keys, an endpoint,
-a policy or a `verified` flag. The signing session is checked again after asynchronous verification.
+Development purchases require QPA1 attestations in the extension's privileged background, or in
+the wallet worker for Qlyphs Keys. The wallet creates its own challenge, verifies both configured
+ML-DSA-87 witnesses against compiled public pins, checks the finalized reservation against the exact
+purchase bytes, and persists its authenticated high-water checkpoint in wallet-owned IndexedDB.
+A dapp cannot supply keys, an endpoint, a policy or a `verified` flag. The signing session is checked
+again after asynchronous verification.
 
-**Builds without a witness policy cannot buy tokens** (development and mainnet alike). Native QTC sends,
-creation, mint, inscription and ordinary transfers remain available.
-No insecure purchase fallback is supplied. Configure the two private witness services using
-`docs/native/pq/README.md`, then compile the extension with their operator-reviewed PUBLIC policy:
+**Purchases are disabled on mainnet and in switchable builds.** These builds reject a witness policy
+because mainnet witnesses have not been validated. Development builds without a policy also refuse
+purchases. QTC sends, creation, mint, inscription and ordinary transfers do not require this policy.
+
+For a development environment with compatible witness services, compile their reviewed public policy:
 
 ```sh
 NATIVE_PQ_POLICY_FILE=/absolute/path/to/public-policy.json pnpm --filter @qotc/wallet-extension build
 ```
 
-The build rejects policies for another installed rules fingerprint, runtime or activation.
-The native API must aggregate both witnesses via `NATIVE_ATTESTORS`; its exact extension-origin
-allowlist remains required. The extension fetches from its fixed API origin, not an endpoint
-suggested by the page. It does not need witness secrets or direct witness host permissions.
+The build rejects policies for another rules fingerprint, runtime or activation. The wallet fetches
+attestations from its fixed API origin, never an endpoint supplied by a dapp. Witness private keys do
+not belong in the build or the wallet. No insecure purchase fallback is supplied.
 
 API balances/history remain provisional, unsigned views. QPA1 authenticates operator claims
 and requires agreement, not a consensus proof or a guarantee against operator collusion.
@@ -170,54 +163,25 @@ An encrypted backup **and its password**, or the correct mnemonic on the same ne
 
 For a single locked wallet, **Forgot password? Start fresh** downloads its encrypted backup and requires acknowledgement before resetting. The reset archives the full encrypted wallet state in local extension storage and starts creation of a different wallet; it does not recover the old password, identity or assets. A failed archive/reset write keeps the active wallet unchanged. The action is unavailable while unlocked, from confirmation windows, during transaction approval, or when multiple wallets are saved.
 
-## Tests and evidence
+## Local verification
 
 ```sh
 pnpm --filter @qotc/wallet-extension typecheck
-pnpm --filter @qotc/wallet-extension test
-# Start a distinct real dev node on 9956; the harness owns loopback ports 4400/4410/9955.
-pnpm --filter @qotc/wallet-extension exec playwright install --with-deps chromium firefox
-EXTENSION_BROWSER=chrome NATIVE_TEST_RPC_URL=http://127.0.0.1:9956 \
-pnpm --filter @qotc/wallet-extension e2e
-# Firefox also requires geckodriver on PATH. CI pins version and archive checksum.
-EXTENSION_BROWSER=firefox NATIVE_TEST_RPC_URL=http://127.0.0.1:9956 \
-pnpm --filter @qotc/wallet-extension e2e
-```
-
-To run the full lifecycle without occupying an existing development app’s ports, start a separate real Quantus dev node on 19956 and use an isolated build:
-
-```sh
-QLYPHS_EXTENSION_OUTPUT=dist-e2e \
-QLYPHS_EXTENSION_API=http://127.0.0.1:14400 \
-QLYPHS_EXTENSION_RPC=http://127.0.0.1:19955 \
+pnpm --filter @qlyphs/keys typecheck
 pnpm --filter @qotc/wallet-extension build
-WALLET_BUILD_DIR=dist-e2e WALLET_TEST_BACKEND=http://127.0.0.1:14410 \
-EXTENSION_BROWSER=chrome NATIVE_TEST_RPC_URL=http://127.0.0.1:19956 \
-pnpm --filter @qotc/wallet-extension e2e
 ```
 
-This preserves the default `dist` build and the app on 4400/9955. The harness creates its own temporary database, profiles and test wallets. The node remains owned by the caller. Finality is checked against the real chain and can take several minutes per operation.
-
-The Chromium test loads the actual extension in persistent profiles. Firefox uses geckodriver's native temporary-add-on installation endpoint with real Firefox, not a web page pretending to be an extension. The harness provisions ephemeral ML-DSA witness keys and rebuilds the tested extension with
-public pins, starting the TypeScript and Python witnesses. By default both read the same real
-development node; `NATIVE_SECOND_RPC_URL` can point the second witness at a separately started,
-peered node. This is not a claim that two organizations operate them. The separate PQ workflow
-also tests two actual full nodes. All accounts are ephemeral test accounts. Fault-injection proxies alter selected responses only in negative tests; successful transfers and purchases use the real node and indexer.
-
-The installed extension must reject altered signatures/states, replayed challenges, missing
-witnesses and a validly signed conflicting witness before any submission. It also locks during
-a delayed attestation to check the asynchronous signing race. Then the same reservation is
-purchased on the actual chain and the real seller/token balances are checked.
-
-CI records the exact source commit, typecheck/test/build logs, repeated build hashes, browser version, node version, public transaction hashes/heights and sanitized screenshots. A build or a unit test is not evidence that the installed-browser lifecycle passed. Read each job's result and `results.json`; no successful end-to-end claim is implied by this README.
+The public export includes the code needed to build and typecheck the wallets. Installed-browser
+integration tests depend on a separate development environment and are not included. A successful
+build or typecheck is not evidence of an installed-browser lifecycle test or an independent audit.
 
 ## Boundaries
 
-Up to 20 accounts across independent wallets, and one pinned network per installation. The initial popup displays at most the first 100 indexer asset records, with an explicit overflow message; use the native app for further pages. Submitted-operation history is capped at 200 records and stops new operations at capacity rather than silently removing unresolved records. The native app supplies broader chain activity.
+Up to 20 accounts across independent wallets, with separate pinned state for each compiled network. The initial popup displays at most the first 100 indexer asset records, with an explicit overflow message; use a compatible dapp for further pages. Submitted-operation history is capped at 200 records and stops new operations at capacity rather than silently removing unresolved records. A compatible explorer supplies broader chain activity.
 
-See `docs/extension/PROVIDER.md`, `docs/extension/SECURITY.md`, and `docs/extension/DISTRIBUTION.md`. There is no independent security audit yet.
+See the [provider contract](../../docs/extension/PROVIDER.md), [security model](../../docs/extension/SECURITY.md), and [distribution guide](../../docs/extension/DISTRIBUTION.md). There is no independent security audit yet.
 
-## Wallet UI and preview
+## Wallet UI
 
 The 0.4.0 layout adapts [Metamask Clone (Crypto Wallet) (Community)](https://www.figma.com/design/EF6iqylcMYhf3UFN9rfFBv/Metamask-Clone--Crypto-Wallet---Community-?node-id=6008-20): AccountInfo (`6008:5`), Tabs (`6120:1423`), unlock (`6217:4315`) and transaction request (`6218:7198`). The reference contains extension approval/unlock components; the dashboard is an adaptation for Qlyphs. Qlyphs colors, fonts, mark and existing icons are retained. No MetaMask/Ethereum branding, new UI dependency, external asset request or unsupported wallet action is introduced. Reviews use a plain transaction heading and amount, a full recipient address with Copy, exact fee estimates and an estimated QTC total for native sends. Zero-value ancillary fees, signing-account details and the raw payload use explicit disclosures; nonzero fees and deposits stay visible. No decorative trust badge is shown. Reject/Approve remain outside the internally scrolling details at every supported size.
 
@@ -227,7 +191,7 @@ Chrome opens a native side panel by default, keeping the wallet visible when swi
 
 The popup requests 360 × 600 pixels and fits the height Chrome actually provides on smaller screens. The outer shell stays fixed: each active view scrolls internally, while the header and wallet navigation remain visible. The preview also fits the browser viewport without page scrolling. Across Assets, Activity and Settings, the balance and quick actions scroll away naturally while the navigation stays pinned with a soft edge fade. All three share a viewport capped at the available panel height, so long lists remain scrollable without growing the popup or adding nested scroll areas; the expand button opens a dedicated wallet tab. It uses Qlyphs / Quantus Void & Flare colors and bundled Geist fonts. The unlock screen uses a static rounded Qlyphs emblem and a compact password form. Onboarding separates wallet choice, creation, phrase import and encrypted-backup restoration into compact screens with a fixed bottom action. Recovery starts with a privacy reminder, shows 12 numbered words per page, then asks for explicit acknowledgement. Core steps fit 360 × 498 and 360 × 600 popups without scrolling; content-only scrolling remains available for zoom and unusually short panels. Back navigation preserves drafts within a method and clears secrets when leaving it. Pointer transitions are subtle and interruptible; keyboard and reduced-motion navigation are immediate. No media, font or artwork is fetched remotely.
 
-Activity includes an **Explorer** button and per-transaction links into the bundled read-only explorer. It shows saved wallet history, accepts a transaction hash, verifies the saved network, and displays indexed status, block identifiers, signer, decoded events and the encoded call. Finalized block hashes are checked against the node. Unknown/pending transactions are never presented as confirmed; network or block verification errors hide transaction results. Explorer pages can only request public manifest/history data from the background and cannot invoke wallet operations. It reads the indexer configured at build time, not the public Quantus explorer.
+Activity includes an **Explorer** button and per-transaction links to the configured external web explorer. Transaction links include the selected network and full transaction hash. The menu opens that explorer with a network filter. These pages provide public chain information and never approve wallet requests.
 
 Transfer and receive screens use mobile-sized layouts: 44 px fields, 48 px primary actions, compact headings and a fixed bottom action. Only the form content scrolls when errors or a short viewport need extra room. Send offers one asset selector: native QTC and held assets are distinguished by their identifiers. The Swap shortcut is disabled and labelled Coming soon until an exchange flow is implemented. Asset rows preselect their token; changing assets clears the amount while preserving the recipient. The selected symbol, available balance, token decimals and exact command stay consistent through the approval screen, which shows the full asset ID for tokens and fees in QTC. An asset that disappears on refresh remains explicitly unavailable instead of silently switching to QTC. Full addresses, exact quantities and the approval step remain intact. Sidebar wallet content is capped at 420 px.
 
@@ -235,27 +199,7 @@ The wallet displays native/token balances rounded to at most three decimal place
 
 Optional passkeys unlock a separate local encrypted envelope using WebAuthn PRF, HKDF-SHA256 and AES-GCM. Setup and removal require the wallet password. Authentication runs in a dedicated extension tab so Chrome closing its toolbar popup does not interrupt the ceremony. A PRF-compatible authenticator is required; unsupported authenticators leave password access intact. The passkey envelope is bound to this wallet and extension origin, is local to this browser profile, and is excluded from encrypted backup exports. Keep the existing password and recovery material: syncing a passkey alone does not restore the wallet in another profile.
 
-Chrome desktop notifications are off by default and request the optional `notifications` permission only when enabled. They report known finalization, failure or expiry of operations submitted by this wallet, with generic text that omits addresses and balances. They do not monitor incoming transfers or send email/Google account messages. Checks run about once a minute while the browser is running. Clicking a transaction notification opens Activity; it never approves a transaction. The delivery ledger suppresses duplicates across worker restarts and skips old completed operations on enable. Because it is persisted before delivery, a crash or OS suppression can lose an alert; saved wallet history remains the source of truth.
-
-```sh
-pnpm --filter @qotc/wallet-extension build
-pnpm --filter @qotc/wallet-extension test:ui
-pnpm --filter @qotc/wallet-extension test:explorer
-pnpm --filter @qotc/wallet-extension test:popup
-pnpm --filter @qotc/wallet-extension test:sidebar
-pnpm --filter @qotc/wallet-extension preview:ui
-# Open http://127.0.0.1:4180 — explicitly labelled simulated UI, no node required.
-# Optional, against the node/indexer configured in the build:
-pnpm --filter @qotc/wallet-extension test:ui:live
-WALLET_POPUP_ACCOUNT=1 pnpm --filter @qotc/wallet-extension test:popup
-python3 apps/extension/package.py
-```
-
-`test:ui` covers browser interactions, exact amount validation, QR decoding, clipboard, keyboard/focus, recovery gating, expired approvals, stale/empty/offline states, narrow layouts, reduced motion, passkey routing, notification permission refusal and automated WCAG A/AA checks under the packaged content security policy. It writes safe fixture screenshots to `dist/ui-evidence`. It is not a chain transaction test. `test:sidebar` opens the actual native Chromium side panel through a user gesture, checks its geometry and persistence across tabs, and verifies display preferences across a background worker restart. `test:popup` opens and reopens the actual Chromium toolbar popup and checks its width, available height and internal scrolling. `test:ui:live` loads the real Chromium extension in a temporary profile, configures the local network, creates and unlocks an ephemeral wallet, reads balances and checks reception; it sends no transactions. It uses a CDP virtual authenticator to verify PRF enrollment, unlock after a worker restart, incorrect-key rejection, removal, unsupported-authenticator handling and password fallback. Physical Touch ID/security-key compatibility and OS notification delivery require device testing. The existing `e2e` suite remains the full chain lifecycle test.
-
-The preview and all fixtures live under `test/`; they are excluded from both extension bundles and ZIPs. Do not enter real recovery material into the preview. The development Chrome ZIP is written to `dist/packages/qlyphs-wallet-chrome-development.zip`.
-
-Interaction reference: [Phantom’s receive flow](https://help.phantom.com/articles/receive-tokens-in-phantom-4406393831187). Brand and motion sources: `docs/palette.css`, `packages/ui/src/components/logo.tsx`, `apps/web/src/components/brand-sculpture.tsx`, and `docs/brand/video/film.html`.
+Chrome desktop notifications are off by default and request the optional `notifications` permission only when enabled. They report known finalization, failure or expiry of operations submitted by this wallet, with generic text that omits addresses and balances. They do not monitor incoming transfers or send email/Google account messages. Checks run about once a minute while the browser is running. Clicking a transaction notification opens that transaction in the configured external web explorer; it never approves a transaction. The delivery ledger suppresses duplicates across worker restarts and skips old completed operations on enable. Because it is persisted before delivery, a crash or OS suppression can lose an alert; saved wallet history remains the source of truth.
 
 Platform references: [Chrome popup sizing](https://developer.chrome.com/docs/extensions/reference/api/action), [WebAuthn PRF](https://www.w3.org/TR/webauthn-3/#prf-extension), and [Chrome notifications](https://developer.chrome.com/docs/extensions/reference/api/notifications).
 
@@ -263,15 +207,11 @@ Display references: [MetaMask display modes](https://support.metamask.io/configu
 
 Motion: tabs update immediately with a retargetable, critically damped selection indicator and a short content fade. Keyboard navigation and reduced motion skip these animations. Balances and navigation stay fixed. Slow actions show local progress after 150 ms; fast actions avoid spinner flashes, and navigation remains available during reads. Copy confirmation appears on its control without covering balances. Native disclosures animate only where the browser supports intrinsic-size transitions.
 
-`pnpm --filter @qotc/wallet-extension test:motion` stress-tests rapid reversals, resizing, local loading, keyboard/focus, disclosure interruptions and reduced motion. Safe fixture recordings and screenshots are saved to `test-results/motion/`; they contain no wallet secrets.
+Hover states use one palette per control, enabled only for fine pointers with hover support. Asset rows keep the same padding on hover and press; selected options retain their accent. Focus and disabled states take precedence.
 
-Hover states use one palette per control, enabled only for fine pointers with hover support. Asset rows keep the same padding on hover and press; selected options retain their accent. Focus and disabled states take precedence. `pnpm --filter @qotc/wallet-extension test:hover` verifies geometry, selected/focus/disabled styles and touch behavior at narrow and popup widths, with screenshots in `test-results/hover/`.
-
-`public/controls.css` owns interaction colors for both the wallet and explorer in the `controls` cascade layer; view layouts live in the preceding `views` layer. Keep new control variants in that shared file so rest, hover and press cannot fall back to conflicting view styles. Account option menus support arrow keys, Home/End, Escape and Tab. Transfer validation occupies the existing label row, keeps invalid borders visible through focus/hover, and blocks invalid amounts or addresses before requesting a review. `pnpm --filter @qotc/wallet-extension test:interactions` audits foreground, borders, composite fills and geometry across views, plus menu keyboard behavior and validation layout; safe screenshots are saved to `test-results/interactions/`.
+`public/controls.css` owns interaction colors for both the wallet and explorer in the `controls` cascade layer; view layouts live in the preceding `views` layer. Keep new control variants in that shared file so rest, hover and press cannot fall back to conflicting view styles. Account option menus support arrow keys, Home/End, Escape and Tab. Transfer validation occupies the existing label row, keeps invalid borders visible through focus/hover, and blocks invalid amounts or addresses before requesting a review.
 
 Onboarding uses short, keyboard-accessible screens, local BIP39 validation and backup schema/network checks before password entry. A failed backup password can be retried without choosing the file again. Recovery drafts remain only in the active view and are cleared on success, leaving the method, or closing the page.
-
-`pnpm --dir apps/extension test:onboarding:live` verifies creation, failed-password retry, restoration and phrase import in disposable Chrome profiles against the local development services. It sends no transactions and never accesses the installed user wallet.
 
 ### Wallets and derived accounts
 
@@ -281,8 +221,4 @@ Legacy accounts keep index 0 and their exact address. Independent wallets keep t
 
 A multi-account JSON export contains the encrypted root vault plus public account indices, names, identities and the selected index. Restoration re-derives every identity before persisting anything. Legacy v1/v2 single-account backups remain supported. These v3 grouped backups require this extension; they are not the official mobile wallet's backup format. With just the recovery phrase, import the wallet and use **Add account** in order to recreate its previous addresses; names and site permissions are not recovered from a phrase. Back up each independent wallet separately. The public derivation metadata can be edited by someone with file access, so it is always verified against the decrypted phrase; it grants no signing authority.
 
-`pnpm --dir apps/extension test:accounts:live` checks legacy migration, independent-wallet creation/import, renaming, common unlock and separate backup passwords, one-time legacy linking, history/site isolation, duplicate rejection, stale UI requests and worker restart. `pnpm --dir apps/extension test:accounts:hd` checks same-phrase derivation against the official SDK, password reuse, same-wallet switching, restart, failed storage writes, tampered identity rejection, grouped backup restoration and phrase recovery. Both use disposable Chrome profiles and send no transactions. Unit tests additionally sign offline for several derivation indices.
-
 The normal unlock screen contains the welcome title and password form, with no account selector. The first saved wallet’s password becomes the installation password. Existing wallets with that password link automatically; wallets with different passwords require their old password once before common access is enabled. Failed linking writes can be retried without replacing an existing password vault. Newly added wallets are linked while the installation is unlocked. Password-protected backups retain their original passwords and remain independently portable; exporting a wallet does not export installation links. Keep each wallet’s backup password with its recovery records. Locking, expiry and worker restart close access to every wallet. Existing passkeys on the first wallet become installation passkeys; enroll an installation passkey from Settings to replace a passkey previously attached only to another wallet.
-
-`pnpm --dir apps/extension test:connection:live` verifies sequential unlock/review, rejection of locked approvals, explicit connection consent and cancellation in a disposable Chrome profile. It sends no transactions.

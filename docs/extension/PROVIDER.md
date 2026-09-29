@@ -1,8 +1,8 @@
 # Qlyphs provider: v1 compatibility, additive protocol v2
 
-`window.qlyphs` is a Qlyphs-owned development interface, not an official Quantus API
+`window.qlyphs` is a Qlyphs-owned interface, not an official Quantus API
 or an established wallet standard. The immutable property is injected only into
-compiled allowed loopback origins and top-level documents. Private browser-owned
+compiled allowed origins and top-level documents: loopback HTTP on development, public HTTPS on mainnet. Private browser-owned
 extension UI and background code remain the signing boundary. A web page cannot
 authenticate the provider against hostile scripts executing in that same page.
 
@@ -20,25 +20,25 @@ interface QlyphsProvider {
 }
 ```
 
-Canonical types and errors are in `@qlyphs/provider`. Integrations should use
-`@qlyphs/sdk`, which validates responses and offers typed methods.
+Canonical types and errors are in [`@qlyphs/provider`](../../packages/provider/README.md).
+The web wallet exposes the same interface through [`createKeysProvider` and `openKeysProvider`](../../apps/keys/README.md#for-dapps), with the cached-state behavior described below.
 The original `connect`, `accounts`, `network`, `disconnect`, `requestTransaction`
 names/envelopes remain supported. `capabilities` and `state` are additive. Old providers
 without protocolVersion/events work with explicit SDK `refresh` calls; they are not
 claimed to provide events or reliable cancellation. Do not branch on error text.
 
 `qlyphs:initialized` announces delayed injection. Discovery does not connect a site.
-`capabilities` describes method/event support, development network and cancellation;
+`capabilities` describes method/event support, the selected network and cancellation;
 arbitrary RPC and persistent signing are explicitly false.
 
-`connect` explicitly requests disclosure of the current account for this origin.
+For the injected extension provider, `connect` explicitly requests disclosure of the current account for this origin.
 An existing compatible grant can return without another connect confirmation, but
 never authorizes a signature. `accounts` exposes only the current authorized account,
 or `[]` when unapproved, locked, unconfigured or disconnected. Hidden accounts, names,
 HD paths, counts, session deadlines and grant lists are never sent. `network` returns
-the pinned public development manifest or null, never an endpoint-selection mechanism.
+the pinned public manifest (`network: 'development' | 'mainnet'`) or null, never an endpoint-selection mechanism.
 
-`state` returns `{ accounts, network, connected }` projected by the privileged controller
+The extension’s `state` returns `{ accounts, network, connected }` projected by the privileged controller
 for this document, and establishes state delivery. `stateChanged` carries that same
 projection. `accountsChanged` and `networkChanged` are emitted for actual projected
 changes. `disconnect` emits a generic context-change payload when an existing projected
@@ -46,12 +46,36 @@ connection disappears; it does not disclose why a previously unapproved site is 
 Subscriptions return idempotent cleanup functions, also removable via `removeListener`.
 The SDK subscribes before reading state so initial-state/event races fail closed.
 
-Selecting an unapproved account emits an empty account list, not an implicit grant.
+In the extension, selecting an unapproved account emits an empty account list, not an implicit grant.
 Selecting an already approved account updates its projection. `disconnect` and private
 wallet revocation remove the origin's grants across saved account records and invalidate
 its pending requests. Another origin remains independently authorized. A failed durable
 revocation write returns an error; the live controller fails closed, but the caller must
 not claim successful persistence across a subsequent restart.
+
+## Keys popup state
+
+The Keys SDK implements the same methods with a cached public snapshot in the dapp. `accounts`,
+`network` and `state` read that snapshot without contacting the wallet. A connected snapshot is saved
+in the dapp's local storage for the Keys origin. It may outlive a popup, a page reload or the wallet's
+unlock, and may be stale after revocation or a network change. Empty locked-wallet events do not
+clear a previously connected snapshot. These are display values, not authentication or signing authority.
+
+`createKeysProvider` opens or reuses a popup on `connect`, `requestTransaction` or `disconnect` and
+can reopen after closure. `openKeysProvider` opens immediately; closure ends its interactive session
+and clears its in-memory accounts, but preserves the saved cache for a later provider. Both require
+user gestures for opening popups. Closure rejects pending requests without replaying writes. A
+forwarded transaction whose result is lost retains an unknown outcome.
+
+The wallet still checks the current origin grant, account, network, unlock session and approval before
+signing. A received `UNAUTHORIZED` error or state for a different genesis clears the cached connection.
+State events describe changes the adapter has observed, not a continuously live view while its popup
+is closed. Never treat `connected: true` as evidence that a transaction will be authorized.
+
+Keys `disconnect` clears the dapp cache immediately and attempts wallet revocation in the popup. If
+the browser blocks that popup, the method completes local disconnection without proving durable
+revocation in the wallet. Applications must distinguish clearing their display from deleting a
+wallet-side grant. See [the Keys integration examples](../../apps/keys/README.md#for-dapps).
 
 ## Transaction request
 
@@ -66,16 +90,15 @@ const submitted = await window.qlyphs.request({ method: 'requestTransaction', pa
 ```
 
 The envelope remains exactly `{ owner, genesis, command }`. Base-unit values are decimal
-strings (0.1 development QTC is 100000000000 base units, 12 decimals). Account IDs are
+strings (0.1 QTC is 100000000000 base units, 12 decimals). Account IDs are
 full 32-byte hexadecimal IDs; assets are full 40-byte IDs, never tickers. Commands are
-`sendQtc`, `deploy`, `mint`, `transfer`, `pair`, `sell`, `buy`, `cancel` from
-`packages/native/src/commands.ts`; the former `apps/native/src/commands.ts` re-exports
-that implementation for compatibility. No second dapp encoder is required.
+`sendQtc`, `deploy`, `mint`, `transfer`, `pair`, `sell`, `buy`, `cancel`, `inscribe` from
+[`packages/native/src/commands.ts`](../../packages/native/src/commands.ts). No second dapp encoder is required.
 
 Every write requires a separate private confirmation, canonical-byte reconstruction,
 real fee/deposit estimate and live document/origin/account/network/epoch/runtime/nonce/
-sequence/ticket checks. Purchases preserve compiled PQ trust pins and fail-closed
-attestation checks. No signRaw, arbitrary bytes, caller RPC, permanent signing grant,
+sequence/ticket checks. Development purchases require compiled PQ trust pins and fail-closed
+attestation checks. Mainnet and switchable builds currently reject witness policies and refuse purchases. No signRaw, arbitrary bytes, caller RPC, permanent signing grant,
 fee other than the fixed QLYP-v1 Qlyphs fee, automatic payment retry or mainnet activation is exposed.
 
 ## Lifecycle, limits and cancellation
@@ -86,7 +109,7 @@ revocation, account changes, lost ports and stale confirmation windows invalidat
 pending approvals. BFCache pageshow or reload creates a fresh read channel. A worker
 restart always begins locked and pending approvals are never restored from storage.
 
-Port loss clears public identity and rejects pending requests. The relay attempts one
+For the injected extension provider, port loss clears public identity and rejects pending requests. The relay attempts one
 read-only recovery, and later focus/read/pageshow may reopen it; it never replays a
 connection prompt, signing request or payment. No background keepalive loop extends an
 unlock session. Normal browser worker suspension is expected, not bypassed.
@@ -110,16 +133,30 @@ A definite refusal before signing may say not-submitted; a lost reply must not.
 `VERIFICATION_FAILED` can represent a private runtime/fee/PQ/setup check without
 revealing its internals; inspect the extension's private visible state.
 
-For follow-up use SDK read-only tracking and development explorer links. Inclusion,
+For follow-up inspect transaction status and the configured explorer for the selected network. Inclusion,
 native success, protocol acceptance, finalized settlement and uncertain outcomes remain
 separate. Existing persisted uncertain records continue to block unsafe fresh nonces.
 
-## Development origin configuration
+## Network and origin configuration
 
-Default injection origins are native port 4400 and example ports 4401/4402 on 127.0.0.1.
-`QLYPHS_EXTENSION_DAPP_ORIGINS` accepts 1–16 distinct exact loopback HTTP origins at
-build time; custom API origin behavior follows `apps/extension/build.mjs`. Content and
-controller both enforce exact origin/port checks because browser match patterns cannot
-restrict ports. The allowlist only permits requesting connection; each origin must
-still receive its own explicit account grant. RPC/API/PQ targets remain fixed separately.
-No remote host, store publication or public deployment is part of this interface change.
+The extension's default provider origins are:
+
+| Build | Exact allowed origins |
+| --- | --- |
+| Development | the compiled API origin (default `http://127.0.0.1:4400`), `http://127.0.0.1:4401`, `http://127.0.0.1:4402`, `http://127.0.0.1:4403`, `http://localhost:3001`, `http://localhost:3101` |
+| Mainnet | `https://app.qlyphs.com`, `https://otc.qlyphs.com` |
+| Switchable | both sets; only the selected network's origins may connect |
+
+`QLYPHS_EXTENSION_DAPP_ORIGINS` accepts 1–16 distinct exact origins at build time: loopback HTTP in
+development, public HTTPS on mainnet. A switchable build refuses endpoint and origin overrides.
+Content and controller both enforce exact origin/port checks because browser match patterns cannot
+restrict ports. The allowlist only permits requesting connection; each origin must still receive its
+own explicit account grant. RPC/API/PQ targets remain fixed separately.
+
+Qlyphs Keys has its own allowlist (`QLYPHS_KEYS_DAPP_ORIGINS`): production defaults to
+`https://otc.qlyphs.com`; development defaults to the API origin, `http://127.0.0.1:4400`, ports
+4401–4403 on `127.0.0.1`, `http://localhost:3001`, `http://127.0.0.1:3001`, and its demo at
+`http://localhost:4411`. Inspect `BUILD.json` for the exact origins of an installed build.
+
+Applications must check the returned network and genesis against their intended deployment before
+requesting a transaction. A dapp cannot switch networks, replace pins or enable mainnet purchases.

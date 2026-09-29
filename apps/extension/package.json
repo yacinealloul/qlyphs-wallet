@@ -8,23 +8,7 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test test/*.test.mjs",
-    "e2e": "node test/browser.mjs",
-    "test:ui": "node test/ui.mjs",
-    "test:lifecycle": "node test/browser-lifecycle-live.mjs",
-    "test:explorer": "node test/explorer.mjs",
-    "test:ui:live": "node test/live-ui.mjs",
-    "test:onboarding:live": "node test/onboarding-live.mjs",
-    "test:accounts:live": "node test/accounts-live.mjs",
-    "test:connection:live": "node test/connection-live.mjs",
-    "test:accounts:hd": "node test/hd-accounts-live.mjs",
-    "test:popup": "node test/popup.mjs",
-    "test:sidebar": "node test/sidebar.mjs",
-    "preview:ui": "node test/preview.mjs",
-    "test:motion": "node test/motion.mjs",
-    "test:hover": "node test/hover.mjs",
-    "test:interactions": "node test/interaction-audit.mjs"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@qotc/chain": "workspace:*",

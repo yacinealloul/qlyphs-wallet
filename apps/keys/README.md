@@ -8,7 +8,7 @@ Qlyphs Keys is the extension wallet ([apps/extension](../extension/README.md)) b
 It uses the same background and UI sources, unchanged. Only the browser glue is swapped: storage,
 messaging, windows and passkeys. It is a Qlyphs product, not an official Quantus wallet.
 
-- Network: **Quantus mainnet** only (the production build refuses anything else).
+- Network: **Quantus mainnet** only in production. Purchases are disabled until mainnet witness verification is validated; production builds reject `NATIVE_PQ_POLICY_FILE`.
 - Accounts: ML-DSA-87 (post-quantum), derivation `m/44'/189189'/0'/0'/0'`, official
   `@quantus-network/wasm@0.3.1` SDK, whose `.wasm` hash is recorded in `BUILD.json`.
 - Every release can be rebuilt from this repository and checked byte for byte against the live site
@@ -27,7 +27,7 @@ messaging, windows and passkeys. It is a Qlyphs product, not an official Quantus
 ## How it works
 
 ```
- dapp page (otc.qlyphs.com)                    keys.qlyphs.com
+ dapp page                                     keys.qlyphs.com
  ┌──────────────────────────┐   window.open    ┌───────────────────────────┐
  │ openKeysProvider()       │ ───────────────▶ │ /connect?origin=<dapp>    │ popup
  │  (apps/keys/src/sdk.ts)  │ ◀─ postMessage ─▶ │  checks event.origin      │
@@ -150,24 +150,55 @@ If a check fails, do not use the site, and report it (see [Publish a release](#p
 
 ## For dapps
 
+Use a persistent provider when the dapp should retain its public account display between popups:
+
+```ts
+import { createKeysProvider } from '@qlyphs/keys/sdk';
+
+const provider = createKeysProvider({ origin: 'https://keys.qlyphs.com' });
+button.onclick = () => {
+  // The request opens the popup synchronously inside this user gesture.
+  provider.request({ method: 'connect' }).then(console.log);
+};
+```
+
+Creating this provider does not open a window. `connect`, `requestTransaction` and `disconnect` open
+or reuse the Keys popup, reopening it after closure. Call these methods directly from a user gesture,
+before an `await`, so the browser can permit the popup. A blocked connection or transaction popup
+rejects with `UNAVAILABLE`. Closing a popup rejects pending requests; it never retries a payment.
+
+`accounts`, `network` and `state` read the last public snapshot, without opening or contacting the
+wallet. The SDK caches connected public account/network data in the dapp's local storage, keyed by
+Keys origin, so it can survive popup closure and page reload. It may be stale after a wallet lock,
+revocation or network change. `connected: true` is a display hint, not proof of a live unlock, grant
+or permission to sign. The wallet rechecks current permissions, network and approval for every write;
+a received `UNAUTHORIZED` response or different network clears the saved connection. Do not use this
+cache as an authentication credential.
+
+For a provider whose interactive session ends with its popup, use `openKeysProvider` instead:
+
 ```ts
 import { openKeysProvider } from '@qlyphs/keys/sdk';
 
 button.onclick = () => {
-  // Synchronously inside the click handler, or the browser blocks the popup.
   const provider = openKeysProvider({ origin: 'https://keys.qlyphs.com' });
   provider.request({ method: 'connect' }).then(console.log);
 };
 ```
 
-`openKeysProvider` returns the same `QlyphsProvider` interface as the extension
-(`packages/provider`). A dapp can support both with one code path. A
-blocked popup rejects with `UNAVAILABLE`. A closed popup ends the session with `DISCONNECTED`: open a
-new provider on the next click. The popup path and message channel are internal to the SDK: do not
-hardcode them.
+This opens the popup immediately. Closing it rejects pending and subsequent interactive requests with
+`DISCONNECTED`; create another provider on the next click. Its read methods use the same public snapshot mechanism while active, and its in-memory account list clears on closure. The saved cache remains
+available to a later provider.
 
-Your origin must be on the build's allowlist (`QLYPHS_KEYS_DAPP_ORIGINS`; production:
-`https://otc.qlyphs.com`). A demo dapp runs at http://localhost:4411 in development.
+Both constructors return the [`QlyphsProvider`](../../packages/provider/README.md) interface. The
+extension's live state and Keys' cached state have different freshness guarantees; see the
+[provider contract](../../docs/extension/PROVIDER.md#keys-popup-state). An explicit Keys `disconnect`
+clears the local cache and attempts wallet revocation through the popup. If the browser blocks that
+popup, local disconnection succeeds without proving that the wallet's stored grant was revoked.
+
+The popup path and message channel are internal to the SDK: do not hardcode them. Your origin must
+be on the build's allowlist (`QLYPHS_KEYS_DAPP_ORIGINS`; production: `https://otc.qlyphs.com`). A demo
+dapp runs at http://localhost:4411 in development.
 
 ## Build and run
 
@@ -179,7 +210,7 @@ pnpm --filter @qlyphs/keys typecheck
 ```
 
 The development build targets a local node (`http://127.0.0.1:9955`) and indexer
-(`http://127.0.0.1:4400`), and accepts only loopback HTTP origins. Do not import an account that
+(`http://127.0.0.1:4400`), and accepts only loopback HTTP origins. Those services must already be running separately; the public wallet export does not provide the indexer server. Do not import an account that
 holds real funds into it.
 
 Production build (what `deploy/keys.Dockerfile` runs):
@@ -197,6 +228,7 @@ node serve.mjs
 | `QLYPHS_KEYS_PINS` | mainnet pins file (genesis, runtime, activation); required for mainnet |
 | `QLYPHS_KEYS_ORIGIN` | where keys is served; default `https://keys.qlyphs.com` in production |
 | `QLYPHS_KEYS_API`, `QLYPHS_KEYS_RPC`, `QLYPHS_KEYS_EXPLORER` | endpoint overrides |
+| `NATIVE_PQ_POLICY_FILE` | reviewed public witness policy for development purchases only; rejected with mainnet or switchable |
 | `QLYPHS_KEYS_DAPP_ORIGINS` | JSON array of 1 to 16 exact dapp origins |
 | `QLYPHS_KEYS_SKIP_CORS_CHECK=1` | offline build; the CORS check must then be done by hand |
 | `KEYS_PORT`, `KEYS_LISTEN`, `KEYS_HOST` | `serve.mjs` port, bind address and expected `Host` |
@@ -207,7 +239,7 @@ Any override changes the files, so the build no longer matches a published relea
 
 1. Bump `version` in `apps/keys/package.json` and merge to `main`.
 2. From a clean checkout of that commit, run the Docker `release` build (above) and note the release hash.
-3. Deploy that same commit (Railway service `keys`, `deploy/keys.Dockerfile`, from a clean checkout).
+3. Deploy that same commit using `deploy/keys.Dockerfile` from a clean checkout.
 4. Run `node apps/keys/verify.mjs https://keys.qlyphs.com --local keys-release`. It must pass.
 5. Tag the commit `keys-v<version>` and create a GitHub release. Its notes contain the release hash
    and attach `SHA256SUMS.txt`.

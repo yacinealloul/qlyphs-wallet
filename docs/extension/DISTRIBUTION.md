@@ -1,78 +1,79 @@
 # Packaging and store distribution
 
-Status: store listings are not published and Quantus mainnet is not activated yet
-([MAINNET.md](../MAINNET.md)). A published package is always a mainnet build; the development build is
-for local use only and must not be submitted.
+The extension is not published in the browser stores yet. Store packages use a mainnet build with
+reviewed pins; development and switchable builds are for local installation only. Mainnet purchases
+remain disabled. See [mainnet notes](../MAINNET.md).
 
-## Build flavours
+## Build profiles
 
 | | Mainnet | Development (default) |
-|---|---|---|
-| Command | `QLYPHS_EXTENSION_NETWORK=mainnet QLYPHS_EXTENSION_PINS=/abs/pins.json pnpm --filter @qotc/wallet-extension build` | `pnpm --filter @qotc/wallet-extension build` |
-| Pins | required (genesis, runtime, activation block); the build fails without them | taken from the local node at first use, after review |
-| Origins | https only; defaults `https://app.qlyphs.com` (app and API), `https://rpc1-mainnet.quantus.com`, `https://qlyphs.com/explorer` | loopback HTTP only (`127.0.0.1:4400`, `:9955`, `localhost:3000/explorer`) |
-| Manifest name | "Qlyphs Wallet" | identifies a development wallet |
-| Chrome ID | assigned by the Chrome Web Store; no `key` in the manifest | stabilized by the committed **public** development key (not a signing key) |
+| --- | --- | --- |
+| Command | `QLYPHS_EXTENSION_NETWORK=mainnet QLYPHS_EXTENSION_PINS="$PWD/deploy/mainnet/pins.json" pnpm --filter @qotc/wallet-extension build` | `pnpm --filter @qotc/wallet-extension build` |
+| Pins | required genesis, runtime and activation anchor | reviewed from the local network at first use |
+| API / RPC | `https://app.qlyphs.com` / `https://rpc1-mainnet.quantus.com` | `http://127.0.0.1:4400` / `http://127.0.0.1:9955` |
+| Explorer | `https://qlyphs.com/explorer` | `http://localhost:3000/explorer` |
+| Manifest | Qlyphs Wallet; no development Chrome `key` | development identity with a committed public key |
 | Firefox ID | `wallet@qlyphs.com` | `wallet-dev@qlyphs.com` |
 
-Obtain and check the pins with `node apps/native/scripts/mainnet-compat.mjs https://rpc1-mainnet.quantus.com`
-(read-only; verifies call indices and the signing layout, then prints the pins). The activation block is
-chosen at launch. Purchases additionally need the reviewed public witness policy
-(`NATIVE_PQ_POLICY_FILE`, below). Firefox temporary installation does not establish a signed
-distributable add-on.
+Run commands from the repository root. The committed [pins](../../deploy/mainnet/pins.json) describe
+the reviewed release network; their presence does not prove the live runtime still matches. Runtime
+or genesis mismatch blocks signing. Firefox temporary installation does not create a signed,
+permanently distributable add-on.
 
 ## Reproduce packages
 
-Use the committed Node/pnpm versions and `pnpm install --frozen-lockfile`, then build `@qotc/wallet-extension`. `dist/chrome` and `dist/firefox` contain the separate manifests, local bundles, packaged WASM, icons, CSS, HTML, license notices and `BUILD.json`. The build rejects an unvalidated SDK version and unexpected dynamic-code constructs. CI builds twice and compares sorted SHA-256 output inventories. This proves repeatability in that environment, not a reproducible build of the upstream WASM from Rust sources.
+Use Node 24, pnpm 10.23.0 and `pnpm install --frozen-lockfile`, then build the extension. Its
+`dist/chrome` and `dist/firefox` directories contain separate manifests, local bundles, packaged WASM,
+icons, CSS, HTML, license notices and `BUILD.json`. The build rejects an unvalidated SDK version and
+unexpected dynamic-code constructs. Compare sorted SHA-256 inventories from two clean builds made
+with the same source, dependency lockfile, pins and environment overrides. This verifies repeatability
+of those outputs; it does not reproduce the upstream WASM from Rust source.
 
-For deterministic ZIPs without browser profiles or test secrets, run `python3 apps/extension/package.py` from the repository root after a successful build. Archives use a fixed timestamp and sorted names; `SHA256SUMS` identifies their bytes. Load directories unpacked for testing. Never include `.data`, browser profiles, node_modules, debug traces, credentials or mnemonic backups in an archive.
+For deterministic archives after a successful build:
 
-## Store submission checklist
+```sh
+python3 apps/extension/package.py
+```
 
-1. Mainnet build with the launch pins (`QLYPHS_EXTENSION_NETWORK=mainnet`, `QLYPHS_EXTENSION_PINS`),
-   built twice with identical inventories; `BUILD.json` shows the mainnet network, pins and https origins.
-2. The Chrome manifest has no `key`; the Firefox manifest has the ID `wallet@qlyphs.com`.
-3. After the store assigns the Chrome ID, add `chrome-extension://<store id>` (and the Firefox
-   `moz-extension://` origin if required) to the indexer's `NATIVE_EXTENSION_ORIGINS` on
-   `app.qlyphs.com`, and restart it.
-4. Security and functional gaps in SECURITY.md closed, with exact successful installed-browser evidence.
-5. Listing copy, privacy policy and permission justifications name the hosts contacted:
-   `app.qlyphs.com` (indexer API) and `rpc1-mainnet.quantus.com` (node RPC).
+ZIPs in `apps/extension/dist/packages` use fixed timestamps and sorted names; `SHA256SUMS` identifies
+their bytes. Never include browser profiles, dependency directories, debug traces, credentials or
+mnemonic backups. Load the build directories unpacked when testing.
 
-Supply reviewers the human-readable source commit, locked dependencies, build instructions, tool versions, bundled WASM/glue provenance and license notices. Mozilla may require original source and build steps for generated/compiled code. Do not claim store acceptance before it happens.
+## Store submission
 
-Review all transitive bundled licenses using the esbuild metafile and actual resolved packages, including Quantus and the noble/scure families. Preserve required copyright/license notices. A package's metadata field is not a replacement for its full license. The upstream SDK binary and vendored glue should be traced to their official source/tag; independently reproducing and auditing the WASM is a release gate. The repository/product owner must determine their own license and brand rights; this implementation does not assign a license to their private product.
+1. Build mainnet twice with identical inventories. Check network, pins and HTTPS origins in `BUILD.json`.
+2. Confirm the Chrome manifest has no development `key` and Firefox uses `wallet@qlyphs.com`.
+3. Verify the configured service accepts the installed extension's exact browser origin. Browser
+   identities differ between local installations and store packages.
+4. Complete the security and installed-browser validation for the exact release. A successful build
+   alone does not demonstrate that lifecycle tests passed.
+5. Supply source, locked dependencies, build steps, tool versions, bundled WASM provenance and license
+   notices. Listing copy, privacy policy and permission explanations must identify the contacted hosts.
 
-Prepare store icons and screenshots, a support contact and a privacy policy explaining that public addresses and requested operations are disclosed to `app.qlyphs.com` and `rpc1-mainnet.quantus.com`. No analytics or telemetry is installed. Reassess the Firefox data-collection declarations for these hosted services before submission. Ask only necessary permissions. Mainnet host permissions should cover only those two hosts; development host patterns are loopback-scoped, and because browser match patterns do not express ports, exact origin/port checks remain enforced in code and server configuration. Do not broaden to `<all_urls>` or accept arbitrary Origin/Host values to solve integration errors.
+The default mainnet API and RPC hosts are `app.qlyphs.com` and `rpc1-mainnet.quantus.com`. Public
+addresses and requested operations are sent to those services. The explorer opens separately in a
+tab. No analytics or telemetry is installed. Ask only for necessary permissions, and retain exact
+origin/port checks even where browser host patterns cannot express ports. Do not broaden permissions
+to `<all_urls>` to resolve integration errors.
 
-Keep Chrome MV3 service-worker and Firefox supported event-page builds distinct. Validate minimum supported browser versions, especially MAIN-world content injection and packaged WASM CSP, using real installed extensions. Store signing and update channels belong to the authorized release, not to a development branch. Recheck current policies at submission, not merely at code authoring.
+Review actual bundled dependency licenses, not just package metadata. Preserve copyright and license
+notices. Validate Chrome MV3 worker and Firefox event-page behavior in real installed browsers,
+including packaged WASM and CSP. Recheck store policies when submitting:
 
-Primary policies and tooling:
-- https://developer.chrome.com/docs/webstore/program-policies/
-- https://developer.chrome.com/docs/extensions/develop/migrate/remote-hosted-code
-- https://extensionworkshop.com/documentation/publish/add-on-policies/
-- https://extensionworkshop.com/documentation/publish/source-code-submission/
-- https://extensionworkshop.com/documentation/develop/getting-started-with-web-ext/
-- https://playwright.dev/docs/chrome-extensions
+- [Chrome Web Store policies](https://developer.chrome.com/docs/webstore/program-policies/)
+- [Chrome remote-code rules](https://developer.chrome.com/docs/extensions/develop/migrate/remote-hosted-code)
+- [Firefox add-on policies](https://extensionworkshop.com/documentation/publish/add-on-policies/)
+- [Firefox source submission](https://extensionworkshop.com/documentation/publish/source-code-submission/)
 
-## QPA1 policy packaging
+## Purchase policy and dapp origins
 
-A build without a witness policy disables purchases, on mainnet as in development. Operator-specific builds must
-embed the reviewed public policy via `NATIVE_PQ_POLICY_FILE`. Distribute policy rotations and
-revocations through the trusted extension release process. Do not ship CI fixture keys or
-their public pins as a production trust ceremony. The two deterministic builds must use the
-same explicit policy. Read `BUILD.json` for the policy version and rules fingerprint; it is a
-build record, not an independent audit. Private keys/passphrases never belong in the build context.
+`NATIVE_PQ_POLICY_FILE` is accepted only by development builds. A compatible reviewed public policy
+is required to purchase there; without one the wallet refuses purchases. Mainnet and switchable
+builds reject this variable and keep purchases disabled until mainnet witnesses are validated.
+Private signing keys and passphrases must never enter the build context. Policy rotations require
+reviewed releases; `BUILD.json` records a policy, but does not independently audit it.
 
-## Dapp origin allowlist
-
-Development provider injection includes the native API origin plus `http://127.0.0.1:4401`
-and `http://127.0.0.1:4402` for the two SDK examples; the mainnet build defaults to
-`https://app.qlyphs.com`.
-`QLYPHS_EXTENSION_DAPP_ORIGINS` optionally supplies a JSON array of 1–16 distinct exact
-origins at build time (loopback HTTP in development, https on mainnet). It changes injection/connection eligibility, not
-account permissions or signing authority. `BUILD.json` records these origins and
-provider protocol version. Browser match patterns omit port specificity; runtime
-checks still enforce exact ports. Network host permissions and API/RPC/PQ trust pins
-are not widened to application-selected targets. Build/package verification covers the additional provider code
-under the same local-code/CSP and deterministic inventory constraints.
+[The provider contract](PROVIDER.md#network-and-origin-configuration) lists the exact default dapp
+origins. `QLYPHS_EXTENSION_DAPP_ORIGINS` can replace them with 1–16 exact allowed origins in a single
+network build. This changes connection eligibility, not account permissions or signing authority.
+It does not change API/RPC/PQ targets. Switchable builds refuse origin and endpoint overrides.

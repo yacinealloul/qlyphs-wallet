@@ -5,7 +5,7 @@
 **A non-custodial, post-quantum wallet for [Quantus](https://quantus.com).**
 Every release can be rebuilt from this repository and checked byte for byte against the live site.
 
-[keys.qlyphs.com](https://keys.qlyphs.com) · [Releases](../../releases) · [Security model](apps/keys/README.md#security-model) · [Verify a release](#verify-that-keysqlyphscom-runs-this-code)
+[keys.qlyphs.com](https://keys.qlyphs.com) · [Releases](https://github.com/yacinealloul/qlyphs-wallet/releases) · [Security model](apps/keys/README.md#security-model) · [Verify a release](#verify-that-keysqlyphscom-runs-this-code)
 
 ![license MIT](https://img.shields.io/badge/license-MIT-blue) ![signatures ML-DSA-87](https://img.shields.io/badge/signatures-ML--DSA--87-6f42c1) ![builds reproducible](https://img.shields.io/badge/builds-reproducible-2ea44f) ![Node 24](https://img.shields.io/badge/node-24-339933)
 
@@ -20,8 +20,8 @@ wallets people already use cannot hold those keys or build signed Quantus transa
 no wallet that runs in the browser for dapps to use.
 
 Qlyphs Wallet fills that gap. Keys are generated, encrypted and used in your browser, and never leave
-it. You do not have to trust us about the code either: the site you load is proven to be the code in
-this repository.
+it. You can rebuild a published release and compare it byte for byte with what the site serves to you
+at the time of verification.
 
 ## Two forms, one wallet
 
@@ -45,9 +45,9 @@ Both run the same wallet code: the same vault, signing and UI. Only the browser 
 - **Locked-down page.** `default-src 'none'`, no inline or third-party scripts, and no `eval`. The build
   fails if any bundle uses `eval`, `new Function` or a dynamic `import()`. The RPC, indexer and dapp
   allowlist are fixed at build time. The server refuses to start if any file differs from the release.
-- **Verifies before it pays.** Before a purchase, the wallet checks two separately keyed ML-DSA-87
-  attestations of the finalized reservation. It also recomputes the Qlyphs fee itself, and refuses to
-  sign if the service asks for a different one.
+- **Checks purchase attestations in development.** With a compiled public witness policy, the wallet
+  checks two separately keyed ML-DSA-87 attestations of the finalized reservation. Mainnet purchases
+  remain disabled. The wallet recomputes Qlyphs fees and refuses inconsistent quotes.
 - **Mainnet is pinned.** Mainnet builds compile in the chain's genesis, runtime and activation pins
   ([`deploy/mainnet/pins.json`](deploy/mainnet/pins.json)). They refuse any other network.
 
@@ -80,7 +80,7 @@ sends. Dapps talk to either form of the wallet through one interface,
 
 The build is deterministic: the same commit always produces the same bytes. Each release publishes a
 **release hash**, the SHA-256 of the list of SHA-256 hashes of every file the site serves. You can find
-it in the [GitHub release](../../releases) and in the Actions run for its tag.
+it in the [GitHub release](https://github.com/yacinealloul/qlyphs-wallet/releases) and in the Actions run for its tag.
 
 ```sh
 # 1. The live site serves exactly the published release (Node 18+, no install)
@@ -102,11 +102,15 @@ You need Node 24 and pnpm 10.23.0.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm build:keys          # development web wallet in apps/keys/dist (serve: pnpm --filter @qlyphs/keys serve)
+pnpm build:keys          # development web wallet in apps/keys/dist/keys
+pnpm --filter @qlyphs/keys serve
 pnpm build:extension     # development extension in apps/extension/dist
 ```
 
-Development builds target a local Quantus node. For mainnet build flags and pins, see the
+Development builds need separately running compatible local services. This export does not include
+an indexer server, faucet, explorer server or the installed-browser integration environment. It
+contains the wallet build and typecheck commands; support packages are included only as imported
+source modules. For mainnet build flags and pins, see the
 [keys README](apps/keys/README.md#build-and-run) and the [extension README](apps/extension/README.md#build).
 
 ## Repository layout
@@ -122,7 +126,7 @@ Development builds target a local Quantus node. For mainnet build flags and pins
 | `docs/` | [mainnet notes](docs/MAINNET.md), [extension security model](docs/extension/SECURITY.md), [provider contract](docs/extension/PROVIDER.md), [store packaging](docs/extension/DISTRIBUTION.md) |
 
 This repository mirrors the wallet part of the private Qlyphs monorepo. The mirror is regenerated
-automatically on every change and keeps the same paths, so the builds are byte-identical. Each commit
+from reviewed source commits and keeps the same paths and build inputs, so releases can be reproduced. Each commit
 message names the source commit it was exported from.
 
 ## Status and limits

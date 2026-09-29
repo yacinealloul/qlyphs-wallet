@@ -14,8 +14,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --experimental-strip-types --test test/*.test.mjs"
+    "build": "../../apps/extension/node_modules/.bin/tsc -p tsconfig.build.json",
+    "typecheck": "../../apps/extension/node_modules/.bin/tsc --noEmit -p tsconfig.json"
   }
 }

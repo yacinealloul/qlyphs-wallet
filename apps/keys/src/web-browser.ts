@@ -1,6 +1,6 @@
 /** Worker-side ExtensionAPI. The hub stands in for Chrome: it binds every sender to
  * the keys page or dapp port that really sent it, and never accepts a page-chosen URL
- * for a confirmation. Any compiled network's dapp origin may open a port; background.ts answers
+ * for an overlay. Any compiled network's dapp origin may open a port; background.ts answers
  * only the active network's. */
 import type { ExtensionAPI, Port, Sender } from '../../extension/src/browser.ts';
 import { ALL_DAPPS } from '../../extension/src/config.ts';
@@ -68,6 +68,13 @@ const creating = new Map<
   number,
   { host: Host; url: string; ok: (w: { id: number }) => void; no: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
 >();
+interface WalletSetup {
+  id: number;
+  host: Host;
+  portKey: string;
+  windowId: number;
+}
+const setups = new Map<string, WalletSetup>();
 // Hosts with an in-flight call that may open a confirmation, oldest first. Keys-page
 // transacts win over dapp requests, so a dapp popup can never receive the user's own
 // confirmation just by sending a message while that transact is being prepared.
@@ -120,6 +127,11 @@ function live(): Host | undefined {
   return best;
 }
 function closeWindow(host: Host, windowId: number) {
+  const setup = setups.get(host.id);
+  if (setup?.windowId === windowId) {
+    finishSetup(setup, 'Wallet setup was closed');
+    return;
+  }
   if (!host.overlays.delete(windowId)) return;
   for (const [port, d] of docs)
     if (d.windowId === windowId) {
@@ -132,6 +144,8 @@ function dropDapp(key: string, fire: boolean) {
   const d = dappPorts.get(key);
   if (!d) return;
   dappPorts.delete(key);
+  for (const setup of setups.values())
+    if (setup.portKey === key) finishSetup(setup, 'The connection was closed');
   unclaim((c) => c.key.startsWith(key + '#'));
   if (fire) {
     d.disconnect.fire();
@@ -142,6 +156,8 @@ function gone(id: string) {
   const host = hosts.get(id);
   if (!host) return;
   hosts.delete(id);
+  const setup = setups.get(id);
+  if (setup) finishSetup(setup, 'The connection was closed');
   unclaim((c) => c.host === id);
   for (const [w, c] of creating)
     if (c.host === host) {
@@ -159,15 +175,71 @@ function gone(id: string) {
   }
 }
 function attachDoc(port: MessagePort, sender: Sender, windowId: number) {
-  docs.set(port, { sender, windowId });
+  const doc = { sender, windowId };
+  docs.set(port, doc);
   port.onmessage = (e: MessageEvent) => {
     const m = e.data as DocToHub;
     if (!docs.has(port) || !m || m.type !== 'call' || !Number.isSafeInteger(m.callId)) return;
-    dispatch(m.message, sender, (value) =>
-      port.postMessage({ type: 'reply', callId: m.callId, value } satisfies HubToDoc),
-    );
+    dispatch(m.message, sender, (value) => {
+      if (docs.get(port) !== doc) return;
+      port.postMessage({ type: 'reply', callId: m.callId, value } satisfies HubToDoc);
+      // Only the wallet document's controller reply can complete setup. The connection page
+      // never receives wallet status or gains the wallet document's message privileges.
+      if ((m.message as { action?: unknown } | null)?.action !== 'status') return;
+      const response = value as { error?: unknown; result?: Record<string, unknown> } | null;
+      const state = response?.result;
+      if (response?.error || !state?.manifest || !state.account || state.unlocked !== true || state.backed !== true)
+        return;
+      for (const setup of setups.values())
+        if (setup.windowId === windowId && dappPorts.has(setup.portKey)) finishSetup(setup);
+    });
   };
   port.start();
+}
+function createWindow(host: Host, url: string) {
+  const windowId = nextId++;
+  const ready = new Promise<{ id: number }>((ok, no) => {
+    const timer = setTimeout(() => {
+      if (!creating.delete(windowId)) return;
+      host.port.postMessage({ type: 'remove', windowId } satisfies HubToHost);
+      no(Error('Confirmation window could not be opened'));
+    }, 10000);
+    creating.set(windowId, { host, url, ok, no, timer });
+    host.port.postMessage({ type: 'open', windowId, url } satisfies HubToHost);
+  });
+  return { windowId, ready };
+}
+function finishSetup(setup: WalletSetup, error?: string) {
+  if (setups.get(setup.host.id) !== setup) return;
+  setups.delete(setup.host.id);
+  const pending = creating.get(setup.windowId);
+  if (pending?.host === setup.host) {
+    creating.delete(setup.windowId);
+    clearTimeout(pending.timer);
+    pending.no(Error(error ?? 'Wallet setup was closed'));
+  }
+  closeWindow(setup.host, setup.windowId);
+  if (!hosts.has(setup.host.id)) return;
+  setup.host.port.postMessage({ type: 'remove', windowId: setup.windowId } satisfies HubToHost);
+  setup.host.port.postMessage({ type: 'setup-done', setupId: setup.id, ...(error ? { error } : {}) } satisfies HubToHost);
+}
+function openSetup(host: Host, id: number) {
+  if (!Number.isSafeInteger(id) || id <= 0) return;
+  const reject = (error: string) =>
+    host.port.postMessage({ type: 'setup-done', setupId: id, error } satisfies HubToHost);
+  if (setups.has(host.id)) return reject('Wallet setup is already open');
+  const page = new URL(host.sender.url!);
+  const origin = page.searchParams.get('origin');
+  if (page.origin !== ORIGIN || page.pathname !== '/connect' || !origin || !ALL_DAPPS.includes(origin))
+    return reject('Invalid connection');
+  const portKey = [...host.ports]
+    .map((portId) => dappKey(host, portId))
+    .find((key) => dappPorts.get(key)?.port.sender?.origin === origin);
+  if (!portKey) return reject('The connection was closed');
+  const overlay = createWindow(host, ORIGIN + '/?surface=tab');
+  const setup: WalletSetup = { id, host, portKey, windowId: overlay.windowId };
+  setups.set(host.id, setup);
+  void overlay.ready.catch(() => finishSetup(setup, 'Wallet setup could not be opened'));
 }
 function openDapp(host: Host, portId: number, origin: string) {
   if (!Number.isSafeInteger(portId) || typeof origin !== 'string' || !ALL_DAPPS.includes(origin)) {
@@ -295,6 +367,14 @@ function accept(port: MessagePort | undefined) {
         closeWindow(h, m.windowId);
         return;
       }
+      case 'setup-open':
+        openSetup(h, m.setupId);
+        return;
+      case 'setup-close': {
+        const setup = setups.get(h.id);
+        if (setup?.id === m.setupId) finishSetup(setup, 'Wallet setup was closed');
+        return;
+      }
       case 'port-open':
         openDapp(h, m.portId, m.origin);
         return;
@@ -357,21 +437,12 @@ export const browser: ExtensionAPI = {
     onRemoved: tabRemoved,
   },
   windows: {
-    create({ url }) {
-      return new Promise((ok, no) => {
-        const u = new URL(url);
-        const host = live();
-        if (u.origin !== ORIGIN || u.pathname !== '/' || !host)
-          return no(Error('Confirmation window could not be opened'));
-        const windowId = nextId++;
-        const timer = setTimeout(() => {
-          if (!creating.delete(windowId)) return;
-          host.port.postMessage({ type: 'remove', windowId } satisfies HubToHost);
-          no(Error('Confirmation window could not be opened'));
-        }, 10000);
-        creating.set(windowId, { host, url: u.href, ok, no, timer });
-        host.port.postMessage({ type: 'open', windowId, url: u.href } satisfies HubToHost);
-      });
+    async create({ url }) {
+      const u = new URL(url);
+      const host = live();
+      if (u.origin !== ORIGIN || u.pathname !== '/' || !host)
+        return Promise.reject(Error('Confirmation window could not be opened'));
+      return createWindow(host, u.href).ready;
     },
     async remove(id) {
       for (const h of hosts.values())

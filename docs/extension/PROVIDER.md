@@ -114,8 +114,21 @@ read-only recovery, and later focus/read/pageshow may reopen it; it never replay
 connection prompt, signing request or payment. No background keepalive loop extends an
 unlock session. Normal browser worker suspension is expected, not bypassed.
 
+The Keys web provider cancels pending requests on dapp `pagehide`, including
+navigation into BFCache. It sends best-effort cancellation for outstanding forwarded
+requests, clears its queue and does not replay them after restoration. A reusable
+`createKeysProvider` can reopen only for a new explicit request; the eager
+`openKeysProvider` ends and requires a new instance. The wallet window remains open
+because a dispatched transaction may already be submitting; its outcome stays
+uncertain until checked.
+
 Limits remain 8 KiB per request, 8 outstanding requests, per-document rate limiting,
-120-second privileged approval lifetime and at most 135 seconds for the public request.
+and a 120-second privileged approval lifetime. Public requests default to and accept
+at most 135 seconds, except `connect`, whose `timeoutMs` may be up to 600,000 ms to
+allow wallet setup before approval. The extension provider still defaults to 135
+seconds; the Keys web provider defaults to ten minutes for `connect`. This additional
+setup time never extends an approval after it has opened. The SDK caps discovery at
+three seconds and the public-state refresh after connection at 135 seconds.
 The memory-only unlock lifetime remains an absolute five minutes. Applications cannot
 extend it. Abort/timeout sends a best-effort cancellation bound to the original live
 document request. It can invalidate an unapproved request but cannot roll back a

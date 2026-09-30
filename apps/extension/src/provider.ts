@@ -1,3 +1,4 @@
+/** Page-side provider bridge with origin-bound requests and cancellation. */
 import { DAPPS } from './config.ts';
 import {
   CAPABILITIES,
@@ -133,7 +134,11 @@ if (window.top === window && DAPPS.includes(location.origin) && !Object.hasOwn(w
           reject(new QlyphsError('BUSY', 'Too many pending requests', 'not-submitted'));
           return;
         }
-        const timeout = validTimeout(options.timeoutMs, 135_000);
+        const timeout = validTimeout(
+          options.timeoutMs,
+          135_000,
+          input.method === 'connect' ? 600_000 : 135_000,
+        );
         const id = crypto.randomUUID(),
           writing = input.method === 'requestTransaction';
         const request = {

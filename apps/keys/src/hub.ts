@@ -5,6 +5,8 @@ export type HostToHub =
   | { type: 'call'; callId: number; message: unknown }
   | { type: 'attach'; windowId: number; documentId: string } // transfer: [MessagePort] (iframe doc end)
   | { type: 'closed'; windowId: number }
+  | { type: 'setup-open'; setupId: number }
+  | { type: 'setup-close'; setupId: number }
   | { type: 'port-open'; portId: number; origin: string }
   | { type: 'port-message'; portId: number; message: unknown }
   | { type: 'port-close'; portId: number }
@@ -14,6 +16,7 @@ export type HubToHost =
   | { type: 'reply'; callId: number; value: unknown }
   | { type: 'open'; windowId: number; url: string }
   | { type: 'remove'; windowId: number }
+  | { type: 'setup-done'; setupId: number; error?: string }
   | { type: 'port-message'; portId: number; message: unknown }
   | { type: 'port-close'; portId: number };
 export type DocToHub = { type: 'call'; callId: number; message: unknown }; // over an attached iframe port

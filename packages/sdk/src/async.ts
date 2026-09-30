@@ -1,3 +1,4 @@
+/** Cancellable, bounded waits shared by SDK operations. */
 import { QlyphsError, validTimeout } from '../../provider/src/index.ts';
 import type { RequestOptions, WriteOutcome } from '../../provider/src/index.ts';
 /** A single invocation. Cancellation stops waiting; it does not undo a submitted payment. */
@@ -7,8 +8,9 @@ export function bounded<T>(
   defaultMs = 15_000,
   outcome?: WriteOutcome,
   controllers?: Set<AbortController>,
+  maxMs = 135_000,
 ): Promise<T> {
-  const ms = validTimeout(options.timeoutMs, defaultMs);
+  const ms = validTimeout(options.timeoutMs, defaultMs, maxMs);
   if (options.signal?.aborted)
     return Promise.reject(new QlyphsError('ABORTED', 'Aborted before dispatch', 'not-submitted'));
   const controller = new AbortController();

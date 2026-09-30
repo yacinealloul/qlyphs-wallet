@@ -49,11 +49,20 @@ messaging, windows and passkeys. It is a Qlyphs product, not an official Quantus
 - **`/connect?origin=<dapp origin>`**: the popup a dapp opens. It only talks to its opener, and only
   when the opener's origin is on the build's allowlist (`dappOrigins` in `BUILD.json`). The origin
   it trusts is the browser-supplied `MessageEvent.origin`, compared exactly, never a value the dapp sends.
+  Connecting opens the normal wallet UI in this same window: **Get started** when no wallet is saved,
+  or **Unlock** for a locked wallet. Create or import an account and complete its backup, then review
+  the site's connection request. An already unlocked wallet proceeds directly to the connection check.
+  Wallet detection uses this Keys origin's storage in the current browser profile; an extension,
+  another browser profile, or a different Keys origin has separate storage.
 - **Wallet worker**: the extension's `background.ts` in a `SharedWorker` (a dedicated `Worker` where
   `SharedWorker` is missing). It holds the unlocked session and signs. Pages talk to it through
   `hub.ts`, which binds every message to the page or dapp port that really sent it.
 - **Confirmations** open as a same-origin overlay inside the keys page. They are never opened from a
   URL chosen by a page.
+- **Connection setup** uses the same trusted wallet UI in an overlay. The connection page receives
+  only a readiness signal, never wallet status or secrets. The original request resumes once after
+  setup; the controller still checks the origin, account, network and existing permission or asks for
+  consent. Closing or cancelling the connection discards it, including late setup responses.
 - **Storage**: IndexedDB database `qlyphs-keys`. It holds the encrypted vault, account metadata and site
   grants, in the same formats as the extension.
 
@@ -81,7 +90,7 @@ Reloading the only keys tab locks the wallet: the session lives in the worker, b
   No inline scripts, no third-party scripts, no `eval`. The build also fails on `eval`,
   `new Function` or dynamic `import()` in any bundle. `connect-src` lists only this origin, the RPC
   and the indexer. So the files in `SHA256SUMS.txt` are all the code the page can run.
-- `frame-ancestors 'none'` on `/connect` and `'self'` on `/` (the confirmation overlay only), plus
+- `frame-ancestors 'none'` on `/connect` and `'self'` on `/` (wallet setup and confirmation overlays), plus
   `nosniff`, `no-referrer`, `no-store`, HSTS, and a `Permissions-Policy` that turns off camera,
   microphone and geolocation.
 
@@ -196,9 +205,21 @@ extension's live state and Keys' cached state have different freshness guarantee
 clears the local cache and attempts wallet revocation through the popup. If the browser blocks that
 popup, local disconnection succeeds without proving that the wallet's stored grant was revoked.
 
-The popup path and message channel are internal to the SDK: do not hardcode them. Your origin must
-be on the build's allowlist (`QLYPHS_KEYS_DAPP_ORIGINS`; production: `https://otc.qlyphs.com`). A demo
-dapp runs at http://localhost:4411 in development.
+The popup path and message channel are internal to the SDK: do not hardcode them.
+
+Keys allows up to ten minutes for `connect`, including first-time setup and backup. A caller can
+choose a shorter `timeoutMs` or abort with a signal. Transaction requests keep their 135-second
+maximum, and connection consent still expires after two minutes once its review opens. Wallet
+creation never approves a connection or a transaction. If setup outlasts the connection, reconnect
+to continue with the wallet already saved on this device.
+
+Leaving the dapp cancels its pending requests and clears its queue; returning through the browser's
+back/forward cache never replays them. A reusable `createKeysProvider` can start a new connection on
+the next explicit request. An `openKeysProvider` session ends and needs a new instance. Cancellation
+does not close the wallet window or undo a submitted transaction.
+
+Your origin must be on the build's allowlist (`QLYPHS_KEYS_DAPP_ORIGINS`; production:
+`https://otc.qlyphs.com`). A demo dapp runs at http://localhost:4411 in development.
 
 ## Build and run
 

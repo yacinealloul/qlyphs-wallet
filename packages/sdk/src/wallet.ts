@@ -1,3 +1,4 @@
+/** Wallet discovery and account-scoped requests with bounded lifetimes. */
 import {
   CAPABILITIES,
   QlyphsError,
@@ -159,16 +160,21 @@ export class WalletConnector {
   }
   private async ready(options: RequestOptions = {}) {
     this.assertOpen();
-    if (!this.provider)
+    if (!this.provider) {
+      const discoveryOptions = {
+        ...options,
+        timeoutMs: Math.min(validTimeout(options.timeoutMs, 3_000), 3_000),
+      };
       this.attach(
         await bounded(
-          (signal) => discoverWallet({ ...options, signal, target: this.options.target }),
-          options,
+          (signal) => discoverWallet({ ...discoveryOptions, signal, target: this.options.target }),
+          discoveryOptions,
           3_000,
           undefined,
           this.controllers,
         ),
       );
+    }
     this.assertOpen();
     return this.provider!;
   }
@@ -176,7 +182,9 @@ export class WalletConnector {
     input: RequestInput<M>,
     options: RequestOptions = {},
   ): Promise<WalletRequestMap[M]['result']> {
-    const provider = await this.ready(options);
+    const maxMs = input.method === 'connect' ? 600_000 : 135_000;
+    const timeoutMs = validTimeout(options.timeoutMs, 135_000, maxMs);
+    const provider = await this.ready({ ...options, timeoutMs: Math.min(timeoutMs, 3_000) });
     this.assertOpen();
     const writing = input.method === 'requestTransaction';
     try {
@@ -197,13 +205,14 @@ export class WalletConnector {
           }
           return provider.request(input, {
             signal,
-            timeoutMs: validTimeout(options.timeoutMs, 135_000),
+            timeoutMs,
           }) as Promise<WalletRequestMap[M]['result']>;
         },
         options,
         135_000,
         writing ? 'unknown' : undefined,
         this.controllers,
+        maxMs,
       );
     } catch (error) {
       throw publicError(error, 'UNAVAILABLE', writing ? 'unknown' : undefined);
@@ -262,7 +271,13 @@ export class WalletConnector {
   }
   async connect(options: RequestOptions = {}): Promise<readonly WalletAccount[]> {
     accounts(await this.invoke({ method: 'connect' }, options));
-    return (await this.refresh(options)).accounts;
+    // A setup allowance does not extend the subsequent public-state read.
+    return (
+      await this.refresh({
+        ...options,
+        timeoutMs: Math.min(options.timeoutMs ?? 135_000, 135_000),
+      })
+    ).accounts;
   }
   async disconnect(options: RequestOptions = {}): Promise<void> {
     try {

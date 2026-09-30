@@ -1,4 +1,4 @@
-/** A top-level keys page: keeps the wallet worker alive and shows its confirmations. */
+/** A top-level Keys page: keeps the wallet worker alive and hosts setup and confirmations. */
 import { KEYS_CHANNEL } from './protocol.ts';
 import type { HostToHub, HubToHost } from './hub.ts';
 
@@ -9,11 +9,16 @@ export interface HostPort {
   onClose(fn: () => void): void;
 }
 export type KeysPort = HostPort;
+export interface WalletSetup {
+  ready: Promise<void>;
+  close(): void;
+}
 export interface Host {
   call(message: unknown): Promise<unknown>;
   overlays(): number;
   onOverlayChange(fn: () => void): void;
   openPort(origin: string): HostPort;
+  setupWallet(): WalletSetup;
 }
 /** Replaces the page with a single sentence; used when keys cannot start here. */
 export function fatal(text: string): void {
@@ -72,8 +77,10 @@ export async function boot(): Promise<Host> {
   const frames = new Map<number, HTMLIFrameElement>();
   const overlayListeners = new Set<() => void>();
   const ports = new Map<number, { message: Set<(m: unknown) => void>; close: Set<() => void> }>();
+  const setups = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
   let callId = 0,
-    portId = 0;
+    portId = 0,
+    setupId = 0;
   const overlayChanged = () => {
     for (const f of overlayListeners) f();
   };
@@ -98,7 +105,7 @@ export async function boot(): Promise<Host> {
     const f = document.createElement('iframe');
     f.className = 'keys-overlay';
     f.src = u.href;
-    f.title = 'Confirm';
+    f.title = u.searchParams.has('request') ? 'Confirm' : 'Set up or unlock Qlyphs Keys';
     const ch = new MessageChannel();
     frames.set(windowId, f);
     f.addEventListener(
@@ -131,6 +138,13 @@ export async function boot(): Promise<Host> {
         case 'remove':
           removeFrame(m.windowId);
           return;
+        case 'setup-done': {
+          const setup = setups.get(m.setupId);
+          setups.delete(m.setupId);
+          if (m.error) setup?.reject(Error(m.error));
+          else setup?.resolve();
+          return;
+        }
         case 'port-message':
           for (const f of ports.get(m.portId)?.message ?? []) f(m.message);
           return;
@@ -162,7 +176,11 @@ export async function boot(): Promise<Host> {
   const focus = () => send({ type: 'focus' });
   window.addEventListener('focus', focus);
   window.addEventListener('pointerdown', focus, true);
-  window.addEventListener('pagehide', () => send({ type: 'bye' }));
+  window.addEventListener('pagehide', () => {
+    for (const setup of setups.values()) setup.reject(Error('Wallet setup was closed'));
+    setups.clear();
+    send({ type: 'bye' });
+  });
   window.addEventListener('pageshow', (e) => {
     if (e.persisted) location.reload();
   });
@@ -175,6 +193,23 @@ export async function boot(): Promise<Host> {
       }),
     overlays: () => frames.size,
     onOverlayChange: (fn) => void overlayListeners.add(fn),
+    setupWallet() {
+      const id = ++setupId;
+      const ready = new Promise<void>((resolve, reject) => {
+        setups.set(id, { resolve, reject });
+        send({ type: 'setup-open', setupId: id });
+      });
+      return {
+        ready,
+        close() {
+          const setup = setups.get(id);
+          if (!setup) return;
+          setups.delete(id);
+          setup.reject(Error('Wallet setup was closed'));
+          send({ type: 'setup-close', setupId: id });
+        },
+      };
+    },
     openPort(origin) {
       const id = ++portId,
         p = { message: new Set<(m: unknown) => void>(), close: new Set<() => void>() };

@@ -244,6 +244,19 @@ function make(keys: string, eager: boolean): QlyphsProvider {
       setState(disconnected(), false);
     }
   };
+  window.addEventListener('pagehide', () => {
+    if (popup && !popup.closed)
+      for (const pending of outstanding.values())
+        if (pending.forwarded)
+          try {
+            post({ id: crypto.randomUUID(), method: 'cancelRequest', target: pending.request.id });
+          } catch {
+            /* The page is leaving; cancellation cannot guarantee a rollback. */
+          }
+    // Keep the wallet visible: it may already be submitting a transaction.
+    close('Page left the Qlyphs Keys session. Reconnect explicitly to continue.');
+    setState(disconnected(), false);
+  });
   const watch = () => {
     clearInterval(poll);
     clearTimeout(readyTimer);
@@ -375,6 +388,13 @@ function make(keys: string, eager: boolean): QlyphsProvider {
         return Promise.reject(
           new QlyphsError('ABORTED', 'Request aborted before dispatch', 'not-submitted'),
         );
+      let timeout: number;
+      try {
+        const limit = method === 'connect' ? 600_000 : 135_000;
+        timeout = validTimeout(options.timeoutMs, limit, limit);
+      } catch (error) {
+        return Promise.reject(error);
+      }
       if (method === 'capabilities') {
         const reported = (lastNetwork ?? snapshot.network)?.network;
         return Promise.resolve(
@@ -390,12 +410,6 @@ function make(keys: string, eager: boolean): QlyphsProvider {
         );
       if (outstanding.size >= 8)
         return Promise.reject(new QlyphsError('BUSY', 'Too many pending requests', 'not-submitted'));
-      let timeout: number;
-      try {
-        timeout = validTimeout(options.timeoutMs, 135_000);
-      } catch (error) {
-        return Promise.reject(error);
-      }
       const id = crypto.randomUUID(),
         writing = method === 'requestTransaction';
       const request = {
@@ -480,7 +494,7 @@ function make(keys: string, eager: boolean): QlyphsProvider {
   return provider;
 }
 
-/** Opens Qlyphs Keys now; call it synchronously from a click. The provider ends with the popup. */
+/** Opens Qlyphs Keys now; call it synchronously from a click. Ends on popup close or pagehide. */
 export function openKeysProvider(options: { origin: string }): QlyphsProvider {
   return make(origin(options?.origin), true);
 }
@@ -489,7 +503,8 @@ export function openKeysProvider(options: { origin: string }): QlyphsProvider {
  * Between popups the provider has no channel to the wallet: its state is the last one it saw and
  * may be out of date (another tab disconnected it, the wallet switched network). It is corrected
  * on the next popup: an UNAUTHORIZED answer or a state for another network ends the session with
- * a disconnect event. */
+ * a disconnect event. Pagehide cancels pending requests, including BFCache navigation. After
+ * restoration, only a fresh explicit request opens the popup; no old request is replayed. */
 export function createKeysProvider(options: { origin?: string } = {}): QlyphsProvider {
   return make(origin(options.origin ?? KEYS_ORIGIN), false);
 }

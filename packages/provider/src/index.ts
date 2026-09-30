@@ -115,6 +115,7 @@ export type RequestInput<M extends WalletMethod> = {
   : { params: WalletRequestMap[M]['params'] });
 export interface RequestOptions {
   signal?: AbortSignal;
+  /** Positive milliseconds, at most 135,000; connect alone permits 600,000 for setup. */
   timeoutMs?: number;
 }
 /** v1 is intentionally retained for existing callers. Feature-detect protocolVersion/on. */

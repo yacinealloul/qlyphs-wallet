@@ -61,10 +61,11 @@ if (
 const env = (name, fallback) => process.env[name] ?? fallback;
 // Same defaults as the extension: hosted services on mainnet, local ones on development.
 const MAINNET_DEFAULTS = {
-  api: 'https://app.qlyphs.com',
+  api: 'https://indexer.qlyphs.com',
   rpc: 'https://rpc1-mainnet.quantus.com',
   explorer: 'https://qlyphs.com/explorer',
-  dapps: ['https://otc.qlyphs.com'],
+  // The Qlyphs app and the OTC, as in the extension.
+  dapps: ['https://app.qlyphs.com', 'https://otc.qlyphs.com'],
 };
 const demoOrigin = 'http://localhost:4411';
 const DEV_DEFAULTS = {

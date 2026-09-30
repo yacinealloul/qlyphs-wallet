@@ -49,7 +49,7 @@ QLYPHS_EXTENSION_NETWORK=mainnet QLYPHS_EXTENSION_PINS="$PWD/deploy/mainnet/pins
   pnpm --filter @qotc/wallet-extension build
 ```
 
-The mainnet build accepts only https origins and defaults to app/API `https://app.qlyphs.com`, RPC
+The mainnet build accepts only https origins and defaults to indexer API `https://indexer.qlyphs.com`, RPC
 `https://rpc1-mainnet.quantus.com` and explorer `https://qlyphs.com/explorer`. Its manifest is named "Qlyphs
 Wallet", carries no development `key` (the store assigns the Chrome ID) and uses the Firefox ID
 `wallet@qlyphs.com`. The configured service must accept the installed extension’s exact origin.

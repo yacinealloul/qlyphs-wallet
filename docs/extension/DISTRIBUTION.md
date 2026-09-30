@@ -10,7 +10,7 @@ remain disabled. See [mainnet notes](../MAINNET.md).
 | --- | --- | --- |
 | Command | `QLYPHS_EXTENSION_NETWORK=mainnet QLYPHS_EXTENSION_PINS="$PWD/deploy/mainnet/pins.json" pnpm --filter @qotc/wallet-extension build` | `pnpm --filter @qotc/wallet-extension build` |
 | Pins | required genesis, runtime and activation anchor | reviewed from the local network at first use |
-| API / RPC | `https://app.qlyphs.com` / `https://rpc1-mainnet.quantus.com` | `http://127.0.0.1:4400` / `http://127.0.0.1:9955` |
+| API / RPC | `https://indexer.qlyphs.com` / `https://rpc1-mainnet.quantus.com` | `http://127.0.0.1:4400` / `http://127.0.0.1:9955` |
 | Explorer | `https://qlyphs.com/explorer` | `http://localhost:3000/explorer` |
 | Manifest | Qlyphs Wallet; no development Chrome `key` | development identity with a committed public key |
 | Firefox ID | `wallet@qlyphs.com` | `wallet-dev@qlyphs.com` |
@@ -50,7 +50,7 @@ mnemonic backups. Load the build directories unpacked when testing.
 5. Supply source, locked dependencies, build steps, tool versions, bundled WASM provenance and license
    notices. Listing copy, privacy policy and permission explanations must identify the contacted hosts.
 
-The default mainnet API and RPC hosts are `app.qlyphs.com` and `rpc1-mainnet.quantus.com`. Public
+The default mainnet API and RPC hosts are `indexer.qlyphs.com` and `rpc1-mainnet.quantus.com`. Public
 addresses and requested operations are sent to those services. The explorer opens separately in a
 tab. No analytics or telemetry is installed. Ask only for necessary permissions, and retain exact
 origin/port checks even where browser host patterns cannot express ports. Do not broaden permissions

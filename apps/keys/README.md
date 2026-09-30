@@ -219,7 +219,7 @@ the next explicit request. An `openKeysProvider` session ends and needs a new in
 does not close the wallet window or undo a submitted transaction.
 
 Your origin must be on the build's allowlist (`QLYPHS_KEYS_DAPP_ORIGINS`; production:
-`https://otc.qlyphs.com`). A demo dapp runs at http://localhost:4411 in development.
+`https://app.qlyphs.com` and `https://otc.qlyphs.com`). A demo dapp runs at http://localhost:4411 in development.
 
 ## Build and run
 

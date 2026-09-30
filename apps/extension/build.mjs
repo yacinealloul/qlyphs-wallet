@@ -52,7 +52,7 @@ const { version } = JSON.parse(await readFile('package.json', 'utf8'));
 const dist = process.env.QLYPHS_EXTENSION_OUTPUT ?? 'dist';
 if (!/^dist(?:-[a-z0-9-]+)?$/.test(dist))
   throw Error('Build output must be a local dist directory');
-const api = process.env.QLYPHS_EXTENSION_API ?? (withMainnet ? 'https://app.qlyphs.com' : 'http://127.0.0.1:4400');
+const api = process.env.QLYPHS_EXTENSION_API ?? (withMainnet ? 'https://indexer.qlyphs.com' : 'http://127.0.0.1:4400');
 const explorer =
   process.env.QLYPHS_EXTENSION_EXPLORER ??
   (withMainnet ? 'https://qlyphs.com/explorer' : 'http://localhost:3000/explorer');

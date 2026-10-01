@@ -213,7 +213,10 @@ const labels: Record<string, string> = {
   sendQtc: 'Send QTC',
   transfer: 'Transfer tokens',
   deploy: 'Create token',
+  deployProgressive: 'Create progressive token',
+  deployProgressiveV2: 'Create progressive token',
   mint: 'Mint tokens',
+  mintProgressive: 'Mint a lot',
   pair: 'Create trading pair',
   sell: 'Reserve tokens for sale',
   buy: 'Buy tokens',
@@ -844,6 +847,15 @@ async function render() {
         );
         $('review-qlyph').hidden = false;
       }
+      const lot = r.progressive;
+      if (c.kind === 'mintProgressive' && lot && r.asset) {
+        $('review-amount').replaceChildren(
+          node('span', formatUnits(BigInt(lot.amount), r.asset.definition.decimals), 'review-quantity'),
+          document.createTextNode(' '),
+          node('span', assetName(r.asset), 'review-currency'),
+        );
+        $('review-amount').hidden = false;
+      }
       if (c.kind === 'sendQtc' || (c.kind === 'transfer' && r.asset)) {
         $('review-amount').replaceChildren(
           node(
@@ -883,6 +895,29 @@ async function render() {
           ['Mint limit (base units)', String(c.limit)],
           ['Mint policy', String(c.policy)],
         );
+      if (c.kind === 'deployProgressive' || c.kind === 'deployProgressiveV2')
+        rows.push(
+          ['Symbol', String(c.symbol)],
+          ['Decimals', String(c.decimals)],
+          ['Supply cap (base units)', String(c.cap)],
+          ['Lots', '1000 equal lots of ' + String(BigInt(String(c.cap)) / 1000n) + ' base units'],
+          [
+            'Mint',
+            'Anyone, one lot at a time, ' +
+              (c.kind === 'deployProgressive' ? '0.1 to 0.5' : '0.01 to 0.44') +
+              ' QTC per lot',
+          ],
+        );
+      if (c.kind === 'mintProgressive' && lot && r.asset) {
+        const after = BigInt(lot.lot);
+        rows.push(
+          ['Lot', lot.lot + ' / ' + lot.lots],
+          ['Tokens received', formatUnits(BigInt(lot.amount), r.asset.definition.decimals) + ' ' + assetName(r.asset)],
+          ['Minted after this lot', after + ' / 1000 lots · ' + (Number(after) / 10).toFixed(1) + '%'],
+          ['Mint right', 'block ' + lot.anchor.height + ' · position ' + lot.anchor.index + ' · ' + short(lot.anchor.hash)],
+          ['Attested at block', String(lot.block.height)],
+        );
+      }
       if (c.kind === 'pair')
         rows.push(['Buyer', String(c.buyer)], ['Multisig threshold', '2 of 2']);
       if (offer)
@@ -913,7 +948,12 @@ async function render() {
           ? BigInt(String(c.amount))
           : c.kind === 'buy' && offer
             ? BigInt(String(offer.price))
-            : c.kind === 'deploy' || c.kind === 'mint' || c.kind === 'inscribe'
+            : c.kind === 'deploy' ||
+                c.kind === 'mint' ||
+                c.kind === 'inscribe' ||
+                c.kind === 'deployProgressive' ||
+                c.kind === 'deployProgressiveV2' ||
+                c.kind === 'mintProgressive'
               ? 0n
               : undefined;
       if (spent !== undefined) {
@@ -930,6 +970,8 @@ async function render() {
           ? 'A Quark is the equivalent of an NFT: unique, numbered content with a single owner. Its content is public and permanent. Every Quantus transaction is signed with ML-DSA (post-quantum), so this Quark\'s provenance is bound to a post-quantum signature on chain. Its number is assigned at inclusion. Fees are estimates.'
           : c.kind === 'buy'
           ? 'Before signing, this extension requires matching, fresh ML-DSA attestations from both configured witnesses. These are operator claims, not consensus proofs. Network fees are estimates.'
+          : c.kind === 'mintProgressive'
+          ? 'This lot and its price come from fresh ML-DSA attestations by both configured witnesses. If someone mints this lot first, your transaction fails on chain: you pay the network fee only, never the Qlyphs fee. Fees are estimates.'
           : 'Fees are estimates, not a guaranteed cap. Approval signs only this operation.';
       $('review-full').textContent = JSON.stringify(JSON.parse(json(r)), null, 2);
     } else {

@@ -2,7 +2,7 @@
 
 ## Reused protocol, not a new chain
 
-The extension imports the active QLYP-v1 command parser, canonical encoders, Quantus address/extrinsic codec and pinned WASM glue from this repository. It changes neither token consensus rules nor the QLYP-v1 fee rules (deploy 1 QTC, mint 0.01 QTC, inscription 0.1 QTC, 1% sale fee paid by the buyer, all to the fixed Qlyphs fee account). `sendQtc` is a native transfer, not a token purchase. Purchases require finalized bilateral reservations and canonical batch settlement.
+The extension imports the active QLYP-v1 command parser, canonical encoders, Quantus address/extrinsic codec and pinned WASM glue from this repository. It changes neither token consensus rules nor the QLYP-v1 fee rules (deploy 1 QTC, mint 0.01 QTC, lot n of a progressive token 0.1 to 0.5 QTC (progressive-1000-v1) or 0.01 to 0.44 QTC (progressive-1000-v2) by tier, inscription 0.1 QTC, 1% sale fee paid by the buyer, all to the fixed Qlyphs fee account). `sendQtc` is a native transfer, not a token purchase. Purchases require finalized bilateral reservations and canonical batch settlement.
 
 ## Privilege boundaries
 
@@ -32,13 +32,24 @@ The extension still trusts the configured full node for consensus and runtime ex
 Displayed balances, metadata, history and fee estimates rely on the configured API and remain
 unsigned/provisional. It does not run an independent full node, indexer or light client inside the browser.
 
-Development **purchases** additionally require QPA1 agreement from every compiled witness operator.
+Development **purchases** and **progressive lot mints** additionally require QPA1 agreement from
+every compiled witness operator. A lot mint uses a tip attestation: both witnesses sign the state at
+the best block X of the wallet's node (with one more try on a fresh best block, never an older
+one), under a statement domain of its own, so it can never
+stand in for a finalized checkpoint. The review's token, lot number, amount, Qlyphs fee and mint
+right come from that state, not from the API. The wallet derives the call from it and asks the API
+to prepare the lot at X; the prepared call and block must match exactly. It signs with a mortal era
+born exactly at X: the payment is valid only on chains that contain the attested
+state, where the right is current or already used, and a reorganization that drops X only makes it
+invalid. Right before signing the context must still be X. A lot taken in between is refused
+before signing when the API's live view shows it; one taken after signing makes the transaction
+fail on chain before its payment, so only the network fee is spent.
 The extension background owns the random challenge, fixed aggregation endpoint, public trust pins
 and IndexedDB high-water cursor. It verifies signatures, network/activation/rules/runtime, bounded
 lifetime, same finalized snapshot, rollback/equivocation rules and exact purchase bytes before
 using the signing key. After waiting it repeats cancellation, account, permission, session epoch
 and deadline checks. Trust pins are not accepted from page messages, storage or API responses.
-A development package without a compiled policy refuses purchases. Mainnet and switchable builds reject a policy and disable purchases pending mainnet witness validation. Missing/divergent/invalid attestations never
+A development package without a compiled policy refuses purchases and lot mints. Mainnet and switchable builds reject a policy and disable both pending mainnet witness validation. Missing/divergent/invalid attestations never
 fall back to the unsigned view or an ordinary QTC payment.
 
 Witnesses are attestations by configured operators, not a proof of honest computation. Witness operators remain dependent on their full nodes, metadata and rules; collusion or
@@ -48,7 +59,7 @@ Trust-key rotation and revocation require a reviewed rebuilt wallet and trusted 
 Old clients do not learn new revocations automatically. Post-quantum transaction and witness signatures
 do not make browser-store or update authentication post-quantum.
 
-Fee quotes are estimates tied to the runtime and review block, not a signed fee cap. The confirmation separates native network fee, non-refundable native charge, refundable native deposit and the Qlyphs fee. The Qlyphs fee is the QLYP-v1 protocol fee (1 QTC per deploy, 0.01 QTC per mint, 0.1 QTC per inscription, 1% of the price on a purchase, rounded up), a protocol constant rather than a configurable value: it is paid only to the fixed Qlyphs fee account defined in the shared protocol code, a call carrying any other fee amount or recipient is invalid under the protocol, and the wallet recomputes the fee itself and refuses to sign when the service quotes a different amount.
+Fee quotes are estimates tied to the runtime and review block, not a signed fee cap. The confirmation separates native network fee, non-refundable native charge, refundable native deposit and the Qlyphs fee. The Qlyphs fee is the QLYP-v1 protocol fee (1 QTC per deploy, 0.01 QTC per mint, 0.1 to 0.5 QTC (v1) or 0.01 to 0.44 QTC (v2) per progressive lot by its number, 0.1 QTC per inscription, 1% of the price on a purchase, rounded up), a protocol constant rather than a configurable value: it is paid only to the fixed Qlyphs fee account defined in the shared protocol code, a call carrying any other fee amount or recipient is invalid under the protocol, and the wallet recomputes the fee itself and refuses to sign when the service quotes a different amount.
 
 ## Validation and remaining limits
 

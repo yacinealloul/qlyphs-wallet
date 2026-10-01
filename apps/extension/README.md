@@ -5,13 +5,16 @@ signs Qlyphs operations (Quarks, fair-mint tokens, bilateral token sales) for th
 **0.5.1**. A Qlyphs product, not an official Quantus wallet. QLYP-v1 assets are an indexed token overlay,
 not runtime-native `pallet_assets` balances; the bilateral market is not an AMM or open-taker order book.
 
-Mainnet builds require reviewed network pins. Purchases stay refused on mainnet until the
-post-quantum witnesses are validated there ([MAINNET.md](../../docs/MAINNET.md)).
+Mainnet builds require reviewed network pins. Purchases and progressive lot mints stay refused on
+mainnet until the post-quantum witnesses are validated there ([MAINNET.md](../../docs/MAINNET.md)).
 The development build is for local chains only; do not import an account holding real funds into it.
 
 **Fees.** QLYP-v1 charges a Qlyphs fee, paid to the Qlyphs fee account in the same signed extrinsic:
-1 QTC to create a token, 0.01 QTC per mint, 0.1 QTC per inscription, and 1% (rounded up, paid by the
-buyer) of the QTC price of any token sale. Token transfers and plain QTC sends carry no Qlyphs fee. The
+1 QTC to create a token, 0.01 QTC per mint, per lot of a progressive token 0.1 to 0.5 QTC
+(progressive-1000-v1, 300 QTC for all 1,000 lots) or 0.01 to 0.44 QTC (progressive-1000-v2, 210 QTC
+in all) by lot number, 0.1 QTC per inscription, and 1% (rounded up, paid by the
+buyer) of the QTC price of any token sale. A progressive lot also burns the runtime's multisig fee
+(0.03 QTC on the pinned development runtime) for its one-shot mint right. Token transfers and plain QTC sends carry no Qlyphs fee. The
 wallet recomputes the expected fee itself and refuses to sign when the service asks for a different one.
 Network fees come on top.
 
@@ -53,7 +56,7 @@ The mainnet build accepts only https origins and defaults to indexer API `https:
 `https://rpc1-mainnet.quantus.com` and explorer `https://qlyphs.com/explorer`. Its manifest is named "Qlyphs
 Wallet", carries no development `key` (the store assigns the Chrome ID) and uses the Firefox ID
 `wallet@qlyphs.com`. The configured service must accept the installed extension’s exact origin.
-Mainnet and switchable builds reject `NATIVE_PQ_POLICY_FILE`; purchases remain disabled.
+Mainnet and switchable builds reject `NATIVE_PQ_POLICY_FILE`; purchases and lot mints remain disabled.
 
 **Development** (no env): the default build, unchanged. It accepts only loopback HTTP origins, defaults
 to API `http://127.0.0.1:4400`, RPC `http://127.0.0.1:9955` and explorer `http://localhost:3000/explorer`,
@@ -126,18 +129,24 @@ Open an allowed dapp and click **Connect wallet**. If Qlyphs is locked, the exte
 
 A five-minute absolute unlock deadline is not extended by dapp messages. Browser suspension or a background restart locks the wallet sooner. After a restart, reopen the wallet, unlock explicitly, reload/reconnect the dapp if necessary, and inspect saved history. Unknown submission outcomes must not be treated as failures or retried with a new nonce.
 
-## Post-quantum purchase verification
+## Post-quantum purchase and lot-mint verification
 
-Development purchases require QPA1 attestations in the extension's privileged background, or in
-the wallet worker for Qlyphs Keys. The wallet creates its own challenge, verifies both configured
-ML-DSA-87 witnesses against compiled public pins, checks the finalized reservation against the exact
-purchase bytes, and persists its authenticated high-water checkpoint in wallet-owned IndexedDB.
-A dapp cannot supply keys, an endpoint, a policy or a `verified` flag. The signing session is checked
-again after asynchronous verification.
+Development purchases and progressive lot mints require QPA1 attestations in the extension's
+privileged background, or in the wallet worker for Qlyphs Keys. The wallet creates its own
+challenge, verifies both configured ML-DSA-87 witnesses against compiled public pins, checks the
+finalized reservation against the exact purchase bytes, and persists its authenticated high-water
+checkpoint in wallet-owned IndexedDB. A lot mint uses a tip attestation of its node's best block
+instead, with one more try on a fresh best block and never an older one: its review takes the token, lot number, amount and fee from that state. The
+wallet derives the call itself and requires the service's intent, prepared at that same block, to
+match it exactly. It signs with an era born at that block, so the payment can only execute where
+the attested right exists. A tip attestation never moves the high-water checkpoint. A dapp cannot supply keys, an
+endpoint, a policy or a `verified` flag. The signing session is checked again after asynchronous
+verification.
 
-**Purchases are disabled on mainnet and in switchable builds.** These builds reject a witness policy
-because mainnet witnesses have not been validated. Development builds without a policy also refuse
-purchases. QTC sends, creation, mint, inscription and ordinary transfers do not require this policy.
+**Purchases and lot mints are disabled on mainnet and in switchable builds.** These builds reject a
+witness policy because mainnet witnesses have not been validated. Development builds without a
+policy also refuse them. QTC sends, creation, legacy mint, inscription and ordinary transfers do
+not require this policy.
 
 For a development environment with compatible witness services, compile their reviewed public policy:
 
@@ -145,7 +154,10 @@ For a development environment with compatible witness services, compile their re
 NATIVE_PQ_POLICY_FILE=/absolute/path/to/public-policy.json pnpm --filter @qotc/wallet-extension build
 ```
 
-The build rejects policies for another rules fingerprint, runtime or activation. The wallet fetches
+The build rejects policies for another rules fingerprint, runtime or activation. The rules
+fingerprint includes the witnesses' progressive mint activations: build with the same
+`NATIVE_PROGRESSIVE_FROM` and `NATIVE_PROGRESSIVE_V2_FROM` heights the witnesses use (unset when they
+have none). The wallet fetches
 attestations from its fixed API origin, never an endpoint supplied by a dapp. Witness private keys do
 not belong in the build or the wallet. No insecure purchase fallback is supplied.
 

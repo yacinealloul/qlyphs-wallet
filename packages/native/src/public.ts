@@ -17,6 +17,11 @@ export interface IndexerStatus {
   /** True exactly when network is 'mainnet'. */
   mainnetEnabled: boolean;
   manifest: Manifest;
+  /** First block of progressive mint on this indexer, or null. Display only: wallets sign a
+   * progressive mint from attested state. Absent from indexers without progressive mint. */
+  progressive?: { from: number } | null;
+  /** The same for progressive-1000-v2 (tag 12). */
+  progressiveV2?: { from: number } | null;
   ready: boolean;
   head: number;
   finalized: number;

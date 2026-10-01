@@ -107,10 +107,15 @@ export function parseInscriptionPage(value: unknown): {
   return { inscriptions: v.inscriptions.map(parseInscriptionSummary), more: v.more };
 }
 type Get = (path: string) => Promise<unknown>;
-/** Refuse a DEPLOY whose symbol is already claimed: the protocol would reject it after
- * charging its fee. Run right before the review and again right before signing. */
+/** Refuse a DEPLOY (legacy or progressive) whose symbol is already claimed: the protocol would
+ * reject it after charging its fee. Run right before the review and again right before signing. */
 export async function checkSymbol(command: Command, get: Get): Promise<void> {
-  if (command.kind !== 'deploy') return;
+  if (
+    command.kind !== 'deploy' &&
+    command.kind !== 'deployProgressive' &&
+    command.kind !== 'deployProgressiveV2'
+  )
+    return;
   let value: unknown;
   try {
     value = await get('/api/symbol?symbol=' + encodeURIComponent(command.symbol));

@@ -1,5 +1,6 @@
 import { fromHex, requireThat } from './codec.ts';
-import { MAINNET } from './protocol.ts';
+import { checkRules, LEGACY_RULES, MAINNET, mainnetRules } from './protocol.ts';
+import type { Rules } from './protocol.ts';
 
 /** Fingerprint of the only development runtime supported by this alpha. */
 export const DEV_RUNTIME_HASH =
@@ -86,6 +87,45 @@ export function mainnetProfile(pins: unknown): NetworkProfile {
       hash: hash32(activation!.hash, 'activation hash'),
     },
   };
+}
+
+/** The rules for the configured activation heights: NATIVE_PROGRESSIVE_FROM (progressive-1000-v1,
+ * tag 11) and NATIVE_PROGRESSIVE_V2_FROM (progressive-1000-v2, tag 12). An absent height keeps its
+ * tag an unknown operation. Mainnet has no reviewed activation, so any value is refused. */
+export function progressiveRules(
+  network: NetworkName,
+  from: string | undefined,
+  fromV2: string | undefined,
+): Rules {
+  const height = (v: string | undefined, name: string) => {
+    if (v === undefined || v === '') return null;
+    requireThat(network === 'development', 'progressive mint has no reviewed mainnet activation');
+    requireThat(/^[1-9][0-9]{0,9}$/.test(v), `invalid ${name} activation height`);
+    return { from: Number(v) };
+  };
+  const rules = {
+    progressive: height(from, 'progressive'),
+    progressiveV2: height(fromV2, 'progressive v2'),
+  };
+  return rules.progressive === null && rules.progressiveV2 === null
+    ? LEGACY_RULES
+    : checkRules(rules);
+}
+
+/** The rules a service or witness of `profile` runs. Development takes the configured activation
+ * heights; mainnet runs only the reviewed ones (mainnetRules), and refuses any height configured
+ * for it. */
+export function profileRules(
+  profile: NetworkProfile,
+  from: string | undefined,
+  fromV2: string | undefined,
+): Rules {
+  if (profile.network === 'development') return progressiveRules('development', from, fromV2);
+  requireThat(
+    !from && !fromV2,
+    'mainnet takes progressive activations from the reviewed release only',
+  );
+  return mainnetRules();
 }
 
 /** A manifest as a service or wallet of this profile must see it. */

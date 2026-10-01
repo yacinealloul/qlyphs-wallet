@@ -1,6 +1,7 @@
 import { policy } from '../native/src/pq/checkpoint.ts';
 import { rulesHash } from '../native/src/pq/node.ts';
-import { DEV_RUNTIME_HASH, DEVELOPMENT, mainnetProfile } from '../native/src/network.ts';
+import { DEV_RUNTIME_HASH, DEVELOPMENT, mainnetProfile, progressiveRules } from '../native/src/network.ts';
+import { MAINNET_PROGRESSIVE_V2_FROM, mainnetRules } from '../../packages/native/src/protocol.ts';
 import { licenseNotices } from './licenses.mjs';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
@@ -24,7 +25,9 @@ if (!withMainnet && process.env.QLYPHS_EXTENSION_PINS)
 const pins = withMainnet ? JSON.parse(await readFile(process.env.QLYPHS_EXTENSION_PINS, 'utf8')) : null;
 const mainnetPins = withMainnet ? mainnetProfile(pins) : null;
 const profile = withMainnet ? mainnetPins : DEVELOPMENT;
-if (withMainnet && process.env.NATIVE_PQ_POLICY_FILE)
+// A mainnet wallet carries a witness policy only once the progressive activation is reviewed, and
+// only in a mainnet build: one policy cannot serve both networks of a switchable build.
+if (withMainnet && process.env.NATIVE_PQ_POLICY_FILE && (switchable || MAINNET_PROGRESSIVE_V2_FROM === null))
   throw Error('PQ witnesses are not validated on mainnet yet; build without NATIVE_PQ_POLICY_FILE');
 if (
   switchable &&
@@ -38,7 +41,22 @@ const pqPolicy = process.env.NATIVE_PQ_POLICY_FILE
   : null;
 if (
   pqPolicy &&
-  (pqPolicy.rulesHash !== rulesHash() ||
+  withMainnet &&
+  // The mainnet policy binds the pinned network and the reviewed progressive activation.
+  (pqPolicy.genesis !== mainnetPins.genesis ||
+    pqPolicy.activation.height !== mainnetPins.activation.height ||
+    pqPolicy.activation.hash !== mainnetPins.activation.hash ||
+    pqPolicy.runtimeHash !== mainnetPins.runtime.codeHash ||
+    pqPolicy.rulesHash !== rulesHash(undefined, mainnetRules()) ||
+    process.env.NATIVE_PROGRESSIVE_FROM ||
+    process.env.NATIVE_PROGRESSIVE_V2_FROM)
+)
+  throw Error('PQ policy does not match the mainnet pins and the reviewed protocol');
+if (
+  pqPolicy &&
+  !withMainnet &&
+  // The policy binds the witnesses' progressive activation (NATIVE_PROGRESSIVE_FROM) too.
+  (pqPolicy.rulesHash !== rulesHash(undefined, progressiveRules('development', process.env.NATIVE_PROGRESSIVE_FROM, process.env.NATIVE_PROGRESSIVE_V2_FROM)) ||
     pqPolicy.runtimeHash !== DEV_RUNTIME_HASH ||
     pqPolicy.activation.height !== 0 ||
     pqPolicy.activation.hash !== pqPolicy.genesis)

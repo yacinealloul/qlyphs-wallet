@@ -83,6 +83,9 @@ export function nativeOutlay(command: Command, ticket?: Ticket): bigint | undefi
     case 'transfer':
     case 'deploy':
     case 'mint':
+    case 'deployProgressive':
+    case 'deployProgressiveV2':
+    case 'mintProgressive':
       return 0n;
     default:
       return undefined;
@@ -101,7 +104,11 @@ export function checkPayerBalance(
   const error =
     command.kind === 'buy'
       ? BUY_FUNDS_ERROR
-      : command.kind === 'deploy' || command.kind === 'mint'
+      : command.kind === 'deploy' ||
+          command.kind === 'mint' ||
+          command.kind === 'deployProgressive' ||
+          command.kind === 'deployProgressiveV2' ||
+          command.kind === 'mintProgressive'
         ? FEE_FUNDS_ERROR
         : undefined;
   checkSendBalance(balance, costs, outlay, error);

@@ -104,6 +104,15 @@ export function providerState(value: unknown, expectedGenesis?: string): Provide
     invalid();
   return { accounts: a, network, connected: a.length > 0 };
 }
+/** The indexer's progressive mint activation: null, or the first block where it counts. */
+function progressiveActivation(value: unknown): { from: number } | null {
+  if (value === null) return null;
+  const v = object(value);
+  exactKeys(v, ['from']);
+  const from = integer(v.from);
+  if (from < 1) invalid();
+  return { from };
+}
 export function status(value: unknown, expectedGenesis?: string): IndexerStatus {
   const s = object(value);
   if (
@@ -131,6 +140,10 @@ export function status(value: unknown, expectedGenesis?: string): IndexerStatus 
     lastSync: integer(s.lastSync),
     error: s.error === null ? null : text(s.error),
     ...(s.faucet === undefined ? {} : { faucet: flag(s.faucet) }),
+    ...(s.progressive === undefined ? {} : { progressive: progressiveActivation(s.progressive) }),
+    ...(s.progressiveV2 === undefined
+      ? {}
+      : { progressiveV2: progressiveActivation(s.progressiveV2) }),
     ...(s.pqWitnessesConfigured === undefined
       ? {}
       : { pqWitnessesConfigured: flag(s.pqWitnessesConfigured) }),
@@ -175,6 +188,23 @@ export function assetDefinition(value: unknown): PublicAsset['definition'] {
       invalid();
     return { kind: 'deploy', symbol: '', decimals: 0, cap: '1', limit: '0', policy: 'inscription' };
   }
+  if (v.policy === 'progressive' || v.policy === 'progressive-v2') {
+    // A progressive asset (docs/native/PROGRESSIVE-MINT.md): 1,000 lots, one lot per mint.
+    exactKeys(v, ['kind', 'symbol', 'decimals', 'cap', 'limit', 'policy']);
+    const kind = v.policy === 'progressive' ? 'deployProgressive' : 'deployProgressiveV2';
+    const d = command({ kind, symbol: v.symbol, decimals: v.decimals, cap: v.cap });
+    if (v.kind !== 'deploy' || d.kind !== kind) invalid();
+    const cap = BigInt(d.cap);
+    if (cap % 1000n !== 0n || v.limit !== String(cap / 1000n)) invalid();
+    return {
+      kind: 'deploy',
+      symbol: d.symbol,
+      decimals: d.decimals,
+      cap: d.cap,
+      limit: String(cap / 1000n),
+      policy: v.policy,
+    };
+  }
   const definition = command(v);
   if (definition.kind !== 'deploy') invalid();
   return definition;
@@ -185,6 +215,12 @@ export function asset(value: unknown): PublicAsset {
     minted = amount(v.minted);
   // An inscription is minted exactly once, at INSCRIBE, and can never be minted again.
   if (definition.policy === 'inscription' && minted !== '1') invalid();
+  // A progressive asset is minted in whole lots, never beyond its cap.
+  if (
+    (definition.policy === 'progressive' || definition.policy === 'progressive-v2') &&
+    (BigInt(minted) > BigInt(definition.cap) || BigInt(minted) % BigInt(definition.limit) !== 0n)
+  )
+    invalid();
   return { id: id(v.id, 40), creator: id(v.creator), definition, minted };
 }
 const SYMBOL = /^[A-Z0-9]{1,12}$/;

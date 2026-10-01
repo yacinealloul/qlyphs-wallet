@@ -22,14 +22,30 @@ import {
   balanceOf,
   feeBatchCall,
   INSCRIBE_FEE,
+  LEGACY_RULES,
   NativeIndexer,
   operationFee,
+  progressiveActive,
+  progressiveLot,
+  progressiveProfile,
+  progressiveV2Active,
   QLYPHS_FEE_ACCOUNT,
   saleFee,
 } from './protocol.ts';
-import type { State, Ticket } from './protocol.ts';
+import type { ProgressiveLot, Rules, State, Ticket } from './protocol.ts';
+import {
+  PROGRESSIVE_MINT_PROFILE,
+  PROGRESSIVE_MINT_PROFILE_V2,
+  progressiveLotFee,
+  progressiveMintQuote,
+} from './progressive-mint.ts';
+import type { ProgressiveProfile } from './progressive-mint.ts';
 export type Command =
   | Operation
+  /** Buy lot `lot` (1 to 1000) of a progressive asset through its current native right. `profile`
+   * is the fee schedule the dapp priced it with (default progressive-1000-v1); a wallet refuses
+   * a lot whose attested asset has another profile. */
+  | { kind: 'mintProgressive'; asset: string; lot: number; profile?: ProgressiveProfile }
   | { kind: 'sendQtc'; to: string; amount: bigint }
   | { kind: 'pair'; buyer: string; nonce: bigint }
   | { kind: 'sell'; multisig: string; offer: Extract<Operation, { kind: 'offer' }> }
@@ -95,6 +111,35 @@ export function parseCommand(input: unknown): Command {
     case 'mint':
       keys(x, ['kind', 'asset', 'amount']);
       return { kind: 'mint', asset: id(x.asset, 40), amount: amount(x.amount) };
+    case 'deployProgressive':
+      keys(x, ['kind', 'symbol', 'decimals', 'cap']);
+      requireThat(typeof x.symbol === 'string', 'invalid asset definition');
+      return {
+        kind: 'deployProgressive',
+        symbol: x.symbol,
+        decimals: integer(x.decimals, 18),
+        cap: amount(x.cap),
+      };
+    case 'deployProgressiveV2':
+      keys(x, ['kind', 'symbol', 'decimals', 'cap']);
+      requireThat(typeof x.symbol === 'string', 'invalid asset definition');
+      return {
+        kind: 'deployProgressiveV2',
+        symbol: x.symbol,
+        decimals: integer(x.decimals, 18),
+        cap: amount(x.cap),
+      };
+    case 'mintProgressive': {
+      keys(x, 'profile' in x ? ['kind', 'asset', 'lot', 'profile'] : ['kind', 'asset', 'lot']);
+      const lot = integer(x.lot, 1000);
+      requireThat(lot >= 1, 'invalid lot');
+      if (!('profile' in x)) return { kind: 'mintProgressive', asset: id(x.asset, 40), lot };
+      requireThat(
+        x.profile === PROGRESSIVE_MINT_PROFILE || x.profile === PROGRESSIVE_MINT_PROFILE_V2,
+        'invalid progressive profile',
+      );
+      return { kind: 'mintProgressive', asset: id(x.asset, 40), lot, profile: x.profile };
+    }
     case 'transfer':
       keys(x, ['kind', 'asset', 'amount', 'to']);
       return { kind: 'transfer', asset: id(x.asset, 40), amount: amount(x.amount), to: id(x.to) };
@@ -145,10 +190,19 @@ export function parseCommand(input: unknown): Command {
   }
 }
 /** The Qlyphs fee (QTC base units) the signer of this command pays at signing:
- * DEPLOY_FEE for deploy, MINT_FEE for mint, INSCRIBE_FEE for inscribe, the ticket's committed 1%
- * sale fee for buy, else 0n. The seller of an offer pays nothing. */
+ * DEPLOY_FEE for either deploy, MINT_FEE for mint, the lot's fee for a progressive mint,
+ * INSCRIBE_FEE for inscribe, the ticket's committed 1% sale fee for buy, else 0n. The seller of
+ * an offer pays nothing. */
 export function qlyphsFee(command: Command, ticket?: Ticket): bigint {
-  if (command.kind === 'deploy' || command.kind === 'mint') return operationFee(command.kind);
+  if (
+    command.kind === 'deploy' ||
+    command.kind === 'mint' ||
+    command.kind === 'deployProgressive' ||
+    command.kind === 'deployProgressiveV2'
+  )
+    return operationFee(command.kind);
+  if (command.kind === 'mintProgressive')
+    return progressiveLotFee(BigInt(command.lot), command.profile ?? PROGRESSIVE_MINT_PROFILE);
   if (command.kind === 'inscribe') return INSCRIBE_FEE;
   if (command.kind === 'buy') return ticket?.offer.fee ?? 0n;
   return 0n;
@@ -157,16 +211,41 @@ export function qlyphsFee(command: Command, ticket?: Ticket): bigint {
 export function withSaleFee<T extends Extract<Operation, { kind: 'offer' }>>(offer: T): T {
   return { ...offer, fee: saleFee(offer.price), feeTo: QLYPHS_FEE_ACCOUNT };
 }
+/** `lot` is the progressive lot the signer verified (from attested state in a wallet). */
 export function buildCall(
   genesis: string,
   owner: string,
   sequence: bigint,
   command: Command,
   ticket?: Ticket,
+  lot?: ProgressiveLot,
 ): Uint8Array {
   fromHex(owner, 32);
   requireThat(owner !== ZERO, 'zero account');
   switch (command.kind) {
+    case 'mintProgressive':
+      requireThat(
+        lot && lot.asset === command.asset && lot.lot === BigInt(command.lot),
+        `lot ${command.lot} is no longer the next lot of this asset`,
+      );
+      requireThat(
+        lot.profile === (command.profile ?? PROGRESSIVE_MINT_PROFILE),
+        'this token has another progressive profile',
+      );
+      requireThat(owner !== QLYPHS_FEE_ACCOUNT, 'the Qlyphs fee account cannot mint');
+      return Uint8Array.from(lot.call);
+    case 'deployProgressive':
+    case 'deployProgressiveV2':
+      progressiveMintQuote(
+        command.cap,
+        0n,
+        command.kind === 'deployProgressive'
+          ? PROGRESSIVE_MINT_PROFILE
+          : PROGRESSIVE_MINT_PROFILE_V2,
+      );
+      return callBytes(
+        feeBatchCall(hex(encode({ genesis, sequence, op: command })), operationFee(command.kind)),
+      );
     case 'sendQtc':
       requireThat(command.amount > 0n && command.to !== ZERO, 'invalid QTC transfer');
       return callBytes({ kind: 'pay', to: command.to, amount: command.amount });
@@ -224,12 +303,45 @@ export function buildCall(
       });
   }
 }
-export function preflight(s: State, genesis: string, owner: string, command: Command): Uint8Array {
+export function preflight(
+  s: State,
+  genesis: string,
+  owner: string,
+  command: Command,
+  rules: Rules = LEGACY_RULES,
+): Uint8Array {
   const sequence = s.sequences.get(owner) ?? 0n;
+  if (command.kind === 'deployProgressive')
+    requireThat(
+      progressiveActive(rules, s.height + 1),
+      'progressive mint is not active on this network',
+    );
+  if (command.kind === 'deployProgressiveV2')
+    requireThat(
+      progressiveV2Active(rules, s.height + 1),
+      'progressive mint is not active on this network',
+    );
+  if (command.kind === 'mintProgressive') {
+    const lot = progressiveLot(s, genesis, command.asset);
+    requireThat(
+      (lot.profile === PROGRESSIVE_MINT_PROFILE ? progressiveActive : progressiveV2Active)(
+        rules,
+        s.height + 1,
+      ),
+      'progressive mint is not active on this network',
+    );
+    requireThat(
+      lot.lot === BigInt(command.lot),
+      `lot ${command.lot} is no longer the next lot; lot ${lot.lot} is`,
+    );
+    // An unfinal right is signable: a wallet signs a lot with an era born at the block whose state
+    // its witnesses attested, so the payment cannot execute where this right does not exist.
+    return buildCall(genesis, owner, sequence, command, undefined, lot);
+  }
   const t =
     command.kind === 'buy' || command.kind === 'cancel' ? s.tickets.get(command.ticket) : undefined;
   if (command.kind === 'buy')
-    return NativeIndexer.fromCheckpoint(genesis, s).prepareBuy(command.ticket, owner);
+    return NativeIndexer.fromCheckpoint(genesis, s, false, rules).prepareBuy(command.ticket, owner);
   if (command.kind === 'mint' || command.kind === 'transfer' || command.kind === 'sell') {
     const p = command.kind === 'sell' ? command.offer : command;
     const a = s.assets.get(p.asset);
@@ -240,7 +352,8 @@ export function preflight(s: State, genesis: string, owner: string, command: Com
     }
     if (p.kind === 'mint')
       requireThat(
-        (a.definition.policy === 'open' || a.creator === owner) &&
+        progressiveProfile(a.definition.policy) === null &&
+          (a.definition.policy === 'open' || a.creator === owner) &&
           p.amount <= a.definition.limit &&
           a.minted + p.amount <= a.definition.cap,
         'mint not permitted or cap/limit exceeded',
@@ -248,9 +361,19 @@ export function preflight(s: State, genesis: string, owner: string, command: Com
     else requireThat(p.amount <= balanceOf(s, p.asset, owner), 'insufficient available tokens');
     if (p.kind === 'transfer') requireThat(p.to !== ZERO, 'zero recipient');
   }
-  if (command.kind === 'deploy' || command.kind === 'inscribe')
+  if (
+    command.kind === 'deploy' ||
+    command.kind === 'inscribe' ||
+    command.kind === 'deployProgressive' ||
+    command.kind === 'deployProgressiveV2'
+  )
     requireThat(!s.assets.has(assetId(owner, sequence)), 'asset already exists');
-  if (command.kind === 'deploy') requireThat(!s.symbols.has(command.symbol), 'symbol taken');
+  if (
+    command.kind === 'deploy' ||
+    command.kind === 'deployProgressive' ||
+    command.kind === 'deployProgressiveV2'
+  )
+    requireThat(!s.symbols.has(command.symbol), 'symbol taken');
   if (command.kind === 'sell') {
     const p = command.offer,
       m = s.multisigs.get(command.multisig);

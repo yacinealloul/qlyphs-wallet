@@ -105,4 +105,25 @@ export class PqAggregator {
     // Nothing is trusted here. The wallet authenticates every root and operator.
     return { snapshot: replies[0]!.snapshot, attestations } as Bundle;
   }
+  /** Every witness's tip attestation of the state at `block`, a recent best block. */
+  async tipBundle(challenge: string, block: string): Promise<Bundle> {
+    requireThat(/^0x[0-9a-f]{64}$/.test(challenge), 'challenge required');
+    requireThat(/^0x[0-9a-f]{64}$/.test(block), 'block required');
+    const replies = await Promise.all(
+      this.urls.map(async (u) =>
+        object(await boundedJson(`${u}/v1/tip?block=${block}&challenge=${challenge}`), [
+          'snapshot',
+          'attestations',
+        ]),
+      ),
+    );
+    const attestations = replies.flatMap((b) => {
+      requireThat(
+        Array.isArray(b.attestations) && b.attestations.length === 1,
+        'one attestation per endpoint',
+      );
+      return b.attestations;
+    });
+    return { snapshot: replies[0]!.snapshot, attestations } as Bundle;
+  }
 }

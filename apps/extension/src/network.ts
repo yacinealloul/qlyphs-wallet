@@ -4,7 +4,7 @@ import { checkInscribe, checkQlyphCommand, checkSymbol, parseInscription, QLYPH_
 import { API, RPC } from './config.ts';
 import { sameNetwork } from './pinned-network.ts';
 import { MAINNET } from '../../../packages/native/src/protocol.ts';
-import type { Ticket } from '../../../packages/native/src/protocol.ts';
+import type { ProgressiveLot, Ticket } from '../../../packages/native/src/protocol.ts';
 import { checkManifest } from '../../native/src/network.ts';
 import { PROFILE, WRONG_NETWORK_ERROR } from './profile.ts';
 import { fromHex, hex, requireThat } from '../../../packages/native/src/codec.ts';
@@ -21,7 +21,13 @@ export interface Prepared {id:string;owner:string;callHex:string;context:Signing
 export interface QlyphInfo {number:number;contentType?:string;size?:number;content?:string}
 export interface Asset {id:string;creator:string;definition:{symbol:string;decimals:number;cap:string;limit:string;policy:string};available:string;qlyph?:QlyphInfo}
 export interface View {assets:Asset[];offers:unknown[];pairs:unknown[];sequence:string;more:boolean;status:Status}
-export interface Review {intent:Prepared;command:Record<string,unknown>;ticket?:Ticket;asset?:Asset;digest:string}
+/** A progressive mint as the review shows it: every value comes from attested state. */
+export interface ProgressiveReview {lot:string;lots:'1000';amount:string;fee:string;mintedAfter:string;
+  anchor:{height:number;hash:string;index:number};block:{height:number;hash:string}}
+export interface Review {intent:Prepared;command:Record<string,unknown>;ticket?:Ticket;asset?:Asset;progressive?:ProgressiveReview;digest:string}
+/** Attested terms of the next lot (pq-guard's attestedLot), passed in by the background. `block` is
+ * the best block both witnesses attested; the mint is signed with an era born exactly there. */
+export interface AttestedTerms {lot:ProgressiveLot;symbol:string;decimals:number;cap:bigint;minted:bigint;creator:string;block:{height:number;hash:string}}
 export async function getJSON<T>(url:string, body?:unknown):Promise<T> {
   const res=await fetch(url,{method:body===undefined?'GET':'POST',cache:'no-store',credentials:'omit',
     headers:body===undefined?{}:{'content-type':'application/json'},
@@ -93,28 +99,40 @@ export async function ticket(key:string,owner:string,buy:boolean,head:number):Pr
 async function digest(value:unknown):Promise<string> {
   return hex(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(json(value)))));
 }
-export async function prepare(pinned:Manifest,owner:string,input:unknown):Promise<Review> {
+export async function prepare(pinned:Manifest,owner:string,input:unknown,attested?:AttestedTerms):Promise<Review> {
   const s=await network(pinned), command=parseCommand(input);
+  // A progressive mint is built only from the attested next lot, never from the service's view.
+  const lot=command.kind==='mintProgressive'?attested?.lot:undefined;
+  if(command.kind==='mintProgressive')requireThat(lot && lot.asset===command.asset && lot.lot===BigInt(command.lot),
+    'Progressive mint requires attested terms for this lot');
   const t=(command.kind==='buy'||command.kind==='cancel')?await ticket(command.ticket,owner,command.kind==='buy',s.head):undefined;
   // Unique symbols: a claim of a taken symbol is rejected after its fee is paid, so refuse it here.
   await checkSymbol(command,api);
   checkInscribe(command);
-  const intent=await api<Prepared>('/api/prepare',{owner,command});
+  // A lot mint is prepared at the block both witnesses attested: its era is born there.
+  const intent=await api<Prepared>('/api/prepare',command.kind==='mintProgressive'?{owner,command,block:attested!.block}:{owner,command});
   requireThat(intent.owner===owner && typeof intent.id==='string' && /^[0-9a-f-]{36}$/.test(intent.id)
     && Number.isSafeInteger(intent.createdAt) && Number.isSafeInteger(intent.expiresAt)
     && intent.expiresAt>Date.now() && intent.expiresAt<=Date.now()+125000,'Invalid preparation');
   decimal(intent.sequence);
-  const bytes=buildCall(pinned.genesis,owner,BigInt(intent.sequence),command,t);
+  const bytes=buildCall(pinned.genesis,owner,BigInt(intent.sequence),command,t,lot);
   requireThat(hex(bytes)===intent.callHex,'Prepared call differs from requested action');
   validateContext(intent.context,pinned.genesis);
+  if(command.kind==='mintProgressive')requireThat(intent.context.blockNumber===attested!.block.height
+    &&intent.context.blockHash===attested!.block.hash,'Prepared at another block than the attested one');
   for (const k of ['networkFee','nativeFee','deposit','platformFee','existentialDeposit'] as const)decimal(intent.costs[k]);
   requireThat(intent.costs.estimate===true && intent.costs.at===intent.context.blockHash,'Invalid cost estimate or unexpected platform fee');
   // QLYP-v1: the wallet recomputes the Qlyphs fee (deploy 1 QTC, mint 0.01 QTC, sale 1%) and refuses any other.
   checkQlyphsFee(command,t,intent.costs.platformFee);
   if (nativeOutlay(command,t)!==undefined)
     checkPayerBalance(await api<NativeBalance>('/api/balance?owner='+owner),intent.costs,command,t);
-  const assetId=command.kind==='mint'||command.kind==='transfer'?command.asset:command.kind==='sell'?command.offer.asset:t?.offer.asset;
-  const asset=assetId?await api<Asset>('/api/asset?id='+encodeURIComponent(assetId)):undefined;
+  const assetId=command.kind==='mint'||command.kind==='transfer'||command.kind==='mintProgressive'?command.asset:command.kind==='sell'?command.offer.asset:t?.offer.asset;
+  const asset:Asset|undefined=command.kind==='mintProgressive'&&attested
+    ?{id:command.asset,creator:attested.creator,available:'0',definition:{symbol:attested.symbol,decimals:attested.decimals,
+      cap:String(attested.cap),limit:String(attested.lot.amount),policy:attested.lot.profile==='progressive-1000-v2'?'progressive-v2':'progressive'}}
+    :assetId?await api<Asset>('/api/asset?id='+encodeURIComponent(assetId)):undefined;
+  // The indexer's asset view decides nothing here, but a legacy mint of a progressive asset is refused.
+  if(command.kind==='mint')requireThat(asset?.definition.policy!=='progressive'&&asset?.definition.policy!=='progressive-v2','This token mints one lot at a time; use its lot mint');
   if(asset)requireThat(asset.id===assetId && Number.isInteger(asset.definition.decimals)
     && asset.definition.decimals>=0 && asset.definition.decimals<=18,'Invalid asset definition');
   // A Quark moves only as a whole (amount 1); the review shows it through the safe renderer.
@@ -126,8 +144,20 @@ export async function prepare(pinned:Manifest,owner:string,input:unknown):Promis
     const q=parseInscription(found,asset.id);
     asset.qlyph={number:q.number,contentType:q.contentType,size:q.size,content:q.content};
   }
-  const value={intent,command:JSON.parse(json(command)) as Record<string,unknown>,...(t?{ticket:t}:{}),...(asset?{asset}:{})};
+  const progressive:ProgressiveReview|undefined=lot&&attested?{lot:String(lot.lot),lots:'1000',amount:String(lot.amount),
+    fee:String(lot.fee),mintedAfter:String(attested.minted+lot.amount),anchor:{...lot.anchor},block:{...attested.block}}:undefined;
+  const value={intent,command:JSON.parse(json(command)) as Record<string,unknown>,...(t?{ticket:t}:{}),...(asset?{asset}:{}),
+    ...(progressive?{progressive}:{})};
   return {...value,digest:await digest(value)};
+}
+/** The block a lot mint is attested at and signed on: this node's best block, where a right
+ * settled in that block is already used. */
+export async function tipBlock():Promise<{height:number;hash:string}> {
+  const hash=await rpc<string>('chain_getBlockHash');
+  fromHex(hash,32);
+  const height=parseInt((await rpc<{number:string}>('chain_getHeader',[hash])).number,16);
+  requireThat(Number.isSafeInteger(height)&&height>=0,'RPC unavailable or invalid response');
+  return {height,hash};
 }
 export function validateContext(c:SigningContext,genesis:string):void {
   requireThat(c.genesisHash===genesis && c.specVersion===PROFILE.runtime.specVersion && c.transactionVersion===PROFILE.runtime.transactionVersion && c.period===256
@@ -143,8 +173,20 @@ export async function recheck(review:Review,pinned:Manifest,address:string):Prom
   requireThat(s.head-i.context.blockNumber<64,'Review is too old; start again');
   const nonce=await rpc<number>('system_accountNextIndex',[address]);
   requireThat(nonce===i.context.nonce,'Account nonce changed; review again');
-  const state=await api<View>('/api/state?owner='+i.owner);
-  requireThat(state.sequence===i.sequence,'Token sequence changed; review again');
+  // A progressive mint carries no QLYP sequence; the service's live view can only make it refuse.
+  if(command.kind==='mintProgressive'){
+    const live=await api<{minted:string;right?:{height:number;hash:string;index:number}|null}>('/api/asset?id='+encodeURIComponent(command.asset));
+    const r=live.right,a=review.progressive?.anchor;
+    requireThat(!!r&&!!a&&r.height===a.height&&r.hash===a.hash&&r.index===a.index,'Lot '+command.lot+' was just taken; review again');
+    // The signature's era is born at the block the witnesses attested (periods up to 4096 are not
+    // quantized), so the payment can only execute on chains that contain that attested state: there
+    // the right is current or already used, never absent.
+    const b=review.progressive?.block;
+    requireThat(!!b&&i.context.blockNumber===b.height&&i.context.blockHash===b.hash,'The lot must be signed on its attested block');
+  } else {
+    const state=await api<View>('/api/state?owner='+i.owner);
+    requireThat(state.sequence===i.sequence,'Token sequence changed; review again');
+  }
   const t=review.ticket?await ticket(review.ticket.key,i.owner,command.kind==='buy',s.head):undefined;
   requireThat(json(t)===json(review.ticket),'Reservation changed; review again');
   checkQlyphsFee(command,t,i.costs.platformFee);
@@ -152,5 +194,6 @@ export async function recheck(review:Review,pinned:Manifest,address:string):Prom
     checkPayerBalance(await api<NativeBalance>('/api/balance?owner='+i.owner),i.costs,command,t);
   // Re-check the symbol right before signing: another claim may have landed since the review.
   await checkSymbol(command,api);
-  requireThat(hex(buildCall(pinned.genesis,i.owner,BigInt(i.sequence),command,t))===i.callHex,'Call changed after approval');
+  if(command.kind!=='mintProgressive')
+    requireThat(hex(buildCall(pinned.genesis,i.owner,BigInt(i.sequence),command,t))===i.callHex,'Call changed after approval');
 }

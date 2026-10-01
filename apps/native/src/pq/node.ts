@@ -10,6 +10,8 @@ import type { KeyObject } from 'node:crypto';
 import { readFileSync, writeFileSync, statSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fromHex, hex, requireThat } from '../../../../packages/native/src/codec.ts';
+import { checkRules, LEGACY_RULES } from '../../../../packages/native/src/protocol.ts';
+import type { Rules } from '../../../../packages/native/src/protocol.ts';
 import {
   canonical,
   keyId,
@@ -17,6 +19,7 @@ import {
   PROTOCOL,
   stateRoot,
   statementBytes,
+  tipStatementBytes,
   hash512,
   MAX_TTL_MS,
 } from './checkpoint.ts';
@@ -85,15 +88,23 @@ export function createKeyFiles(
     passphraseFile,
   };
 }
-export function rulesHash(root = resolve('../..')): string {
+/** Binds the installed rule sources and the configured activations: witnesses that would read
+ * the same blocks differently cannot share a policy. */
+export function rulesHash(root = resolve('../..'), rules: Rules = LEGACY_RULES): string {
   return hash512('Qlyphs/QPA1/rules-source', [
     readFileSync(resolve(root, 'packages/native/src/codec.ts'), 'utf8'),
     readFileSync(resolve(root, 'packages/native/src/protocol.ts'), 'utf8'),
+    readFileSync(resolve(root, 'packages/native/src/progressive-mint.ts'), 'utf8'),
+    readFileSync(resolve(root, 'packages/native/src/sha512.ts'), 'utf8'),
+    canonical(checkRules(rules)),
   ]);
 }
-export function loadPolicy(file: string): Policy {
+export function loadPolicy(file: string, rules: Rules = LEGACY_RULES): Policy {
   const p = policy(JSON.parse(readFileSync(file, 'utf8')));
-  requireThat(p.rulesHash === rulesHash(), 'policy differs from installed protocol');
+  requireThat(
+    p.rulesHash === rulesHash(undefined, rules),
+    'policy differs from installed protocol',
+  );
   return p;
 }
 export function attest(
@@ -104,6 +115,7 @@ export function attest(
   operator: string,
   key: KeyObject,
   now = Date.now(),
+  kind: 'final' | 'tip' = 'final',
 ): Attestation {
   policy(p, now);
   fromHex(challenge, 32);
@@ -132,7 +144,8 @@ export function attest(
     operator,
     keyId: k.keyId,
   };
-  return { statement, signature: hex(sign(null, statementBytes(statement), key)) };
+  const bytes = kind === 'final' ? statementBytes(statement) : tipStatementBytes(statement);
+  return { statement, signature: hex(sign(null, bytes, key)) };
 }
 export function sameScope(a: Policy, b: Policy): boolean {
   const scope = (p: Policy) => ({

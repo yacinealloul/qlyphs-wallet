@@ -44,7 +44,7 @@ import {
   VERSION,
   walletKey,
 } from './config.ts';
-import { api, network, prepare, recheck } from './network.ts';
+import { api, network, prepare, recheck, tipBlock } from './network.ts';
 import { qlyphNumbers } from './qlyphs.ts';
 import { submitOnce } from './submission.ts';
 import type { Manifest, Review, View } from './network.ts';
@@ -55,12 +55,13 @@ import { parseRequest, exact, pageOrigin, sameExtensionPage, Requests } from './
 import type { BoundDocument, Request } from './requests.ts';
 import { generateMnemonic, requireMnemonic } from '../../../packages/chain/src/browser/mnemonic.ts';
 import { fromHex, hex, requireThat, assetId } from '../../../packages/native/src/codec.ts';
+import { MAINNET_PROGRESSIVE_V2_FROM } from '../../../packages/native/src/protocol.ts';
 import {
   extrinsicHash,
   parseSignedExtrinsic,
 } from '../../../packages/chain/src/codec/extrinsic.ts';
 import { parseCommand, json } from '../../native/src/commands.ts';
-import { authorizePurchase, pqConfigured } from '../../native/web/pq-guard.ts';
+import { attestedLot, authorizePurchase, pqConfigured } from '../../native/web/pq-guard.ts';
 import { capabilities, QlyphsError, publicError } from '../../../packages/provider/src/index.ts';
 import type { ProviderState, PublicErrorCode } from '../../../packages/provider/src/index.ts';
 
@@ -624,7 +625,31 @@ async function createJob(
       const command = parseCommand(input);
       if (command.kind === 'buy')
         requireThat(pqConfigured, 'Purchases disabled: no bundled PQ witness policy');
-      job.review = await prepare(state.manifest!, a.owner, input);
+      // Mainnet runs progressive-1000-v2 only from its reviewed activation, and never v1: before it,
+      // a progressive deploy or lot is refused there.
+      if (
+        command.kind === 'deployProgressive' ||
+        ((command.kind === 'deployProgressiveV2' || command.kind === 'mintProgressive') &&
+          MAINNET_PROGRESSIVE_V2_FROM === null)
+      )
+        requireThat(PROFILE.network !== 'mainnet', 'Progressive tokens are not enabled on mainnet');
+      // A progressive mint is priced and built only from terms both witnesses attest.
+      if (command.kind === 'mintProgressive')
+        requireThat(pqConfigured, 'Progressive mint disabled: no bundled PQ witness policy');
+      // The terms come from both witnesses' attestation of a recent best block, which the mint's
+      // signature will then commit to.
+      const attested =
+        command.kind === 'mintProgressive'
+          ? await attestedLot(
+              a.owner,
+              a.genesis,
+              command.asset,
+              command.lot,
+              tipBlock,
+              API + '/api/attestations/tip',
+            )
+          : undefined;
+      job.review = await prepare(state.manifest!, a.owner, input, attested);
     } else await network(state.manifest!);
     current(job);
     const p = requests.add(doc, job);
@@ -796,7 +821,10 @@ async function approve(id: string, digest: string, sender: Sender): Promise<unkn
       // History reconciliation can mutate tx while storage is awaiting IO.
       // A submission acknowledgment is immutable, not an inclusion status.
       status: submitted.status,
-      ...(review.command.kind === 'deploy' || review.command.kind === 'inscribe'
+      ...(review.command.kind === 'deploy' ||
+      review.command.kind === 'deployProgressive' ||
+      review.command.kind === 'deployProgressiveV2' ||
+      review.command.kind === 'inscribe'
         ? { asset: assetId(job.owner, BigInt(review.intent.sequence)) }
         : {}),
     };

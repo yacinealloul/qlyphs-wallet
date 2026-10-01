@@ -20,10 +20,15 @@ import {
   FIRST_INSCRIPTION,
   INSCRIPTION_DEFINITION,
   MAINNET,
+  MAINNET_PROGRESSIVE_V2_FROM,
+  progressiveLot,
+  progressiveProfile,
   PROTOCOL_LABEL,
   QLYPHS_FEE_ACCOUNT,
   saleFee,
 } from '../../../../packages/native/src/protocol.ts';
+import { PROGRESSIVE_MINT_LOTS } from '../../../../packages/native/src/progressive-mint.ts';
+import type { Anchor } from '../../../../packages/native/src/progressive-mint.ts';
 import type {
   Asset,
   Inscription,
@@ -125,7 +130,14 @@ export interface Snapshot {
   format: 1;
   height: number;
   hash: string;
-  assets: { id: string; creator: string; definition: string; minted: string }[];
+  /** A progressive asset also carries `right`, the anchor of its current mint right (or null). */
+  assets: {
+    id: string;
+    creator: string;
+    definition: string;
+    minted: string;
+    right?: Anchor | null;
+  }[];
   balances: { key: string; amount: string }[];
   sequences: { owner: string; value: string }[];
   multisigs: { id: string; threshold: number; signers: string[] }[];
@@ -167,11 +179,32 @@ function definitionHex(a: Asset, genesis: string, ins: Inscription | undefined):
       }),
     );
   }
+  if (d.policy === 'progressive' || d.policy === 'progressive-v2')
+    return hex(
+      encode({
+        genesis,
+        sequence: 0n,
+        op: {
+          kind: d.policy === 'progressive' ? 'deployProgressive' : 'deployProgressiveV2',
+          symbol: d.symbol,
+          decimals: d.decimals,
+          cap: d.cap,
+        },
+      }),
+    );
   return hex(encode({ genesis, sequence: 0n, op: { ...d, policy: d.policy } }));
 }
 /** Journal text / insertion order / provisional heads are deliberately not consensus state. */
 export function snapshot(s: State, genesis: string): Snapshot {
   requireThat(s.height === s.finalized, 'finalized state required');
+  return encodeSnapshot(s, genesis);
+}
+/** The same encoding for the state at a best block that may still be reorganized. It is only ever
+ * signed under the tip domain (tipStatementBytes), never as a finalized checkpoint. */
+export function tipSnapshot(s: State, genesis: string): Snapshot {
+  return encodeSnapshot(s, genesis);
+}
+function encodeSnapshot(s: State, genesis: string): Snapshot {
   const pairs = <T>(m: Map<string, T>) => [...m].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return {
     format: 1,
@@ -182,6 +215,9 @@ export function snapshot(s: State, genesis: string): Snapshot {
       creator: a.creator,
       definition: definitionHex(a, genesis, s.inscriptions.get(id)),
       minted: String(a.minted),
+      ...(progressiveProfile(a.definition.policy)
+        ? { right: a.right ? { ...a.right } : null }
+        : {}),
     })),
     balances: pairs(s.balances)
       .filter(([, n]) => n > 0n)
@@ -217,8 +253,14 @@ export function snapshot(s: State, genesis: string): Snapshot {
     nextInscription: s.nextInscription,
   };
 }
-/** Decode an authenticated snapshot defensively. Never use an unsigned API checkpoint. */
-export function snapshotState(input: unknown, genesis: string): State {
+/** Decode an authenticated snapshot defensively. Never use an unsigned API checkpoint. Mainnet
+ * snapshots exist only once its progressive activation is reviewed (`reviewed`, a parameter for
+ * tests). */
+export function snapshotState(
+  input: unknown,
+  genesis: string,
+  reviewed: number | null = MAINNET_PROGRESSIVE_V2_FROM,
+): State {
   const v = object(input, [
     'format',
     'height',
@@ -232,7 +274,10 @@ export function snapshotState(input: unknown, genesis: string): State {
     'inscriptions',
     'nextInscription',
   ]);
-  requireThat(v.format === 1 && genesis !== MAINNET, 'unsupported snapshot/network');
+  requireThat(
+    v.format === 1 && (genesis !== MAINNET || reviewed !== null),
+    'unsupported snapshot/network',
+  );
   const height = natural(v.height, 0xffffffff);
   const s: State = {
     height,
@@ -263,27 +308,63 @@ export function snapshotState(input: unknown, genesis: string): State {
   ])
     count += list(v[k]).length;
   requireThat(count <= MAX_ENTRIES, 'snapshot capacity');
-  for (const x of sorted(
-    list(v.assets).map((x) => object(x, ['id', 'creator', 'definition', 'minted'])),
-    (x) => identifier(x.id, 40),
-  )) {
+  const assets = list(v.assets).map((x) => {
+    requireThat(x && typeof x === 'object' && !Array.isArray(x), 'object required');
+    return x as Record<string, unknown>;
+  });
+  for (const raw of sorted(assets, (x) => identifier(x.id, 40))) {
+    const definition = decode(fromHex(String(raw.definition)), {
+      progressive: true,
+      progressiveV2: true,
+    });
+    const op = definition.op;
+    const progressive = op.kind === 'deployProgressive' || op.kind === 'deployProgressiveV2';
+    // A progressive asset carries exactly one more field: the anchor of its current right.
+    const x = object(
+      raw,
+      progressive
+        ? ['id', 'creator', 'definition', 'minted', 'right']
+        : ['id', 'creator', 'definition', 'minted'],
+    );
     const id = identifier(x.id, 40),
       creator = identifier(x.creator);
     requireThat(creator !== ZERO && id.startsWith(creator), 'asset identity');
-    const definition = decode(fromHex(String(x.definition)));
-    const op = definition.op;
     requireThat(
       definition.genesis === genesis &&
         definition.sequence === 0n &&
-        (op.kind === 'deploy' || op.kind === 'inscribe'),
+        (op.kind === 'deploy' || op.kind === 'inscribe' || progressive),
       'asset definition',
     );
     if (op.kind === 'inscribe') definitions.set(id, op);
-    s.assets.set(id, {
-      creator,
-      definition: op.kind === 'inscribe' ? { ...INSCRIPTION_DEFINITION } : op,
-      minted: money(x.minted),
-    });
+    if (op.kind === 'deployProgressive' || op.kind === 'deployProgressiveV2') {
+      let right: Anchor | null = null;
+      if (x.right !== null) {
+        const a = object(x.right, ['height', 'hash', 'index']);
+        right = {
+          height: natural(a.height, height),
+          hash: identifier(a.hash),
+          index: natural(a.index, 0xffffffff),
+        };
+      }
+      s.assets.set(id, {
+        creator,
+        definition: {
+          kind: 'deploy',
+          symbol: op.symbol,
+          decimals: op.decimals,
+          cap: op.cap,
+          limit: op.cap / PROGRESSIVE_MINT_LOTS,
+          policy: op.kind === 'deployProgressive' ? 'progressive' : 'progressive-v2',
+        },
+        minted: money(x.minted),
+        right,
+      });
+    } else
+      s.assets.set(id, {
+        creator,
+        definition: op.kind === 'inscribe' ? { ...INSCRIPTION_DEFINITION } : op,
+        minted: money(x.minted),
+      });
   }
   for (const x of sorted(
     list(v.balances).map((x) => object(x, ['key', 'amount'])),
@@ -426,9 +507,19 @@ export interface Policy {
   requiredOperators: string[];
   keys: TrustKey[];
   validUntil: number;
+  /** Per operator, the fingerprint of the witness implementation this policy approves: its block
+   * and event decoding. A witness refuses to serve under a policy that names another. */
+  implementations?: Record<string, string>;
 }
-export function policy(input: unknown, now = Date.now()): Policy {
-  const p = object(input, [
+/** A trust policy exactly as wallets and witnesses accept it. On mainnet, a policy exists only
+ * once the progressive activation is reviewed (`reviewed`, a parameter for tests); it must start
+ * at QLYP's activation block and name the witnesses' implementations. */
+export function policy(
+  input: unknown,
+  now = Date.now(),
+  reviewed: number | null = MAINNET_PROGRESSIVE_V2_FROM,
+): Policy {
+  const fields = [
     'format',
     'version',
     'genesis',
@@ -438,11 +529,19 @@ export function policy(input: unknown, now = Date.now()): Policy {
     'requiredOperators',
     'keys',
     'validUntil',
-  ]);
+  ];
+  const withImplementations =
+    !!input && typeof input === 'object' && Object.hasOwn(input, 'implementations');
+  const p = object(input, withImplementations ? [...fields, 'implementations'] : fields);
   requireThat(p.format === 1 && natural(p.version) > 0, 'policy version');
-  requireThat(identifier(p.genesis) !== MAINNET, 'mainnet disabled');
+  const onMainnet = identifier(p.genesis) === MAINNET;
+  requireThat(!onMainnet || reviewed !== null, 'mainnet disabled');
   const a = object(p.activation, ['height', 'hash']);
   natural(a.height, 0xffffffff);
+  requireThat(
+    !onMainnet || ((a.height as number) > 0 && withImplementations),
+    'a mainnet policy needs its activation block and witness fingerprints',
+  );
   identifier(a.hash);
   identifier(p.runtimeHash);
   identifier(p.rulesHash, 64);
@@ -465,6 +564,10 @@ export function policy(input: unknown, now = Date.now()): Policy {
     requireThat(natural(x.notBefore) < natural(x.notAfter), 'key validity');
   }
   requireThat(list(p.keys).length <= 16, 'too many keys');
+  if (withImplementations) {
+    const impl = object(p.implementations, operators as string[]);
+    for (const op of operators as string[]) identifier(impl[op], 64);
+  }
   for (const op of operators)
     requireThat(
       (p.keys as TrustKey[]).some(
@@ -519,12 +622,51 @@ export function cursorValue(input: unknown): Cursor {
 export const stateRoot = (v: unknown): string => hash512('Qlyphs/QPA1/state', v);
 export const statementBytes = (s: Statement): Uint8Array =>
   enc.encode('Qlyphs/QPA1/statement\0' + canonical(s));
+/** A tip statement signs the state at a best block that may still be reorganized. Its own domain
+ * keeps it from ever standing in for a finalized statement, and the other way round. */
+export const tipStatementBytes = (s: Statement): Uint8Array =>
+  enc.encode('Qlyphs/QPA1/tip\0' + canonical(s));
 export function verifyBundle(
   input: unknown,
   trusted: Policy,
   challenge: string,
   before: Cursor | null,
   now = Date.now(),
+): { state: State; cursor: Cursor } {
+  const { state, cursor } = verifyStatements(input, trusted, challenge, now, statementBytes);
+  if (before) {
+    before = cursorValue(before);
+    requireThat(
+      cursor.policyVersion >= before.policyVersion && cursor.height >= before.height,
+      'checkpoint/policy rollback',
+    );
+    if (cursor.height === before.height)
+      requireThat(
+        cursor.blockHash === before.blockHash && cursor.stateRoot === before.stateRoot,
+        'checkpoint equivocation',
+      );
+  }
+  return { state, cursor };
+}
+/** Both witnesses' tip statements for the state at exactly `block`. A tip state is used for one
+ * signature bound to that block (a lot mint's era), never as a finalized checkpoint or cursor. */
+export function verifyTipBundle(
+  input: unknown,
+  trusted: Policy,
+  challenge: string,
+  block: { height: number; hash: string },
+  now = Date.now(),
+): State {
+  const { state } = verifyStatements(input, trusted, challenge, now, tipStatementBytes);
+  requireThat(state.height === block.height && state.hash === block.hash, 'tip at another block');
+  return state;
+}
+function verifyStatements(
+  input: unknown,
+  trusted: Policy,
+  challenge: string,
+  now: number,
+  bytes: (s: Statement) => Uint8Array,
 ): { state: State; cursor: Cursor } {
   const p = policy(trusted, now);
   identifier(challenge);
@@ -599,7 +741,7 @@ export function verifyBundle(
     );
     const sig = fromHex(String(a.signature), 4627);
     requireThat(
-      ml_dsa87.verify(sig, statementBytes(s), fromHex(k.publicKey, 2592)),
+      ml_dsa87.verify(sig, bytes(s), fromHex(k.publicKey, 2592)),
       'invalid ML-DSA signature',
     );
   }
@@ -609,19 +751,24 @@ export function verifyBundle(
     blockHash: snap.hash,
     stateRoot: root,
   };
-  if (before) {
-    before = cursorValue(before);
-    requireThat(
-      p.version >= before.policyVersion && cursor.height >= before.height,
-      'checkpoint/policy rollback',
-    );
-    if (cursor.height === before.height)
-      requireThat(
-        cursor.blockHash === before.blockHash && cursor.stateRoot === before.stateRoot,
-        'checkpoint equivocation',
-      );
-  }
   return { state: snap, cursor };
+}
+/** The call must buy exactly the next lot `lot` of `asset` in this attested state, through its
+ * current right, and that right must be final. */
+export function verifiedProgressiveMint(
+  callHex: string,
+  owner: string,
+  s: State,
+  genesis: string,
+  asset: string,
+  lot: number,
+): void {
+  identifier(owner);
+  requireThat(owner !== ZERO && owner !== QLYPHS_FEE_ACCOUNT, 'invalid minter');
+  const next = progressiveLot(s, genesis, asset);
+  requireThat(next.lot === BigInt(lot), 'lot is no longer the next lot in attested state');
+  requireThat(next.anchor.height <= s.finalized, 'mint right is not finalized');
+  requireThat(hex(next.call) === callHex, 'mint differs from the attested right');
 }
 export function verifiedPurchase(callHex: string, owner: string, s: State): void {
   const call = parseCall(fromHex(callHex));

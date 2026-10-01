@@ -8,7 +8,7 @@ Qlyphs Keys is the extension wallet ([apps/extension](../extension/README.md)) b
 It uses the same background and UI sources, unchanged. Only the browser glue is swapped: storage,
 messaging, windows and passkeys. It is a Qlyphs product, not an official Quantus wallet.
 
-- Network: **Quantus mainnet** only in production. Purchases are disabled until mainnet witness verification is validated; production builds reject `NATIVE_PQ_POLICY_FILE`.
+- Network: **Quantus mainnet** only in production. Purchases and progressive lot mints are disabled until mainnet witness verification is validated; production builds reject `NATIVE_PQ_POLICY_FILE`.
 - Accounts: ML-DSA-87 (post-quantum), derivation `m/44'/189189'/0'/0'/0'`, official
   `@quantus-network/wasm@0.3.1` SDK, whose `.wasm` hash is recorded in `BUILD.json`.
 - Every release can be rebuilt from this repository and checked byte for byte against the live site
@@ -249,7 +249,8 @@ node serve.mjs
 | `QLYPHS_KEYS_PINS` | mainnet pins file (genesis, runtime, activation); required for mainnet |
 | `QLYPHS_KEYS_ORIGIN` | where keys is served; default `https://keys.qlyphs.com` in production |
 | `QLYPHS_KEYS_API`, `QLYPHS_KEYS_RPC`, `QLYPHS_KEYS_EXPLORER` | endpoint overrides |
-| `NATIVE_PQ_POLICY_FILE` | reviewed public witness policy for development purchases only; rejected with mainnet or switchable |
+| `NATIVE_PQ_POLICY_FILE` | reviewed public witness policy for development purchases and progressive lot mints only; rejected with mainnet or switchable |
+| `NATIVE_PROGRESSIVE_FROM`, `NATIVE_PROGRESSIVE_V2_FROM` | the witnesses' activation heights of progressive-1000-v1 (tag 11) and -v2 (tag 12), checked with `NATIVE_PQ_POLICY_FILE`; unset when they have none |
 | `QLYPHS_KEYS_DAPP_ORIGINS` | JSON array of 1 to 16 exact dapp origins |
 | `QLYPHS_KEYS_SKIP_CORS_CHECK=1` | offline build; the CORS check must then be done by hand |
 | `KEYS_PORT`, `KEYS_LISTEN`, `KEYS_HOST` | `serve.mjs` port, bind address and expected `Host` |

@@ -3,6 +3,9 @@
  * These are the protocol's own constants and rules, re-exported rather than restated:
  * - deploy pays DEPLOY_FEE (1 QTC) and mint pays MINT_FEE (0.01 QTC) to QLYPHS_FEE_ACCOUNT in the
  *   same signed batch as the operation; the wallet builds that batch.
+ * - a progressive deploy pays DEPLOY_FEE too; lot n of a progressive asset pays
+ *   progressiveLotFee(n, profile) in its settlement, instead of MINT_FEE: 0.1 to 0.5 QTC on
+ *   progressive-1000-v1, 0.01 to 0.44 QTC on progressive-1000-v2.
  * - any token-for-QTC exchange pays saleFee(price), 1% of the price rounded up, to
  *   QLYPHS_FEE_ACCOUNT. The seller commits it in the offer; the buyer pays it next to the price.
  * - inscribe pays INSCRIBE_FEE (0.1 QTC) to QLYPHS_FEE_ACCOUNT in the same signed batch.
@@ -15,11 +18,25 @@ import {
   SALE_FEE_BPS,
   saleFee as protocolSaleFee,
 } from '../../native/src/protocol.ts';
+import {
+  PROGRESSIVE_MINT_PROFILE,
+  PROGRESSIVE_MINT_PROFILE_V2,
+  progressiveLotFee,
+} from '../../native/src/progressive-mint.ts';
 import { QlyphsError } from '../../provider/src/index.ts';
 import type { PublicTicket, TransactionCommand } from '../../native/src/public.ts';
 import { command } from './validation.ts';
 
-export { DEPLOY_FEE, INSCRIBE_FEE, MINT_FEE, QLYPHS_FEE_ACCOUNT, SALE_FEE_BPS };
+export {
+  DEPLOY_FEE,
+  INSCRIBE_FEE,
+  MINT_FEE,
+  PROGRESSIVE_MINT_PROFILE,
+  PROGRESSIVE_MINT_PROFILE_V2,
+  QLYPHS_FEE_ACCOUNT,
+  SALE_FEE_BPS,
+  progressiveLotFee,
+};
 /** The signed offer inside a `sell` command. */
 export type SellOffer = Extract<TransactionCommand, { kind: 'sell' }>['offer'];
 
@@ -54,9 +71,13 @@ export function qlyphsFee(input: TransactionCommand, ticket?: PublicTicket['tick
   const c = command(input);
   switch (c.kind) {
     case 'deploy':
+    case 'deployProgressive':
+    case 'deployProgressiveV2':
       return DEPLOY_FEE;
     case 'mint':
       return MINT_FEE;
+    case 'mintProgressive':
+      return progressiveLotFee(BigInt(c.lot), c.profile ?? PROGRESSIVE_MINT_PROFILE);
     case 'inscribe':
       return INSCRIBE_FEE;
     case 'buy':

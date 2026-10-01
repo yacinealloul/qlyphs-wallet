@@ -34,6 +34,11 @@ const REWORDED: Readonly<Record<string, string>> = {
   'Wallet and indexer run different protocol versions. Reload the extension, or restart the indexer.':
     'The wallet needs an update. Reload the extension.',
   'Indexer is stale': 'Network data is catching up. Try again in a moment.',
+  // A progressive lot changed between review and signing: nothing was signed.
+  'lot is no longer the next lot in attested state': 'This lot was just taken. Review the next lot.',
+  'mint differs from the attested right': 'This lot was just taken. Review the next lot.',
+  'mint right is not finalized': 'The next lot is not final yet; try again shortly',
+  'this token has another progressive profile': 'This token uses another price schedule. Review it again.',
 };
 const FALLBACK_MAINNET = 'Wallet operation failed. Check permissions, password and your connection.';
 const FALLBACK_DEV =
@@ -124,6 +129,13 @@ const safe = new Set([
   'Reservation changed; review again',
   'Reservation cancelled or already settled',
   'Reservation is not finalized, expired or assigned to another buyer',
+  'Progressive mint disabled: no bundled PQ witness policy',
+  'Progressive tokens are not enabled on mainnet',
+  'Progressive mint requires attested terms for this lot',
+  'This token mints one lot at a time; use its lot mint',
+  'The next lot is not final yet; try again shortly',
+  'The lot must be signed on its attested block',
+  'Prepared at another block than the attested one',
   'Prepared call differs from requested action',
   'Invalid cost estimate or unexpected platform fee',
   'Another operation is awaiting approval',
@@ -149,6 +161,7 @@ export function uiError(error: unknown): string {
   if (
     safe.has(message) ||
     SYMBOL_TAKEN_PATTERN.test(message) ||
+    /^Lot \d{1,4} (is no longer the next lot; lot \d{1,4} is|was just taken; review again)$/.test(message) ||
     /^Service refused request \(\d{3}\); check network and permissions$/.test(message)
   )
     return message;

@@ -92,13 +92,20 @@ const submitted = await window.qlyphs.request({ method: 'requestTransaction', pa
 The envelope remains exactly `{ owner, genesis, command }`. Base-unit values are decimal
 strings (0.1 QTC is 100000000000 base units, 12 decimals). Account IDs are
 full 32-byte hexadecimal IDs; assets are full 40-byte IDs, never tickers. Commands are
-`sendQtc`, `deploy`, `mint`, `transfer`, `pair`, `sell`, `buy`, `cancel`, `inscribe` from
+`sendQtc`, `deploy`, `mint`, `transfer`, `pair`, `sell`, `buy`, `cancel`, `inscribe`,
+`deployProgressive`, `deployProgressiveV2` and `mintProgressive` from
 [`packages/native/src/commands.ts`](../../packages/native/src/commands.ts). No second dapp encoder is required.
+`mintProgressive` is `{ kind, asset, lot, profile? }` with `lot` a JSON integer from 1 to 1000:
+the lot the dapp showed its user, and `profile` the fee schedule it priced it with,
+`progressive-1000-v1` (the default) or `progressive-1000-v2`. The wallet signs it only when fresh
+attested state names that same lot as the next one of a token on that profile, so a price the dapp
+displayed can never turn into another.
 
 Every write requires a separate private confirmation, canonical-byte reconstruction,
 real fee/deposit estimate and live document/origin/account/network/epoch/runtime/nonce/
-sequence/ticket checks. Development purchases require compiled PQ trust pins and fail-closed
-attestation checks. Mainnet and switchable builds currently reject witness policies and refuse purchases. No signRaw, arbitrary bytes, caller RPC, permanent signing grant,
+sequence/ticket checks. Development purchases and progressive lot mints require compiled PQ trust
+pins and fail-closed attestation checks. Mainnet and switchable builds currently reject witness
+policies and refuse both. No signRaw, arbitrary bytes, caller RPC, permanent signing grant,
 fee other than the fixed QLYP-v1 Qlyphs fee, automatic payment retry or mainnet activation is exposed.
 
 ## Lifecycle, limits and cancellation

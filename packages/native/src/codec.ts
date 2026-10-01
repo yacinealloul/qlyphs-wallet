@@ -14,6 +14,12 @@ export const MAX_BATCH_CALLS = 3;
  * not part of the protocol). A payload carrying one of them is rejected, never interpreted. */
 export const RESERVED_TAGS: readonly number[] = [4, 5, 6, 7, 8];
 export const ZERO = '0x' + '00'.repeat(32);
+/** PROGRESSIVE DEPLOY (tag 11, progressive-1000-v1) and PROGRESSIVE DEPLOY V2 (tag 12,
+ * progressive-1000-v2), docs/native/PROGRESSIVE-MINT.md: each read only where the caller has
+ * activated its profile, else it stays an unknown operation. Tag 10 is allocated to open listings,
+ * which this protocol does not include yet. */
+export const PROGRESSIVE_DEPLOY_TAG = 11;
+export const PROGRESSIVE_DEPLOY_V2_TAG = 12;
 /** INSCRIBE (tag 9, docs/native/INSCRIPTIONS.md §2): an ASCII media type of 3..64 bytes. */
 export const INSCRIPTION_CONTENT_TYPE = /^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/;
 export const MIN_CONTENT_TYPE_BYTES = 3;
@@ -36,7 +42,12 @@ export type Operation =
   /* Tags 4..8 are reserved (planned launchpad/AMM, not part of the protocol). */
   /* Qlyph inscriptions (docs/native/INSCRIPTIONS.md), tag 9. `content` is canonical lowercase hex
    * ("0x..."), at least 1 byte; the whole payload stays <= MAX_PAYLOAD. */
-  | { kind: 'inscribe'; contentType: string; content: string };
+  | { kind: 'inscribe'; contentType: string; content: string }
+  /* A token on the progressive-1000-v1 profile, tag 11: 1,000 equal lots, fixed fees, no limit
+   * or policy to choose. The reducer checks that `cap` splits into 1,000 whole lots. */
+  | { kind: 'deployProgressive'; symbol: string; decimals: number; cap: bigint }
+  /* The same fields on the progressive-1000-v2 profile, tag 12: only the fees differ. */
+  | { kind: 'deployProgressiveV2'; symbol: string; decimals: number; cap: bigint };
 
 export interface Envelope { genesis: Id; sequence: bigint; op: Operation }
 export function requireThat(ok: unknown, message: string): asserts ok {
@@ -100,6 +111,10 @@ export function encode(e: Envelope): Uint8Array {
     requireThat(p.policy === 'open' || p.policy === 'issuer', 'invalid policy');
     requireThat(p.limit <= p.cap, 'mint limit exceeds cap');
     parts.push(Uint8Array.of(0), symbol(p.symbol), Uint8Array.of(p.decimals), positive(p.cap), positive(p.limit), Uint8Array.of(p.policy === 'open' ? 0 : 1));
+  } else if (p.kind === 'deployProgressive' || p.kind === 'deployProgressiveV2') {
+    requireThat(Number.isInteger(p.decimals) && p.decimals >= 0 && p.decimals <= 18, 'invalid decimals');
+    const tag = p.kind === 'deployProgressive' ? PROGRESSIVE_DEPLOY_TAG : PROGRESSIVE_DEPLOY_V2_TAG;
+    parts.push(Uint8Array.of(tag), symbol(p.symbol), Uint8Array.of(p.decimals), positive(p.cap));
   } else if (p.kind === 'inscribe') {
     requireThat(isContentType(p.contentType), 'invalid content type');
     const content = fromHex(p.content);
@@ -118,7 +133,12 @@ export function encode(e: Envelope): Uint8Array {
   }
   const out = concat(...parts); requireThat(out.length <= MAX_PAYLOAD, 'payload too large'); return out;
 }
-export function decode(data: Uint8Array): Envelope {
+/** `progressive` reads tag 11 and `progressiveV2` tag 12; callers set each only at heights where
+ * that profile is active. */
+export function decode(
+  data: Uint8Array,
+  options: { progressive?: boolean; progressiveV2?: boolean } = {},
+): Envelope {
   requireThat(data.length <= MAX_PAYLOAD, 'payload too large');
   const r = new Reader(data); requireThat(r.id(5) === PROTOCOL_HEADER, 'unknown protocol/version');
   const genesis = r.id(); const sequence = r.int(8); const tag = r.small(1); let op: Operation;
@@ -133,6 +153,12 @@ export function decode(data: Uint8Array): Envelope {
     const content = r.vector();
     requireThat(content.length >= 1, 'empty inscription content');
     op = { kind: 'inscribe', contentType, content: hex(content) };
+  } else if (tag === PROGRESSIVE_DEPLOY_TAG && options.progressive === true) {
+    const sym = symbol();
+    op = { kind: 'deployProgressive', symbol: sym, decimals: r.small(1), cap: r.int(16) };
+  } else if (tag === PROGRESSIVE_DEPLOY_V2_TAG && options.progressiveV2 === true) {
+    const sym = symbol();
+    op = { kind: 'deployProgressiveV2', symbol: sym, decimals: r.small(1), cap: r.int(16) };
   } else {
     requireThat(!RESERVED_TAGS.includes(tag), 'reserved operation');
     requireThat(tag <= 3, 'unknown operation'); const asset = r.id(40), amount = r.int(16);

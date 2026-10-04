@@ -6,6 +6,7 @@ import type { ExtensionAPI, Port, Sender } from '../../extension/src/browser.ts'
 import { ALL_DAPPS } from '../../extension/src/config.ts';
 import { get, set } from './storage.ts';
 import { RUNTIME_ID } from './hub.ts';
+import { sessionsSupported, workerFacts } from './session-browser.ts';
 import type { DocToHub, HostToHub, HubToDoc, HubToHost } from './hub.ts';
 
 type Fn = (...args: any[]) => unknown; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -14,6 +15,7 @@ function event<T extends Fn>() {
   return {
     listeners,
     addListener: (f: T) => void listeners.add(f),
+    removeListener: (f: T) => void listeners.delete(f),
     fire(...args: Parameters<T>) {
       for (const f of listeners)
         try {
@@ -44,6 +46,7 @@ interface Host {
   seen: number;
 }
 interface DappPort {
+  host: Host;
   port: Port;
   tabId: number;
   message: ReturnType<typeof event<(m: unknown) => void>>;
@@ -75,10 +78,10 @@ interface WalletSetup {
   windowId: number;
 }
 const setups = new Map<string, WalletSetup>();
-// Hosts with an in-flight call that may open a confirmation, oldest first. Keys-page
-// transacts win over dapp requests, so a dapp popup can never receive the user's own
-// confirmation just by sending a message while that transact is being prepared.
-const claims: { host: string; key: string; page: boolean }[] = [];
+// Keys pages with an in-flight transact, oldest first: the wallet page's own confirmation opens in the
+// page that asked for it. Dapp reviews never use this: they open through `openFor` in the popup of the
+// dapp port that asked, so another dapp's popup can neither receive nor delay them.
+const claims: { host: string; key: string }[] = [];
 let seen = 0;
 let claimSeq = 0;
 let nextId = 1;
@@ -88,6 +91,7 @@ const onConnect = event<(port: Port) => void>();
 const tabRemoved = event<(id: number) => void>();
 const windowRemoved = event<(id: number) => void>();
 const alarm = event<() => void>();
+const updateAvailable = event<(details: { version: string }) => void>();
 const alarms = new Map<string, ReturnType<typeof setInterval>>();
 const dappKey = (host: Host, portId: number) => host.id + ':' + portId;
 const unclaim = (match: (c: (typeof claims)[number]) => boolean) => {
@@ -120,8 +124,7 @@ function dispatch(message: unknown, sender: Sender, reply: (value: unknown) => v
   if (!waiting) respond(undefined);
 }
 function live(): Host | undefined {
-  for (const page of [true, false])
-    for (const c of claims) if (c.page === page && hosts.has(c.host)) return hosts.get(c.host);
+  for (const c of claims) if (hosts.has(c.host)) return hosts.get(c.host);
   let best: Host | undefined;
   for (const h of hosts.values()) if (!best || h.seen > best.seen) best = h;
   return best;
@@ -146,7 +149,6 @@ function dropDapp(key: string, fire: boolean) {
   dappPorts.delete(key);
   for (const setup of setups.values())
     if (setup.portKey === key) finishSetup(setup, 'The connection was closed');
-  unclaim((c) => c.key.startsWith(key + '#'));
   if (fire) {
     d.disconnect.fire();
     tabRemoved.fire(d.tabId);
@@ -223,6 +225,11 @@ function finishSetup(setup: WalletSetup, error?: string) {
   setup.host.port.postMessage({ type: 'remove', windowId: setup.windowId } satisfies HubToHost);
   setup.host.port.postMessage({ type: 'setup-done', setupId: setup.id, ...(error ? { error } : {}) } satisfies HubToHost);
 }
+/** A confirmation overlay is a keys page at `/`; never a URL another origin or path chose. */
+function overlayURL(url: string): string | null {
+  const u = new URL(url);
+  return u.origin === ORIGIN && u.pathname === '/' ? u.href : null;
+}
 function openSetup(host: Host, id: number) {
   if (!Number.isSafeInteger(id) || id <= 0) return;
   const reject = (error: string) =>
@@ -263,8 +270,6 @@ function openDapp(host: Host, portId: number, origin: string) {
     },
     postMessage(value) {
       if (dappPorts.get(key)?.port !== port) return;
-      const id = (value as { id?: unknown } | null)?.id;
-      if (typeof id === 'string') unclaim((c) => c.key === key + '#' + id);
       host.port.postMessage({ type: 'port-message', portId, message: clone(value) } satisfies HubToHost);
     },
     disconnect() {
@@ -277,7 +282,7 @@ function openDapp(host: Host, portId: number, origin: string) {
     onMessage: message,
     onDisconnect: disconnect,
   };
-  dappPorts.set(key, { port, tabId, message, disconnect });
+  dappPorts.set(key, { host, port, tabId, message, disconnect });
   host.ports.add(portId);
   onConnect.fire(port);
 }
@@ -293,7 +298,8 @@ function accept(port: MessagePort | undefined) {
         if (
           typeof m.hostId !== 'string' || hosts.has(m.hostId) ||
           typeof m.lock !== 'string' || !m.lock.startsWith('qlyphs-keys-host:') ||
-          typeof m.documentId !== 'string' || new URL(m.url).origin !== ORIGIN
+          typeof m.documentId !== 'string' || new URL(m.url).origin !== ORIGIN ||
+          (m.version !== undefined && (typeof m.version !== 'string' || !m.version || m.version.length > 64))
         )
           throw Error();
       } catch {
@@ -317,6 +323,10 @@ function accept(port: MessagePort | undefined) {
       port.postMessage({ type: 'welcome', tabId, windowId, version: QLYPHS_VERSION } satisfies HubToHost);
       // Granted only once the page holding it has gone, however it went.
       void navigator.locks.request(m.lock, () => gone(id));
+      // A page of another release means this worker's code is no longer the live one. Keys cannot
+      // reload a shared worker, so the background only stops what is running; the page itself tells
+      // the user to close the old tabs.
+      if (m.version !== undefined && m.version !== QLYPHS_VERSION) updateAvailable.fire({ version: m.version });
       return;
     }
     const h = host;
@@ -329,7 +339,7 @@ function accept(port: MessagePort | undefined) {
         if (!Number.isSafeInteger(m.callId)) return;
         let key: string | undefined;
         if ((m.message as { action?: unknown } | null)?.action === 'transact')
-          claims.push({ host: h.id, key: (key = 'call:' + ++claimSeq), page: true });
+          claims.push({ host: h.id, key: (key = 'call:' + ++claimSeq) });
         dispatch(m.message, h.sender, (value) => {
           if (key) unclaim((c) => c.key === key);
           port.postMessage({ type: 'reply', callId: m.callId, value } satisfies HubToHost);
@@ -381,10 +391,6 @@ function accept(port: MessagePort | undefined) {
       case 'port-message': {
         const d = dappPorts.get(dappKey(h, m.portId));
         if (!d) return;
-        // disconnect never opens a window, so it claims nothing.
-        const { method, id } = (m.message ?? {}) as { method?: unknown; id?: unknown };
-        if ((method === 'connect' || method === 'requestTransaction') && typeof id === 'string' && claims.length < 256)
-          claims.push({ host: h.id, key: dappKey(h, m.portId) + '#' + id, page: false });
         let copy: unknown;
         try {
           copy = clone(m.message);
@@ -412,18 +418,58 @@ scope.onmessage = (e) => {
   if ((e.data as { type?: unknown } | null)?.type === 'keys:connect') accept(e.ports[0]);
 };
 
-export const browser: ExtensionAPI = {
-  runtime: {
-    id: RUNTIME_ID,
-    getURL: (path) => new URL(path.replace(/^\/?ui\.html/, ''), ORIGIN + '/').href,
-    sendMessage: () => Promise.reject(Error('Not available in the wallet worker')),
-    connect() {
-      throw Error('Not available in the wallet worker');
-    },
-    onConnect,
-    onMessage,
-    onInstalled: { addListener() {} },
+/** Keys-only members, absent from the browser APIs: the background tests for them before use. */
+interface KeysWindows {
+  /** Opens a confirmation in the popup that hosts the dapp port whose synthetic tab id is `opener`. */
+  openFor(opener: number, url: string): Promise<{ id?: number }>;
+}
+interface KeysRuntime {
+  /** Fires when a page of another release connects; there is no `reload` to apply it. */
+  onUpdateAvailable: {
+    addListener(listener: (details: { version: string }) => void): void;
+    removeListener(listener: (details: { version: string }) => void): void;
+  };
+  /** False where this browser may not run mint sessions; the background then neither offers nor
+   * serves them. Fixed for the worker's lifetime. */
+  mintSessionsSupported: boolean;
+}
+const runtime: ExtensionAPI['runtime'] & KeysRuntime = {
+  id: RUNTIME_ID,
+  getURL: (path) => new URL(path.replace(/^\/?ui\.html/, ''), ORIGIN + '/').href,
+  sendMessage: () => Promise.reject(Error('Not available in the wallet worker')),
+  connect() {
+    throw Error('Not available in the wallet worker');
   },
+  onConnect,
+  onMessage,
+  onInstalled: { addListener() {} },
+  onUpdateAvailable: updateAvailable,
+  mintSessionsSupported: sessionsSupported(workerFacts(scope)),
+};
+const windows: ExtensionAPI['windows'] & KeysWindows = {
+  async create({ url }) {
+    const href = overlayURL(url);
+    const host = live();
+    if (!href || !host) return Promise.reject(Error('Confirmation window could not be opened'));
+    return createWindow(host, href).ready;
+  },
+  async openFor(opener, url) {
+    const href = overlayURL(url);
+    const dapp = [...dappPorts.values()].find((d) => d.tabId === opener);
+    if (!href || !dapp || !hosts.has(dapp.host.id))
+      return Promise.reject(Error('Confirmation window could not be opened'));
+    return createWindow(dapp.host, href).ready;
+  },
+  async remove(id) {
+    for (const h of hosts.values())
+      if (h.overlays.has(id) || [...creating].some(([w, c]) => w === id && c.host === h))
+        h.port.postMessage({ type: 'remove', windowId: id } satisfies HubToHost);
+  },
+  onRemoved: windowRemoved,
+};
+
+export const browser: ExtensionAPI = {
+  runtime,
   storage: { local: { get, set } },
   tabs: {
     // Only reached from install and notification clicks, which the web never fires.
@@ -436,21 +482,7 @@ export const browser: ExtensionAPI = {
     onUpdated: { addListener() {} },
     onRemoved: tabRemoved,
   },
-  windows: {
-    async create({ url }) {
-      const u = new URL(url);
-      const host = live();
-      if (u.origin !== ORIGIN || u.pathname !== '/' || !host)
-        return Promise.reject(Error('Confirmation window could not be opened'));
-      return createWindow(host, u.href).ready;
-    },
-    async remove(id) {
-      for (const h of hosts.values())
-        if (h.overlays.has(id) || [...creating].some(([w, c]) => w === id && c.host === h))
-          h.port.postMessage({ type: 'remove', windowId: id } satisfies HubToHost);
-    },
-    onRemoved: windowRemoved,
-  },
+  windows,
   alarms: {
     create(name, { periodInMinutes }) {
       if (alarms.has(name)) return;

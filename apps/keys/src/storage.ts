@@ -32,8 +32,10 @@ export async function get(keys: string | string[] | null): Promise<Record<string
   for (const [k, r] of reads) if (r.result !== undefined) out[k] = r.result;
   return out;
 }
+/** Strict durability: a completed write, such as a payment recorded before its release, survives an
+ * operating system crash, not only a browser crash. */
 export async function set(items: Record<string, unknown>): Promise<void> {
-  const tx = (await database()).transaction('local', 'readwrite'),
+  const tx = (await database()).transaction('local', 'readwrite', { durability: 'strict' }),
     store = tx.objectStore('local');
   for (const [k, v] of Object.entries(items)) store.put(v, k);
   await done(tx);

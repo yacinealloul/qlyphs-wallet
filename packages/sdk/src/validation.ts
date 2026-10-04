@@ -1,9 +1,21 @@
+/** Strict parsers for wallet and service responses, and canonical forms of request inputs. */
 import { fromHex, isContentType, MAX_PAYLOAD, MAX_U128, MAX_U64 } from '../../native/src/codec.ts';
 import { sha256 } from './sha256.ts';
 import { MAINNET, PROTOCOL_LABEL } from '../../native/src/protocol.ts';
 import { json, parseCommand } from '../../native/src/commands.ts';
-import { QlyphsError } from '../../provider/src/index.ts';
-import type { Manifest, ProviderState, WalletAccount } from '../../provider/src/index.ts';
+import {
+  QlyphsError,
+  parseMintSessionSnapshot,
+  parseMintSessionTerms,
+} from '../../provider/src/index.ts';
+import type {
+  Manifest,
+  MintSessionLimits,
+  MintSessionSnapshot,
+  MintSessionTerms,
+  ProviderState,
+  WalletAccount,
+} from '../../provider/src/index.ts';
 import type { NetworkName } from '../../native/src/network.ts';
 import type {
   IndexerStatus,
@@ -406,6 +418,68 @@ export function submission(value: unknown): SubmittedTransaction {
     status: v.status,
     ...(v.asset === undefined ? {} : { asset: id(v.asset, 40) }),
   };
+}
+/** Terms go through the provider's single rule set, the one the wallet applies. */
+export function mintSessionTerms(value: unknown): MintSessionTerms {
+  try {
+    return parseMintSessionTerms(value);
+  } catch {
+    throw new QlyphsError('INVALID_REQUEST', 'Invalid mint session terms', 'not-submitted');
+  }
+}
+export function mintSessionSnapshot(value: unknown): MintSessionSnapshot {
+  try {
+    return immutable(parseMintSessionSnapshot(value));
+  } catch {
+    return invalid();
+  }
+}
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** A session id as wallets issue it (a random UUID); anything else never reaches the wallet. */
+export function mintSessionId(value: unknown): string {
+  if (typeof value !== 'string' || !SESSION_ID.test(value))
+    throw new QlyphsError('INVALID_REQUEST', 'Invalid mint session id');
+  return value;
+}
+/**
+ * The limits a wallet advertises, or null when they are absent or malformed: a wallet that does not
+ * describe its limits clearly is treated as one without mint sessions.
+ */
+export function mintSessionLimits(value: unknown): MintSessionLimits | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const positive = (x: unknown): x is number =>
+    typeof x === 'number' && Number.isSafeInteger(x) && x > 0;
+  if (
+    !Array.isArray(v.profiles) ||
+    v.profiles.length > 16 ||
+    !v.profiles.every((p) => typeof p === 'string' && p.length <= 64) ||
+    !positive(v.maxLots) ||
+    !positive(v.maxRetries) ||
+    !positive(v.minDurationSeconds) ||
+    !positive(v.maxDurationSeconds)
+  )
+    return null;
+  return Object.freeze({
+    profiles: Object.freeze([...(v.profiles as string[])]),
+    maxLots: v.maxLots,
+    maxRetries: v.maxRetries,
+    minDurationSeconds: v.minDurationSeconds,
+    maxDurationSeconds: v.maxDurationSeconds,
+  });
+}
+/** Whether canonical terms fit what the wallet said it accepts. */
+export function withinMintSessionLimits(
+  terms: MintSessionTerms,
+  limits: MintSessionLimits,
+): boolean {
+  return (
+    limits.profiles.includes(terms.profile) &&
+    terms.maxLots <= limits.maxLots &&
+    terms.maxAttempts <= terms.maxLots + Math.min(terms.maxLots, limits.maxRetries) &&
+    terms.maxDurationSeconds >= limits.minDurationSeconds &&
+    terms.maxDurationSeconds <= limits.maxDurationSeconds
+  );
 }
 export function immutable<T>(value: T): T {
   if (value && typeof value === 'object') {

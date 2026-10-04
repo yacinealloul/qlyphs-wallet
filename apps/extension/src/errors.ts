@@ -66,6 +66,11 @@ const safe = new Set([
   'Request cancelled',
   'Account or network changed',
   'Archive capacity reached; preserve history before continuing',
+  // Mint sessions: the approval and progress windows show these as they are.
+  'The wallet locks too soon to start minting. Lock it, unlock it and start again from the site.',
+  'No mint session for this window',
+  'This window was reloaded before minting started, so nothing was signed. Start again from the site.',
+  'Too many mint sessions are still settling; try again once their payments are final',
 
   'Wallet reset in progress. Try again.',
   'Reset requires one locked wallet and explicit confirmation',

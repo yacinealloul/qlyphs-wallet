@@ -1,6 +1,6 @@
 /** Internal wire between keys pages and the background worker. Same-origin only. */
 export type HostToHub =
-  | { type: 'hello'; hostId: string; lock: string; url: string; documentId: string }
+  | { type: 'hello'; hostId: string; lock: string; url: string; documentId: string; version?: string }
   | { type: 'focus' }
   | { type: 'call'; callId: number; message: unknown }
   | { type: 'attach'; windowId: number; documentId: string } // transfer: [MessagePort] (iframe doc end)

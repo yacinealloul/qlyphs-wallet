@@ -112,7 +112,7 @@ is not available. Do not expose an unauthenticated development RPC publicly.
 
 ## Balances and transaction review
 
-Send checks exclude frozen QTC and reserve estimated fees and the minimum account balance before opening a review and again before signing. A token transfer also requires QTC for fees. Creating a token, minting, inscribing and buying also reserve the Qlyphs fee (and, for a purchase, the price), and the review shows it as a separate **Qlyphs fee** row included in the estimated total. Pending or uncertain submissions continue to block another send until finality or verified expiry; the wallet displays the reason rather than silently retrying.
+Send checks exclude frozen QTC and reserve estimated fees and the minimum account balance before opening a review and again before signing. A token transfer also requires QTC for fees. Creating a token, minting, inscribing and buying also reserve the Qlyphs fee (and, for a purchase, the price), and the review shows it as a separate **Qlyphs fee** row included in the estimated total. Pending or uncertain submissions continue to block another send until finality or verified expiry; the wallet displays the reason rather than silently retrying. An approved mint session is the only exception, for its own lot payments (see [Mint sessions](#mint-sessions-development-and-test-builds)).
 
 The headline QTC balance reflects the current on-chain balance, including receipts before finality.
 The send form separately reports spendable funds and those still waiting for finality. Visible wallets
@@ -125,9 +125,9 @@ short popups and sidebars.
 
 ## Connection and use
 
-Open an allowed dapp and click **Connect wallet**. If Qlyphs is locked, the extension first shows only the unlock screen; the site review appears after unlocking. Unlocking never approves a connection. **Cancel request** dismisses a locked request without granting access. Approve the site in the extension-owned window. Create/mint tokens, inscribe Quarks and arrange bilateral sales in the web app; inspect and approve each operation in the extension. The popup also sends QTC and transfers displayed tokens. The site receives an account and submitted transaction hash, never a phrase or password. Qlyphs Keys provides a separate web-wallet connection using the same provider contract.
+Open an allowed dapp and click **Connect wallet**. If Qlyphs is locked, the extension first shows only the unlock screen; the site review appears after unlocking. Unlocking never approves a connection. **Cancel request** dismisses a locked request without granting access. Approve the site in the extension-owned window. Create/mint tokens, inscribe Quarks and arrange bilateral sales in the web app; inspect and approve each operation in the extension. The popup also sends QTC and transfers displayed tokens. The site receives an account and submitted transaction hash, never a phrase or password. Qlyphs Keys provides a separate web-wallet connection using the same provider contract. A dapp can also request a mint session: up to N lot payments for one token after one review, with progress and Stop in the same window.
 
-A five-minute absolute unlock deadline is not extended by dapp messages. Browser suspension or a background restart locks the wallet sooner. After a restart, reopen the wallet, unlock explicitly, reload/reconnect the dapp if necessary, and inspect saved history. Unknown submission outcomes must not be treated as failures or retried with a new nonce.
+A five-minute absolute unlock deadline is not extended by dapp messages. Browser suspension or a background restart locks the wallet sooner. After a restart, reopen the wallet, unlock explicitly, reload/reconnect the dapp if necessary, and inspect saved history. Unknown submission outcomes must not be treated as failures or retried with a new nonce. A mint session stops signing when this deadline passes.
 
 ## Post-quantum purchase and lot-mint verification
 
@@ -143,10 +143,77 @@ the attested right exists. A tip attestation never moves the high-water checkpoi
 endpoint, a policy or a `verified` flag. The signing session is checked again after asynchronous
 verification.
 
-**Purchases and lot mints are disabled on mainnet and in switchable builds.** These builds reject a
-witness policy because mainnet witnesses have not been validated. Development builds without a
-policy also refuse them. QTC sends, creation, legacy mint, inscription and ordinary transfers do
-not require this policy.
+**Purchases, lot mints and mint sessions are disabled on mainnet and in switchable builds.** These
+builds reject a witness policy because mainnet witnesses have not been validated. Development builds
+without a policy also refuse them. QTC sends, creation, legacy mint, inscription and ordinary
+transfers do not require this policy.
+
+### Mint sessions (development and test builds)
+
+A dapp can ask for up to N lots of one progressive-1000-v2 token (N at most 25) in one review. The
+review shows the lot count, the signature limit, the Qlyphs fee cap per lot, the maximum protocol
+spend, when signing stops, the lots the fee cap allows, the network fee estimate and the history
+space it uses. The signature limit S is N plus the R retries the dapp asked for (R at most
+`min(N, 10)`): with none it reads "Up to N · stops if another buyer takes a lot first", otherwise
+"Up to S · at most R retries after lost races". After approval the same window shows progress and a
+Stop button. If the wallet is slow to confirm the start, the window keeps asking until the session
+shows, the wallet refuses or the review expires, so a started session is never left without its
+progress and Stop. Closing or reloading the window after approving stops
+the session, or cancels its start if the wallet has not started it yet.
+
+- **One payment at a time.** Each lot is an ordinary lot payment, attested by both witnesses at the
+  node's best block and checked like a single lot. The next payment is signed only once the wallet's
+  own node shows the previous one in the chain the next one is born on, the account nonce is past it,
+  and both witnesses attest that the account holds exactly the lots counted so far.
+- **Lost races.** If the lot's right is used before the payment, by another buyer's mint or by a
+  transaction that only uses the right, that payment fails on chain and only its network fee is
+  spent; the progress row "Lost races" counts them. While retries remain, the wallet signs one
+  payment for the lot that is next then, never above the fee cap and within the signature limit.
+  After R lost races the next one ends the session (with no retry, the first one does), quietly
+  rather than as an error: "Stopped: the lot’s right was used by another transaction first. Its
+  payment cost only its network fee." Any other failure, or anything the wallet cannot verify, stops
+  the session. That includes a payment whose block the witnesses no longer attest by the time the
+  wallet can check it; its Qlyphs fee and ticket then stay reserved until history settles it. An
+  uncertain broadcast pauses the session until the payment is found in a block; it is never sent
+  again.
+- **Reorganizations.** If a block the session recorded leaves the chain, signing stops. Then, or when
+  history later finalizes a payment otherwise than the session recorded, the payments this can
+  affect are in doubt for good. The counts keep only verified payments (lots that stayed final count
+  as final); an Unresolved row says "outcome being reconciled after a reorganization · check
+  Activity", their Qlyphs fee and ticket stay under "may still be charged", and the window keeps
+  following them until history settles them, for at most 30 minutes after the end. A payment in
+  doubt is never shown as minted or as costing only its network fee, so a completed session that is
+  later reorganized reads "Signing ended once N lots were in a block, then the chain reorganized."
+  The window's status line is read out to screen readers when a reorganization is found after the
+  end and each time the number of payments being reconciled changes. Nothing in history gives the
+  session more lots, spend or signatures.
+- **Spend.** Qlyphs fees and native tickets never exceed the maximum protocol spend, even if the
+  wallet's node misreports blocks. Network fees are estimates; the wallet reserves twice the estimate
+  for a payment that is not yet in a block and checks the account balance at each payment's block.
+  Other buyers can move the next lot, so the session may pay for later lots than the first one shown,
+  never one priced above the fee cap.
+- **Stop.** Stop ends signing at once but cannot cancel a payment already sent: it stays valid until
+  its era ends, 256 blocks after the block it was born at, and can still land. The session counts it
+  only if the wallet classifies it while it still follows the session's payments: for a limited time
+  after the end, and not across a wallet restart, update, reset or network switch (Chrome may suspend
+  the extension's background once this window is closed). Otherwise Activity shows its outcome. The
+  account stays blocked for other operations until the session's payments are final or expired.
+  After the end, the window keeps following the session, for at most 30 minutes, while a payment can
+  still be included, a lot is not final, a Qlyphs fee and ticket may still be charged, a payment is
+  in doubt, or a lost race is not known final yet (a lost race before a final lot is final). After a
+  lost race with no lot after it, the window therefore follows that payment for the full 30 minutes.
+  Once no payment can still be included and no reorganization was found, the wallet's tracker card
+  reads "Signing stopped · lots becoming final", or "Signing stopped · payments becoming final" with
+  no step lit when no lot is in a block.
+- **What stops signing.** Stop; the wallet locking or reaching the session deadline; closing or
+  reloading this window; switching, deriving or adding an account; revoking the site or the site
+  asking to stop; a wallet restart; and any page change of the dapp tab, even inside the site (a link, `history.pushState` or a
+  hash change), or closing that tab. Keep the window open and stay on the site's page. A session never
+  resumes after it stops.
+- **Updates.** While a session runs the extension listens for updates. An available update stops the
+  session and reloads the extension so the update installs at once: Firefox would otherwise keep
+  the old version of an extension that listens for updates until the browser restarts. No listener
+  is registered when no session runs, so updates then install as usual.
 
 For a development environment with compatible witness services, compile their reviewed public policy:
 

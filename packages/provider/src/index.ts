@@ -1,7 +1,10 @@
 /** Public contracts only. Safe to import in browsers, Node and framework renderers. */
 import type { Manifest, NetworkName } from '../../native/src/network.ts';
 import type { SubmittedTransaction, TransactionCommand } from '../../native/src/public.ts';
+import { MINT_SESSION_LIMITS } from './mint-session.ts';
+import type { MintSessionLimits, MintSessionParams, MintSessionSnapshot } from './mint-session.ts';
 export type { Manifest, SubmittedTransaction, TransactionCommand };
+export * from './mint-session.ts';
 export interface WalletAccount {
   readonly owner: string;
   readonly address: string;
@@ -55,30 +58,38 @@ export function publicError(
     knownOutcome,
   );
 }
-/** What a wallet build advertises; `network` is the one network that build signs for. */
-export const capabilities = (network: NetworkName) =>
+const BASE_METHODS = [
+  'capabilities',
+  'state',
+  'connect',
+  'accounts',
+  'network',
+  'disconnect',
+  'requestTransaction',
+] as const;
+const BASE_EVENTS = ['stateChanged', 'accountsChanged', 'networkChanged', 'disconnect'] as const;
+const SESSION_METHODS = ['requestMintSession', 'mintSession', 'stopMintSession'] as const;
+const SESSION_EVENTS = ['mintSessionChanged'] as const;
+/**
+ * What a wallet build advertises; `network` is the one network that build signs for.
+ * `mintSessions` is null where the build cannot run mint sessions, and then the session methods and
+ * event are not listed. Older wallets omit the field.
+ */
+export const capabilities = (
+  network: NetworkName,
+  mintSessions: MintSessionLimits | null = network === 'development' ? MINT_SESSION_LIMITS : null,
+) =>
   Object.freeze({
     protocolVersion: 2 as const,
     network,
-    methods: Object.freeze([
-      'capabilities',
-      'state',
-      'connect',
-      'accounts',
-      'network',
-      'disconnect',
-      'requestTransaction',
-    ] as const),
-    events: Object.freeze([
-      'stateChanged',
-      'accountsChanged',
-      'networkChanged',
-      'disconnect',
-    ] as const),
+    methods: Object.freeze([...BASE_METHODS, ...(mintSessions ? SESSION_METHODS : [])]),
+    events: Object.freeze([...BASE_EVENTS, ...(mintSessions ? SESSION_EVENTS : [])]),
     cancellation: true,
     arbitraryRpc: false,
     persistentSigning: false,
+    mintSessions,
   });
+/** Every method and event a page-side provider may forward; the wallet decides what it serves. */
 export const CAPABILITIES = capabilities('development');
 export type WalletCapabilities = ReturnType<typeof capabilities>;
 /** Disconnected is intentionally indistinguishable from locked or unconfigured to an unapproved origin. */
@@ -92,6 +103,8 @@ export interface WalletEventMap {
   accountsChanged: readonly WalletAccount[];
   networkChanged: Manifest | null;
   disconnect: { readonly code: 'CONTEXT_CHANGED' | 'DISCONNECTED' };
+  /** Sent only to the channel that created the session; equals the `mintSession` read. */
+  mintSessionChanged: MintSessionSnapshot | null;
 }
 export type WalletEvent = keyof WalletEventMap;
 export type WalletListener<E extends WalletEvent> = (value: WalletEventMap[E]) => void;
@@ -106,6 +119,11 @@ export interface WalletRequestMap {
     params: { owner: string; genesis: string; command: TransactionCommand };
     result: SubmittedTransaction;
   };
+  /** Resolves at approval with the running snapshot, never when the session ends. */
+  requestMintSession: { params: MintSessionParams; result: MintSessionSnapshot };
+  mintSession: { params: never; result: MintSessionSnapshot | null };
+  /** Only reduces authority, so it is safe to retry. */
+  stopMintSession: { params: { session: string }; result: MintSessionSnapshot | null };
 }
 export type WalletMethod = keyof WalletRequestMap;
 export type RequestInput<M extends WalletMethod> = {

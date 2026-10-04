@@ -3,10 +3,12 @@ import { DAPPS } from './config.ts';
 import {
   CAPABILITIES,
   QlyphsError,
+  parseMintSessionSnapshot,
   publicError,
   validTimeout,
 } from '../../../packages/provider/src/index.ts';
 import type {
+  MintSessionSnapshot,
   ProviderState,
   QlyphsProvider,
   RequestOptions,
@@ -21,6 +23,8 @@ if (window.top === window && DAPPS.includes(location.origin) && !Object.hasOwn(w
     reject: (error: Error) => void;
     cleanup: () => void;
     writing: boolean;
+    /** `mintSession` or `stopMintSession`: reads that change nothing, so no outcome on errors. */
+    sessionRead: boolean;
   };
   const outstanding = new Map<string, Pending>();
   const listeners = new Map<WalletEvent, Set<(value: never) => void>>();
@@ -29,6 +33,8 @@ if (window.top === window && DAPPS.includes(location.origin) && !Object.hasOwn(w
     network: null,
     connected: false,
   });
+  // The last mint session snapshot this document's channel received; null once the channel resets.
+  let minting: MintSessionSnapshot | null = null;
   const emit = <E extends WalletEvent>(event: E, value: WalletEventMap[E]) => {
     for (const listener of [...(listeners.get(event) ?? [])]) {
       try {
@@ -59,6 +65,19 @@ if (window.top === window && DAPPS.includes(location.origin) && !Object.hasOwn(w
       emit('networkChanged', next.network);
     if (old.connected && !next.connected) emit('disconnect', { code: 'CONTEXT_CHANGED' });
   };
+  const mintSession = (value: unknown) => {
+    let next: MintSessionSnapshot | null;
+    try {
+      // Any same-page script can post on this channel, so only a payload that satisfies the whole
+      // snapshot contract reaches listeners; the parser returns a fresh copy no sender can still mutate.
+      next = value === null ? null : freeze(parseMintSessionSnapshot(value));
+    } catch {
+      return;
+    }
+    if (JSON.stringify(next) === JSON.stringify(minting)) return;
+    minting = next;
+    emit('mintSessionChanged', next);
+  };
   const reset = () => {
     for (const pending of outstanding.values()) {
       pending.cleanup();
@@ -71,6 +90,8 @@ if (window.top === window && DAPPS.includes(location.origin) && !Object.hasOwn(w
       );
     }
     outstanding.clear();
+    // A new channel holds no session, so a read there returns null and the event must say the same.
+    mintSession(null);
     state({ accounts: [], network: null, connected: false });
   };
   const cancel = (target: string) =>
@@ -98,15 +119,23 @@ if (window.top === window && DAPPS.includes(location.origin) && !Object.hasOwn(w
       state(message.state);
       return;
     }
+    if (message.event === 'mintSessionChanged') {
+      mintSession(message.session);
+      return;
+    }
     const pending = outstanding.get(message.id);
     if (!pending) return;
     outstanding.delete(message.id);
     pending.cleanup();
-    if (message.error)
-      pending.reject(
-        publicError(message.error, 'VERIFICATION_FAILED', pending.writing ? 'unknown' : undefined),
+    if (message.error) {
+      const error = publicError(
+        message.error,
+        'VERIFICATION_FAILED',
+        pending.writing ? 'unknown' : undefined,
       );
-    else pending.resolve(message.result);
+      // A session read drops any outcome the reply names: any same-page script can post a reply.
+      pending.reject(pending.sessionRead ? new QlyphsError(error.code, error.message) : error);
+    } else pending.resolve(message.result);
   });
   const provider: QlyphsProvider = Object.freeze({
     version: 1 as const,
@@ -139,8 +168,11 @@ if (window.top === window && DAPPS.includes(location.origin) && !Object.hasOwn(w
           135_000,
           input.method === 'connect' ? 600_000 : 135_000,
         );
+        // A session approval may already have signed payments when its reply is lost, so it is
+        // reported like a transaction: outcome unknown, never safe to repeat automatically.
         const id = crypto.randomUUID(),
-          writing = input.method === 'requestTransaction';
+          writing = input.method === 'requestTransaction' || input.method === 'requestMintSession',
+          sessionRead = input.method === 'mintSession' || input.method === 'stopMintSession';
         const request = {
           id,
           method: input.method,
@@ -176,7 +208,7 @@ if (window.top === window && DAPPS.includes(location.origin) && !Object.hasOwn(w
           clearTimeout(timer);
           options.signal?.removeEventListener('abort', abort);
         };
-        outstanding.set(id, { resolve, reject, cleanup, writing });
+        outstanding.set(id, { resolve, reject, cleanup, writing, sessionRead });
         options.signal?.addEventListener('abort', abort, { once: true });
         // Recheck after listener attachment; no operation is replayed on reconnection.
         if (options.signal?.aborted) {

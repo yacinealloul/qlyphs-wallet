@@ -104,6 +104,9 @@ export class SecretSession {
     if (this.bytes && this.now() >= this.until) this.lock();
     return this.bytes !== null;
   }
+  /** When the current unlock ends, 0 while locked. Reading it never extends anything; a mint
+   * session's signing deadline is clamped to it. */
+  get deadline(): number { return this.unlocked ? this.until : 0; }
   /** Cancel account-bound work without extending the installation's unlock deadline. */
   invalidate(): void { void this.unlocked; this.epoch++; }
   install(clear: Uint8Array, expectedEpoch: number): void {

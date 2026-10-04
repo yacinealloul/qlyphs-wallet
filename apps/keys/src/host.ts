@@ -158,7 +158,9 @@ export async function boot(): Promise<Host> {
     };
   });
   port.start();
-  send({ type: 'hello', hostId, lock, url: location.href, documentId: crypto.randomUUID() });
+  // The version lets an older worker learn that a newer release is live, so it can stop a running
+  // mint session before the user reloads into the new code.
+  send({ type: 'hello', hostId, lock, url: location.href, documentId: crypto.randomUUID(), version: QLYPHS_VERSION });
   // The wallet worker is shared by every keys page and lives until the last one closes, so after a
   // release an open tab can keep an older worker running. Talking to it would fail on every call;
   // say what to do instead. Never stop the older worker from here: it may be mid-submission.

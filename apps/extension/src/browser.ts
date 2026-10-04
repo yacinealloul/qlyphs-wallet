@@ -17,6 +17,9 @@ export interface ExtensionAPI {
     onConnect: Event<(port: Port)=>void>;
     onMessage: Event<(message: unknown, sender: Sender, respond: (value: unknown)=>void)=>boolean|void>;
     onInstalled: Event<(details:{reason:string})=>void>;
+    /** Listened to only while a mint session runs: while a listener exists, Firefox keeps the old
+     * version until the extension reloads. Keys fires it when a page of another release connects. */
+    onUpdateAvailable?: Event<(details:{version:string})=>void> & {removeListener(listener:(details:{version:string})=>void):void};
   };
   storage: {local: {
     get(keys: string|string[]|null): Promise<Record<string,unknown>>;
@@ -32,6 +35,9 @@ export interface ExtensionAPI {
   windows: {
     getCurrent?():Promise<{id?:number}>;
     create(options:{url:string;type:'popup';width:number;height:number}): Promise<{id?:number}>;
+    /** Keys only: opens a confirmation in the popup of the dapp page whose tab id is `opener`, never
+     * in another dapp's popup. Browsers have no such member and keep using `create`. */
+    openFor?(opener:number,url:string): Promise<{id?:number}>;
     remove(id:number): Promise<void>;
     onRemoved: Event<(id:number)=>void>;
   };

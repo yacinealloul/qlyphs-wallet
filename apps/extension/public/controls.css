@@ -234,8 +234,8 @@
   button:disabled {
     cursor: not-allowed;
   }
-  /* The review heading receives reading focus, but is not an interactive control. */
-  #review-title:focus-visible {
+  /* The review and progress headings receive reading focus, but are not interactive controls. */
+  :is(#review-title, #mint-session-title):focus-visible {
     outline: none;
   }
   button[data-busy-disabled='true'] {
@@ -267,6 +267,28 @@
   }
   button.tx-tracker[data-stage='failed'] {
     --edge: color-mix(in srgb, var(--danger) 45%, var(--line));
+  }
+}
+
+@layer controls {
+  /* Stop ends signing: a neutral control with a warning edge, never the primary action. */
+  button#mint-session-stop {
+    --edge: color-mix(in srgb, var(--danger) 45%, var(--line));
+  }
+  /* While stopping, Stop keeps keyboard focus but ignores clicks (aria-disabled): it reads as
+     :disabled. The coming-soon actions carry aria-disabled too but answer a click: they keep
+     their own look. */
+  button#mint-session-stop[aria-disabled='true'] {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+  button#mint-session-stop[aria-disabled='true']:active {
+    background-color: var(--rest);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    button#mint-session-stop[aria-disabled='true']:hover {
+      background-color: var(--rest);
+    }
   }
 }
 

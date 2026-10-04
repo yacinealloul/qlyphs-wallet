@@ -1,6 +1,8 @@
 /** The public API accepts intentions, never bytes, origins, RPCs or passwords. */
 import { parseCommand, json } from '../../native/src/commands.ts';
 import { fromHex, requireThat } from '../../../packages/native/src/codec.ts';
+import { parseMintSessionTerms } from '../../../packages/provider/src/mint-session.ts';
+import type { MintSessionParams } from '../../../packages/provider/src/mint-session.ts';
 export const VERSION = 1;
 export const MAX_PENDING = 8;
 export interface TransactionParams {
@@ -8,20 +10,38 @@ export interface TransactionParams {
   genesis: string;
   command: Record<string, unknown>;
 }
-export interface Request {
-  id: string;
-  method:
-    | 'connect'
-    | 'accounts'
-    | 'network'
-    | 'disconnect'
-    | 'requestTransaction'
-    | 'capabilities'
-    | 'state'
-    | 'cancelRequest';
-  params?: TransactionParams;
-  target?: string;
-}
+export type Request = { id: string } & (
+  | {
+      method:
+        | 'connect'
+        | 'accounts'
+        | 'network'
+        | 'disconnect'
+        | 'capabilities'
+        | 'state'
+        | 'mintSession';
+    }
+  | { method: 'cancelRequest'; target: string }
+  | { method: 'requestTransaction'; params: TransactionParams }
+  | { method: 'requestMintSession'; params: MintSessionParams }
+  | { method: 'stopMintSession'; params: { session: string } }
+);
+const METHODS = [
+  'connect',
+  'accounts',
+  'network',
+  'disconnect',
+  'requestTransaction',
+  'capabilities',
+  'state',
+  'cancelRequest',
+  'requestMintSession',
+  'mintSession',
+  'stopMintSession',
+];
+const WITH_PARAMS = ['requestTransaction', 'requestMintSession', 'stopMintSession'];
+/** A mint session id: the UUID the wallet generated for its review. */
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export function exact(value: unknown, names: string[]): asserts value is Record<string, unknown> {
   requireThat(value && typeof value === 'object' && !Array.isArray(value), 'Object required');
   const o = value as Record<string, unknown>;
@@ -35,10 +55,10 @@ export function parseRequest(input: unknown): Request {
     typeof input === 'object' && input !== null && JSON.stringify(input).length <= 8192,
     'Invalid request size',
   );
-  const r = input as Request;
+  const r = input as { id?: unknown; method?: unknown; params?: unknown; target?: unknown };
   exact(
     r,
-    r.method === 'requestTransaction'
+    WITH_PARAMS.includes(r.method as string)
       ? ['id', 'method', 'params']
       : r.method === 'cancelRequest'
         ? ['id', 'method', 'target']
@@ -48,19 +68,7 @@ export function parseRequest(input: unknown): Request {
     typeof r.id === 'string' && /^[A-Za-z0-9_-]{16,80}$/.test(r.id),
     'Invalid request identifier',
   );
-  requireThat(
-    [
-      'connect',
-      'accounts',
-      'network',
-      'disconnect',
-      'requestTransaction',
-      'capabilities',
-      'state',
-      'cancelRequest',
-    ].includes(r.method),
-    'Unsupported method',
-  );
+  requireThat(METHODS.includes(r.method as string), 'Unsupported method');
   if (r.method === 'cancelRequest')
     requireThat(
       typeof r.target === 'string' && /^[A-Za-z0-9_-]{16,80}$/.test(r.target),
@@ -68,15 +76,33 @@ export function parseRequest(input: unknown): Request {
     );
   if (r.method === 'requestTransaction') {
     exact(r.params, ['owner', 'genesis', 'command']);
-    fromHex(r.params!.owner, 32);
-    fromHex(r.params!.genesis, 32);
+    fromHex(r.params.owner as string, 32);
+    fromHex(r.params.genesis as string, 32);
     // Canonicalize with the single shared command parser, rejecting extra fields.
     r.params = {
-      ...r.params!,
-      command: JSON.parse(json(parseCommand(r.params!.command))) as Record<string, unknown>,
+      ...r.params,
+      command: JSON.parse(json(parseCommand(r.params.command))) as Record<string, unknown>,
     };
   }
-  return structuredClone(r);
+  if (r.method === 'requestMintSession') {
+    exact(r.params, ['owner', 'genesis', 'terms']);
+    fromHex(r.params.owner as string, 32);
+    fromHex(r.params.genesis as string, 32);
+    // The one rule set the SDK and the wallet share; it returns the terms in canonical order.
+    r.params = {
+      owner: r.params.owner,
+      genesis: r.params.genesis,
+      terms: parseMintSessionTerms(r.params.terms),
+    };
+  }
+  if (r.method === 'stopMintSession') {
+    exact(r.params, ['session']);
+    requireThat(
+      typeof r.params.session === 'string' && SESSION_ID.test(r.params.session),
+      'Invalid session identifier',
+    );
+  }
+  return structuredClone(r) as Request;
 }
 export interface BoundDocument {
   origin: string;

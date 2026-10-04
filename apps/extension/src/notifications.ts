@@ -5,6 +5,8 @@ export interface NotificationTransaction {
   nativeSuccess?: boolean | null;
   verdict?: string | null;
   notified?: string;
+  /** Set on a mint session's lot payments, which never raise one notification each. */
+  session?: string;
 }
 export function notificationOutcome(
   tx: NotificationTransaction,
@@ -27,5 +29,6 @@ export function notificationText(outcome: ReturnType<typeof notificationOutcome>
   };
 }
 export function notificationCandidates(txs: NotificationTransaction[]) {
-  return txs.filter((tx) => notificationOutcome(tx) && !tx.notified);
+  // Up to 35 payments of one session would each raise an OS notification; Activity lists them.
+  return txs.filter((tx) => tx.session === undefined && notificationOutcome(tx) && !tx.notified);
 }

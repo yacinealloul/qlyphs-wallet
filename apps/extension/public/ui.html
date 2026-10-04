@@ -648,6 +648,41 @@
           ><button id="tx-result-done" type="button">Done</button>
         </div>
       </section>
+      <section
+        id="mint-session"
+        class="tx-result mint-session"
+        aria-labelledby="mint-session-title"
+        hidden
+      >
+        <p
+          id="mint-session-announce"
+          class="sr-only"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        ></p>
+        <div class="tx-result-body">
+          <div id="mint-session-seal" class="tx-seal" data-stage="sent" aria-hidden="true">
+            <svg viewBox="0 0 64 64">
+              <circle class="tx-seal-track" cx="32" cy="32" r="28" />
+              <circle class="tx-seal-arc" cx="32" cy="32" r="28" pathLength="100" />
+              <path class="tx-seal-check" d="m20 33 8 8 16-17" pathLength="100" />
+              <path class="tx-seal-cross" d="m24 24 16 16M40 24 24 40" pathLength="100" />
+            </svg>
+          </div>
+          <h1 id="mint-session-title" tabindex="-1">Minting…</h1>
+          <p id="mint-session-count" class="tx-result-amount"></p>
+          <p id="mint-session-detail" class="tx-result-detail"></p>
+          <dl id="mint-session-rows" class="rows"></dl>
+          <button id="mint-session-hash" class="pill tx-result-hash" type="button" hidden>
+            <span class="mono"></span><svg><use href="#i-copy" /></svg>
+          </button>
+        </div>
+        <div class="actions review-actions">
+          <button id="mint-session-stop" class="secondary" type="button">Stop signing</button
+          ><button id="mint-session-done" type="button" hidden>Done</button>
+        </div>
+      </section>
       <section id="wallet" hidden>
         <div class="wallet-home">
           <div class="account-bar">

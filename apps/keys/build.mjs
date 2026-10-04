@@ -20,15 +20,20 @@ if (!['development', 'production'].includes(profile))
   throw Error('QLYPHS_KEYS_PROFILE must be development or production');
 const production = profile === 'production';
 // Mirrors apps/extension/build.mjs QLYPHS_EXTENSION_NETWORK. A production (public HTTPS) keys build
-// is mainnet only; development serves on localhost and may sign for either network.
+// is mainnet or testnet; development serves on localhost and may sign for either network.
+// `testnet` serves a development network in public: the development profile, so it never signs for
+// the mainnet genesis, with every endpoint named explicitly and reached over HTTPS.
 const networkName = process.env.QLYPHS_KEYS_NETWORK ?? (production ? 'mainnet' : 'development');
-if (!['development', 'mainnet', 'switchable'].includes(networkName))
-  throw Error('QLYPHS_KEYS_NETWORK must be development, mainnet or switchable');
-if (production && networkName !== 'mainnet')
-  throw Error('A production keys build is mainnet only; the development network is local');
+if (!['development', 'testnet', 'mainnet', 'switchable'].includes(networkName))
+  throw Error('QLYPHS_KEYS_NETWORK must be development, testnet, mainnet or switchable');
+if (production && networkName !== 'mainnet' && networkName !== 'testnet')
+  throw Error('A production keys build is mainnet or testnet; the development network is local');
 const switchable = networkName === 'switchable';
 const mainnet = networkName === 'mainnet';
+const testnet = networkName === 'testnet';
 const withMainnet = mainnet || switchable;
+// Hosted services are reached over public HTTPS; a local development network over loopback HTTP.
+const publicEndpoints = withMainnet || testnet;
 // Trusted public pins are embedded at build time, never accepted from an API/dapp. The mainnet
 // lock: no pins file, no mainnet (or switchable) build.
 if (withMainnet && !process.env.QLYPHS_KEYS_PINS)
@@ -76,7 +81,15 @@ if (
     pqPolicy.activation.hash !== pqPolicy.genesis)
 )
   throw Error('PQ policy does not match the installed development protocol/runtime');
+// A testnet build has no defaults: it names its own services and never falls back to hosted ones.
+if (testnet) {
+  const required = ['QLYPHS_KEYS_API', 'QLYPHS_KEYS_RPC', 'QLYPHS_KEYS_EXPLORER', 'QLYPHS_KEYS_DAPP_ORIGINS'];
+  if (production) required.push('QLYPHS_KEYS_ORIGIN');
+  const missing = required.filter((name) => !process.env[name]);
+  if (missing.length) throw Error(`A testnet build names all its endpoints; missing ${missing.join(', ')}`);
+}
 const env = (name, fallback) => process.env[name] ?? fallback;
+const MAINNET_KEYS_ORIGIN = 'https://keys.qlyphs.com';
 // Same defaults as the extension: hosted services on mainnet, local ones on development.
 const MAINNET_DEFAULTS = {
   api: 'https://indexer.qlyphs.com',
@@ -97,7 +110,7 @@ const defaults = withMainnet ? MAINNET_DEFAULTS : DEV_DEFAULTS;
 const api = env('QLYPHS_KEYS_API', defaults.api);
 const rpc = env('QLYPHS_KEYS_RPC', defaults.rpc);
 const explorer = env('QLYPHS_KEYS_EXPLORER', defaults.explorer);
-const keysOrigin = env('QLYPHS_KEYS_ORIGIN', production ? 'https://keys.qlyphs.com' : 'http://localhost:4410');
+const keysOrigin = env('QLYPHS_KEYS_ORIGIN', production ? MAINNET_KEYS_ORIGIN : 'http://localhost:4410');
 const dapps = process.env.QLYPHS_KEYS_DAPP_ORIGINS
   ? JSON.parse(process.env.QLYPHS_KEYS_DAPP_ORIGINS)
   : withMainnet
@@ -125,29 +138,36 @@ const checkList = (list) => {
   )
     throw Error('Dapp origins must be a unique list of 1 to 16 exact origins, excluding the keys origin');
 };
-// Endpoints follow the network (mainnet: public HTTPS; development: loopback HTTP), dapps too.
-const checkNetwork = (onMainnet, values) => {
+// Endpoints follow the network (mainnet and testnet: public HTTPS; development: loopback HTTP),
+// dapps too.
+const checkNetwork = (onPublic, values) => {
   for (const value of values)
-    if (!(onMainnet ? isPublicHttps(value) : isLoopbackHttp(value)))
+    if (!(onPublic ? isPublicHttps(value) : isLoopbackHttp(value)))
       throw Error(
-        onMainnet
-          ? `A mainnet build only accepts exact public HTTPS origins: ${value}`
+        onPublic
+          ? `A ${testnet ? 'testnet' : 'mainnet'} build only accepts exact public HTTPS origins: ${value}`
           : `A development build only accepts exact loopback HTTP origins: ${value}`,
       );
 };
 checkList(dapps);
-checkNetwork(withMainnet, [api, rpc, ...dapps]);
+checkNetwork(publicEndpoints, [api, rpc, ...dapps]);
+// A testnet wallet stays apart from the mainnet one: its own origin, so its own storage and
+// passkeys, and none of the hosted mainnet services or dapps.
+if (testnet)
+  for (const value of [keysOrigin, api, rpc, ...dapps])
+    if ([MAINNET_KEYS_ORIGIN, MAINNET_DEFAULTS.api, MAINNET_DEFAULTS.rpc, ...MAINNET_DEFAULTS.dapps].includes(value))
+      throw Error(`A testnet build cannot use the mainnet origin ${value}`);
 if (!(production ? isPublicHttps(keysOrigin) : isLoopbackHttp(keysOrigin)))
   throw Error(`The ${profile} keys origin must be an exact ${production ? 'public HTTPS' : 'loopback HTTP'} origin`);
 if (!production && new URL(keysOrigin).hostname === '127.0.0.1')
   throw Error('Use localhost for the keys origin: an IP address is not a valid passkey rpId');
-const checkExplorer = (value, onMainnet) => {
+const checkExplorer = (value, onPublic) => {
   const u = new URL(value);
   if (u.username || u.password || u.search || u.hash ||
-      !(u.protocol === 'https:' || (!onMainnet && u.protocol === 'http:' && loopback.includes(u.hostname))))
-    throw Error(`Explorer must be an HTTPS URL${onMainnet ? '' : ' or a local HTTP URL'} without credentials, query or fragment`);
+      !(u.protocol === 'https:' || (!onPublic && u.protocol === 'http:' && loopback.includes(u.hostname))))
+    throw Error(`Explorer must be an HTTPS URL${onPublic ? '' : ' or a local HTTP URL'} without credentials, query or fragment`);
 };
-checkExplorer(explorer, withMainnet);
+checkExplorer(explorer, publicEndpoints);
 // `switchable`: both networks compiled in, the user picks one in Settings (config.ts). Local only.
 const networks = switchable
   ? {
@@ -170,9 +190,10 @@ const everyRpc = networks ? [networks.mainnet.rpc, networks.development.rpc] : [
 const everyDapp = networks ? [...new Set([...networks.mainnet.dapps, ...networks.development.dapps])] : dapps;
 if (everyDapp.length > 16) throw Error('At most 16 dapp origins across networks');
 // The pages and the worker call the API and the RPC cross-origin (the extension skips CORS through
-// host_permissions; a web page cannot). A mainnet endpoint that does not answer a CORS preflight for
-// the keys origin leaves every status, fee, review and submit call failing, so a production build
-// refuses it and any other mainnet build warns. apps/native only allows the origins it is told to.
+// host_permissions; a web page cannot). A public endpoint (mainnet or testnet) that does not answer a
+// CORS preflight for the keys origin leaves every status, fee, review and submit call failing, so a
+// production build refuses it and any other build with public endpoints warns. apps/native only
+// allows the origins it is told to (NATIVE_EXTENSION_ORIGINS).
 // QLYPHS_KEYS_SKIP_CORS_CHECK=1 skips it (offline build); the deploy must then check it by hand.
 const corsProblem = async (endpoint, path) => {
   try {
@@ -194,15 +215,15 @@ const corsProblem = async (endpoint, path) => {
     return `preflight ${endpoint} failed: ${error.message}`;
   }
 };
-if (withMainnet) {
-  const mainnetApi = networks ? networks.mainnet.api : api;
-  const mainnetRpc = networks ? networks.mainnet.rpc : rpc;
+if (publicEndpoints) {
+  const publicApi = networks ? networks.mainnet.api : api;
+  const publicRpc = networks ? networks.mainnet.rpc : rpc;
   if (process.env.QLYPHS_KEYS_SKIP_CORS_CHECK === '1')
-    console.warn(`WARNING: CORS check skipped; verify ${mainnetApi} and ${mainnetRpc} allow ${keysOrigin} before deploying`);
+    console.warn(`WARNING: CORS check skipped; verify ${publicApi} and ${publicRpc} allow ${keysOrigin} before deploying`);
   else {
-    const problems = (await Promise.all([corsProblem(mainnetApi, '/api/status'), corsProblem(mainnetRpc, '/')])).filter(Boolean);
+    const problems = (await Promise.all([corsProblem(publicApi, '/api/status'), corsProblem(publicRpc, '/')])).filter(Boolean);
     if (problems.length) {
-      const text = `Qlyphs Keys at ${keysOrigin} cannot reach its mainnet endpoints:\n  ${problems.join('\n  ')}\n` +
+      const text = `Qlyphs Keys at ${keysOrigin} cannot reach its ${testnet ? 'testnet' : 'mainnet'} endpoints:\n  ${problems.join('\n  ')}\n` +
         `The API must allow this exact origin (apps/native accepts only extension origins today).`;
       if (production) throw Error(text);
       console.warn('WARNING: ' + text);
@@ -242,7 +263,8 @@ const define = {
   QLYPHS_KEYS_ORIGIN: JSON.stringify(keysOrigin),
   QLYPHS_NETWORK_PROFILE: JSON.stringify(networkProfile),
   QLYPHS_NETWORKS: JSON.stringify(networks),
-  // What the dapp SDK reports until the wallet names its network (a switchable build starts on mainnet).
+  // What the dapp SDK reports until the wallet names its network (a switchable build starts on
+  // mainnet; a testnet build runs the development network).
   QLYPHS_KEYS_NETWORK: JSON.stringify(withMainnet ? 'mainnet' : 'development'),
 };
 const shared = {
@@ -300,7 +322,10 @@ await writeFile(`${out}/quantus_wasm_bg.wasm`, binary);
 let html = await readFile('../extension/public/ui.html', 'utf8');
 for (const [from, to] of [
   // A switchable build drops the suffix at runtime on mainnet (network-copy.ts).
-  ['<title>Qlyphs Wallet · Development</title>', mainnet ? '<title>Qlyphs Keys</title>' : '<title>Qlyphs Keys · Development</title>'],
+  [
+    '<title>Qlyphs Wallet · Development</title>',
+    mainnet ? '<title>Qlyphs Keys</title>' : `<title>Qlyphs Keys · ${testnet ? 'Testnet' : 'Development'}</title>`,
+  ],
   [
     '<link rel="stylesheet" href="controls.css" />',
     '<link rel="stylesheet" href="controls.css" />\n    <link rel="stylesheet" href="keys.css" />\n    <link rel="icon" href="icon-32.png" />',

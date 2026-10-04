@@ -44,7 +44,7 @@ import {
   VERSION,
   walletKey,
 } from './config.ts';
-import { api, network, prepare, recheck, tipBlock } from './network.ts';
+import { api, digestOf, network, prepare, recheck, tipBlock } from './network.ts';
 import { qlyphNumbers } from './qlyphs.ts';
 import { submitOnce } from './submission.ts';
 import type { Manifest, Review, View } from './network.ts';
@@ -53,17 +53,69 @@ import type { Vault } from './vault.ts';
 import { identity, wasm } from './signer.ts';
 import { parseRequest, exact, pageOrigin, sameExtensionPage, Requests } from './requests.ts';
 import type { BoundDocument, Request } from './requests.ts';
+import {
+  ACCOUNT_STOP_MS,
+  ENDED_RETENTION_MS,
+  LEASE_MS,
+  MIN_START_MS,
+  MintSessionController,
+  NETWORK_FEE_MARGIN,
+  NEVER_RAN_JOURNAL,
+  UPDATE_SETTLE_MS,
+  endOnRestart,
+  endStale,
+  pruneSettled,
+  resolveFromJournal,
+  sessionSnapshot,
+  sessionsAvailable,
+  settledRecord,
+  ticketCharge,
+  validateMintSessions,
+} from './mint-session.ts';
+import type { MintSessionRecord, Quote, SessionDeps, WalletEndReason } from './mint-session.ts';
+import {
+  chainReads,
+  era,
+  findInclusion,
+  locatePayment,
+  onAncestry,
+  proveInclusion,
+  proveLineage,
+} from './mint-session-chain.ts';
+import type { MintSessionReview, MintSessionStatus } from './mint-session-view.ts';
 import { generateMnemonic, requireMnemonic } from '../../../packages/chain/src/browser/mnemonic.ts';
 import { fromHex, hex, requireThat, assetId } from '../../../packages/native/src/codec.ts';
 import { MAINNET_PROGRESSIVE_V2_FROM } from '../../../packages/native/src/protocol.ts';
+import {
+  PROGRESSIVE_MINT_LOTS,
+  PROGRESSIVE_MINT_PROFILE_V2,
+  progressiveLotFee,
+} from '../../../packages/native/src/progressive-mint.ts';
 import {
   extrinsicHash,
   parseSignedExtrinsic,
 } from '../../../packages/chain/src/codec/extrinsic.ts';
 import { parseCommand, json } from '../../native/src/commands.ts';
-import { attestedLot, authorizePurchase, pqConfigured } from '../../native/web/pq-guard.ts';
-import { capabilities, QlyphsError, publicError } from '../../../packages/provider/src/index.ts';
-import type { ProviderState, PublicErrorCode } from '../../../packages/provider/src/index.ts';
+import {
+  attestationPolicy,
+  attestedAsset,
+  attestedLot,
+  authorizePurchase,
+  pqConfigured,
+} from '../../native/web/pq-guard.ts';
+import type { AttestedAsset } from '../../native/web/pq-guard.ts';
+import {
+  capabilities,
+  MINT_SESSION_LIMITS,
+  QlyphsError,
+  publicError,
+} from '../../../packages/provider/src/index.ts';
+import type {
+  MintSessionSnapshot,
+  MintSessionTerms,
+  ProviderState,
+  PublicErrorCode,
+} from '../../../packages/provider/src/index.ts';
 
 interface Account {
   owner: string;
@@ -89,6 +141,9 @@ interface Transaction {
   to?: string;
   symbol?: string;
   decimals?: number;
+  /** The mint session that signed it, and its lot; display and linkage only. */
+  session?: string;
+  lot?: number;
 }
 interface Stored extends AccountBook {
   access?: WalletAccess;
@@ -96,6 +151,8 @@ interface Stored extends AccountBook {
   notifications?: boolean;
   manifest?: Manifest;
   transactions: Transaction[];
+  /** Mint session ledger: bookkeeping and display; every liability is also in `transactions`. */
+  mintSessions?: MintSessionRecord[];
 }
 interface Connection extends BoundDocument {
   port: Port;
@@ -106,9 +163,12 @@ interface Connection extends BoundDocument {
   revision: number;
   subscribed: boolean;
   snapshot?: string;
+  /** The mint session this channel created: the only channel that reads it or hears of it. */
+  mint?: MintRun;
+  mintSnapshot?: string;
 }
 interface Job {
-  kind: 'connect' | 'transaction';
+  kind: 'connect' | 'transaction' | 'session';
   owner: string;
   genesis: string;
   epoch: number;
@@ -116,12 +176,38 @@ interface Job {
   requestId?: string;
   connectionRevision?: number;
   review?: Review;
+  mintReview?: MintSessionReview;
   windowId?: number;
   windowReady?: Promise<void>;
   expires?: number;
   cancelled: boolean;
   phase: 'review' | 'signing';
+  /** The page and document that approved this mint session, while the approval is being saved. */
+  approval?: { page: string; documentId?: string };
   reply: (value: unknown) => void;
+}
+/** What an approval bound a mint session to. Memory only: no window, page or channel survives a
+ * restart, so no window can control a session the wallet did not start in this worker. */
+interface MintBinding {
+  connection: Connection;
+  revision: number;
+  requestId: string;
+  windowId: number;
+  documentId?: string;
+  page: string;
+  epoch: number;
+  owner: string;
+  address: string;
+  genesis: string;
+  deadline: number;
+  unlockDeadline: number;
+  /** Renewed by the progress window's polls: signing stops LEASE_MS after the last one. */
+  lease: number;
+  windowGone: boolean;
+}
+interface MintRun {
+  controller: MintSessionController;
+  binding: MintBinding;
 }
 interface PasskeyAttempt {
   mode: 'enroll' | 'unlock';
@@ -136,6 +222,29 @@ let accessReady = false;
 const requests = new Requests<Job>(),
   jobs = new Map<string, Job>(),
   connections = new Set<Connection>();
+/** One running mint session per `${genesis}:${owner}`; it leaves when its `run()` settles. */
+const mintControllers = new Map<string, MintRun>();
+/** Sessions their progress window can still read, by approved request id: until the window closes,
+ * or ENDED_RETENTION_MS after the end. */
+const mintWindows = new Map<string, MintRun>();
+/** Ended sessions whose read-only settle task still follows their last payment. */
+const mintSettling = new Set<MintSessionController>();
+/** Session approvals that their window reloaded or left before the session started, by request id,
+ * until the review would have expired: the window's next page is told that nothing started. */
+const abandonedStarts = new Map<string, { windowId: number; expires: number }>();
+const FINAL_STATUSES = ['finalized', 'expired', 'cancelled-before-broadcast'];
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** Journal entries the wallet keeps; it never prunes them. */
+const JOURNAL_CAPACITY = 200;
+// Texts the wallet window matches or shows as they are (errors.ts lists them as safe).
+const NO_SESSION = 'No mint session for this window';
+const RELOADED_BEFORE_START =
+  'This window was reloaded before minting started, so nothing was signed. Start again from the site.';
+const LOCKS_TOO_SOON =
+  'The wallet locks too soon to start minting. Lock it, unlock it and start again from the site.';
+const RECORDS_FULL =
+  'Too many mint sessions are still settling; try again once their payments are final';
+const ARCHIVE_FULL = 'Archive capacity reached; preserve history before continuing';
 let state: Stored = {
   version: 2,
   backed: false,
@@ -212,10 +321,35 @@ async function readState(): Promise<void> {
         validateLinkedWallet(linked);
       }
     }
+    // The mint session ledger never refuses the wallet: every liability it describes is also in
+    // the journal, which keeps gating the account. A ledger that breaks its rules is archived in
+    // the same storage operation as the wallet without it, then never trusted again.
+    let archive: Record<string, unknown> = {};
+    try {
+      validateMintSessions(s.mintSessions, s.transactions);
+    } catch {
+      archive = { ['mint-sessions-archive-' + crypto.randomUUID()]: s.mintSessions };
+      s.mintSessions = [];
+    }
+    for (const tx of s.transactions) {
+      // Display-only links to a session; an invalid one is dropped, like an invalid passkey.
+      if (
+        tx.session !== undefined &&
+        !(typeof tx.session === 'string' && SESSION_ID.test(tx.session))
+      )
+        delete tx.session;
+      if (tx.lot !== undefined && !(Number.isSafeInteger(tx.lot) && tx.lot >= 1 && tx.lot <= 1000))
+        delete tx.lot;
+    }
     state = s;
-    if (legacy) await browser.storage.local.set({ [walletKey()]: structuredClone(state) });
+    if (legacy || Object.keys(archive).length)
+      await browser.storage.local.set({ ...archive, [walletKey()]: structuredClone(state) });
     for (const tx of state.transactions)
       if (tx.status === 'signed-not-submitted') tx.status = 'cancelled-before-broadcast';
+    // A session never resumes after a restart: no window, page or channel bound it here.
+    const ledger = state.mintSessions ?? [];
+    endOnRestart(ledger, Date.now());
+    resolveFromJournal(ledger, state.transactions);
   }
 }
 /** Mainnet (switchable build): the development wallet, which the user can carry over with all its
@@ -333,6 +467,8 @@ function setAccessPasskey(passkey?: PasskeyVault): void {
   }
 }
 function changeAccountContext(): void {
+  // Before the epoch moves, so that the session ends with this reason rather than `locked`.
+  stopMintSessions('account');
   session.invalidate();
   passkeyAttempts.invalidate(() => true);
   invalidate(() => true);
@@ -397,7 +533,11 @@ function projected(c: Connection): ProviderState {
 function publishStates(): void {
   const before = session.epoch;
   void isUnlocked();
-  if (session.epoch !== before) invalidate(() => true);
+  if (session.epoch !== before) {
+    // The absolute unlock deadline passed: the wallet just locked itself.
+    stopMintSessions('locked');
+    invalidate(() => true);
+  }
   for (const c of connections) {
     if (!c.alive || !c.subscribed) continue;
     const snapshot = projected(c),
@@ -411,10 +551,34 @@ function publishStates(): void {
       invalidate((j) => j.connection === c);
     }
   }
+  for (const c of connections) publishMint(c);
+}
+/** The creating channel's view of its mint session, while its grant and revision last; else null.
+ * Reads and events carry exactly this. */
+function mintProjection(c: Connection): MintSessionSnapshot | null {
+  const run = c.mint;
+  if (!run || !c.alive || c.revision !== run.binding.revision || !permitted(c)) return null;
+  return run.controller.snapshot();
+}
+/** `mintSessionChanged` to the one channel that created the session, when its projection changed
+ * (including to null once its grant is gone). No other channel ever hears of a session. */
+function publishMint(c: Connection): void {
+  if (!c.mint || !c.alive) return;
+  const snapshot = mintProjection(c),
+    encoded = JSON.stringify(snapshot);
+  if (c.mintSnapshot === encoded) return;
+  c.mintSnapshot = encoded;
+  try {
+    c.port.postMessage({ event: 'mintSessionChanged', session: snapshot });
+  } catch {
+    c.alive = false;
+    invalidate((j) => j.connection === c);
+  }
 }
 async function revokeOrigin(origin: string): Promise<void> {
   // Revocation must not silently come back when selecting another saved account.
   for (const record of records(state)) delete record.grants[origin];
+  stopMintSessions('revoked', (b) => b.connection.origin === origin);
   for (const c of connections) if (c.origin === origin) c.revision++;
   invalidate((j) => j.connection?.origin === origin);
   publishStates();
@@ -443,13 +607,15 @@ function send(c: Connection, id: string, value: unknown): void {
     }
   c.ids.delete(id);
 }
-function finish(id: string, value: unknown): void {
+/** Replies to a job's request and drops the job. `release` false keeps the wallet mutex: an approved
+ * mint session holds it until its `run()` settles. */
+function finish(id: string, value: unknown, release = true): void {
   const job = jobs.get(id);
   if (!job) return;
   requests.remove(id);
   jobs.delete(id);
   job.reply(value);
-  if (job.kind === 'transaction') walletBusy = false;
+  if (job.kind !== 'connect' && release) walletBusy = false;
 }
 function cancel(id: string, code: PublicErrorCode = 'CONTEXT_CHANGED'): void {
   const j = jobs.get(id);
@@ -463,6 +629,7 @@ function invalidate(predicate: (j: Job) => boolean): void {
   for (const [id, j] of jobs) if (predicate(j)) cancel(id);
 }
 function lock(): void {
+  stopMintSessions('locked');
   accessReady = false;
   session.lock();
   passkeyAttempts.invalidate(() => true);
@@ -521,8 +688,12 @@ async function notifyHistory() {
 async function syncHistory(): Promise<Transaction[]> {
   let changed = false;
   let trustedStatus: Awaited<ReturnType<typeof network>> | undefined;
+  // A final status is never replaced. Each read below is awaited, and meanwhile the entry may
+  // become final: a mint session cancels the payment it was signing when a stop lands before its
+  // bytes leave. Every await is therefore followed by a fresh check.
+  const final = (tx: Transaction) => FINAL_STATUSES.includes(tx.status);
   for (const tx of state.transactions) {
-    if (['finalized', 'expired', 'cancelled-before-broadcast'].includes(tx.status)) continue;
+    if (final(tx)) continue;
     try {
       const s = await api<{
         status: string;
@@ -530,6 +701,7 @@ async function syncHistory(): Promise<Transaction[]> {
         nativeSuccess?: boolean | null;
         verdict?: string | null;
       }>('/api/transactions/' + tx.hash);
+      if (final(tx)) continue;
       if (
         ['pending', 'included', 'finalized', 'expired', 'indexer-unavailable'].includes(s.status)
       ) {
@@ -549,19 +721,27 @@ async function syncHistory(): Promise<Transaction[]> {
         state.manifest
       ) {
         trustedStatus ??= await network(state.manifest);
+        if (final(tx)) continue;
         if (trustedStatus.finalized > tx.validUntil) {
           const latest = await api<{
             status: string;
+            height?: number | null;
             nativeSuccess?: boolean | null;
             verdict?: string | null;
           }>('/api/transactions/' + tx.hash);
+          if (final(tx)) continue;
+          // A final entry keeps only the height of the report that made it final: an earlier one
+          // may name a block that left the chain, and ended mint sessions compare it with theirs.
           if (latest.status === 'finalized') {
             tx.status = 'finalized';
+            if (Number.isSafeInteger(latest.height)) tx.height = latest.height!;
+            else delete tx.height;
             tx.nativeSuccess = latest.nativeSuccess;
             tx.verdict = latest.verdict;
             changed = true;
           } else if (['pending', 'unknown', 'expired'].includes(latest.status)) {
             tx.status = 'expired';
+            delete tx.height;
             tx.nativeSuccess = null;
             tx.verdict = null;
             changed = true;
@@ -569,32 +749,46 @@ async function syncHistory(): Promise<Transaction[]> {
         }
       }
     } catch {
+      if (final(tx)) continue;
       tx.status = 'unknown';
       changed = true;
     }
   }
+  // Ended mint sessions take history's final verdict for the payments they still count as open.
+  if (resolveFromJournal(state.mintSessions ?? [], state.transactions)) changed = true;
   if (changed) await save();
   await notifyHistory().catch(() => undefined);
   return state.transactions;
 }
+/** The generic finality gate: nothing this account signed is unresolved in history. A running mint
+ * session replaces it only for its own next lot (it holds the wallet meanwhile); every other
+ * operation, and every operation after a session, goes through it. */
+function requireSettledAccount(a: Account): void {
+  requireThat(
+    !state.transactions.some(
+      (t) => t.owner === a.owner && t.genesis === a.genesis && !FINAL_STATUSES.includes(t.status),
+    ),
+    'Wait for the previous operation to finalize. Unknown submissions are never recreated',
+  );
+}
 async function createJob(
-  kind: 'connect' | 'transaction',
+  kind: Job['kind'],
   connection: Connection | undefined,
   requestId: string | undefined,
   input?: unknown,
 ): Promise<string> {
   const a = account();
-  if (kind === 'transaction') {
+  if (kind !== 'connect') {
     requireThat(!walletBusy, 'Another operation is pending; finish it before trying again');
     requireThat(state.backed, 'Save and acknowledge your recovery backup first');
     if (connection) requireThat(permitted(connection), 'Connect this site first');
     walletBusy = true;
   }
-  let inserted: string | undefined;
+  let inserted: string | undefined, job: Job | undefined;
   try {
     // Trigger real-deadline expiry before binding a new request to the epoch.
     void isUnlocked();
-    const job: Job = {
+    job = {
       kind,
       owner: a.owner,
       genesis: a.genesis,
@@ -611,17 +805,14 @@ async function createJob(
       tabId: -1,
       document: crypto.randomUUID(),
     };
-    if (kind === 'transaction') {
+    if (kind === 'session') {
+      requireThat(connection, 'Mint sessions start from a connected site');
       await history();
-      requireThat(
-        !state.transactions.some(
-          (t) =>
-            t.owner === a.owner &&
-            t.genesis === a.genesis &&
-            !['finalized', 'expired', 'cancelled-before-broadcast'].includes(t.status),
-        ),
-        'Wait for the previous operation to finalize. Unknown submissions are never recreated',
-      );
+      requireSettledAccount(a);
+      job.mintReview = await reviewMintSession(a, connection.origin, input as MintSessionTerms);
+    } else if (kind === 'transaction') {
+      await history();
+      requireSettledAccount(a);
       const command = parseCommand(input);
       if (command.kind === 'buy')
         requireThat(pqConfigured, 'Purchases disabled: no bundled PQ witness policy');
@@ -656,29 +847,185 @@ async function createJob(
     jobs.set(p.id, job);
     inserted = p.id;
     job.expires = p.expires;
+    const url = browser.runtime.getURL('ui.html?request=' + p.id);
+    const bound = job;
     // A new extension page may message us before windows.create() resolves.
     // Bind the authoritative window ID before serving any review/approval.
-    job.windowReady = browser.windows
-      .create({
-        url: browser.runtime.getURL('ui.html?request=' + p.id),
-        type: 'popup',
-        width: 480,
-        height: 740,
-      })
-      .then((w) => {
-        requireThat(w.id !== undefined, 'Confirmation window could not be opened');
-        job.windowId = w.id;
-      });
+    // Keys opens a site's review in that site's own popup, never in another site's.
+    job.windowReady = (
+      connection && browser.windows.openFor
+        ? browser.windows.openFor(connection.tabId, url)
+        : browser.windows.create({ url, type: 'popup', width: 480, height: 740 })
+    ).then((w) => {
+      requireThat(w.id !== undefined, 'Confirmation window could not be opened');
+      bound.windowId = w.id;
+    });
     await job.windowReady;
     return p.id;
   } catch (e) {
+    // A job cancelled meanwhile was already finished, which released the mutex: by now it may
+    // belong to another operation.
+    const owned = !inserted || jobs.get(inserted) === job;
     if (inserted) {
       requests.remove(inserted);
       jobs.delete(inserted);
     }
-    if (kind === 'transaction') walletBusy = false;
+    if (kind !== 'connect' && owned) walletBusy = false;
     throw e;
   }
+}
+// Qlyphs Keys reports false where its browser may not run sessions (mobile, WebKit, no shared
+// worker); browser extension runtimes have no such member.
+const browserRunsSessions =
+  (browser.runtime as { mintSessionsSupported?: boolean }).mintSessionsSupported !== false;
+const mintSessionsAvailable = (): boolean =>
+  browserRunsSessions &&
+  sessionsAvailable(PROFILE.network, pqConfigured, PROFILE.runtime.codeHash);
+/** The lot terms `prepare` builds a payment from, all from both witnesses' attestation. */
+const attestedTerms = (view: AttestedAsset, lot: NonNullable<AttestedAsset['next']>) => ({
+  lot,
+  symbol: view.symbol,
+  decimals: view.decimals,
+  cap: view.cap,
+  minted: view.minted,
+  creator: view.creator,
+  block: { height: view.block.height, hash: view.block.hash },
+});
+/** The last lot a session may pay for, and its fee: v2 fees never decrease with the lot number, so
+ * "fee at most maxFeePerLot", which every admission enforces, is "lot at most lastLot". */
+function feeRange(first: number, maxFee: bigint): { lastLot: number; lastFee: string } {
+  let lastLot = first,
+    lastFee = progressiveLotFee(BigInt(first), PROGRESSIVE_MINT_PROFILE_V2);
+  for (let lot = first + 1; lot <= Number(PROGRESSIVE_MINT_LOTS); lot++) {
+    const fee = progressiveLotFee(BigInt(lot), PROGRESSIVE_MINT_PROFILE_V2);
+    if (fee > maxFee) break;
+    lastLot = lot;
+    lastFee = fee;
+  }
+  return { lastLot, lastFee: String(lastFee) };
+}
+/** Drops settled session records, oldest first, until one more fits; returns the free slots. A
+ * dropped record's settle task has nothing left to report. */
+function pruneMintRecords(): number {
+  const ledger = (state.mintSessions ??= []);
+  const before = [...ledger];
+  const free = pruneSettled(ledger, state.transactions);
+  for (const record of before)
+    if (!ledger.includes(record))
+      for (const c of mintSettling) if (c.record === record) c.abortSettle();
+  return free;
+}
+/**
+ * The review of a proposed mint session: the token as both witnesses attest it at the node's best
+ * block, one prepared lot (never signed: it checks the call, the block, the Qlyphs fee, the payer
+ * and the native charge) and every bound the approval digest binds. Refusals are fixed messages
+ * the site sees as VERIFICATION_FAILED.
+ */
+async function reviewMintSession(
+  a: Account,
+  origin: string,
+  terms: MintSessionTerms,
+): Promise<MintSessionReview> {
+  requireThat(mintSessionsAvailable(), 'Mint sessions are not available on this network');
+  const ticket = ticketCharge(PROFILE.runtime.codeHash);
+  const pinned = attestationPolicy();
+  requireThat(ticket !== null && pinned, 'Mint sessions are not available on this network');
+  // Only other accounts' unsettled sessions can fill the ledger: this one's history is settled.
+  const records = pruneMintRecords();
+  requireThat(records >= 1, RECORDS_FULL);
+  const view = await attestedAsset(
+    a.owner,
+    a.genesis,
+    terms.asset,
+    tipBlock,
+    API + '/api/attestations/tip',
+  );
+  const next = view.next;
+  requireThat(next, 'All lots of this token are minted');
+  requireThat(
+    view.profile === PROGRESSIVE_MINT_PROFILE_V2 && next.profile === PROGRESSIVE_MINT_PROFILE_V2,
+    'This token uses another price schedule. Review it again.',
+  );
+  requireThat(
+    view.lotSize === BigInt(terms.lotAmount) && next.amount === view.lotSize,
+    'The lot size differs from the request',
+  );
+  requireThat(
+    view.symbol.length <= 32 && Number.isSafeInteger(view.decimals) && view.decimals <= 18,
+    'Invalid asset definition',
+  );
+  requireThat(
+    next.fee <= BigInt(terms.maxFeePerLot),
+    'The next lot costs more than the session allows',
+  );
+  requireThat(
+    next.fee + ticket <= BigInt(terms.maxSpend),
+    'The spend limit does not cover one lot',
+  );
+  const quote = await prepare(
+    state.manifest!,
+    a.owner,
+    {
+      kind: 'mintProgressive',
+      asset: terms.asset,
+      lot: Number(next.lot),
+      profile: PROGRESSIVE_MINT_PROFILE_V2,
+    },
+    attestedTerms(view, next),
+  );
+  requireThat(
+    quote.intent.costs.nativeFee === String(ticket),
+    'Unexpected native charge; signing disabled',
+  );
+  const networkFee = BigInt(quote.intent.costs.networkFee);
+  const id = crypto.randomUUID();
+  const asset = {
+    id: terms.asset,
+    symbol: view.symbol,
+    decimals: view.decimals,
+    cap: String(view.cap),
+    creator: view.creator,
+  };
+  const start = {
+    lot: Number(next.lot),
+    fee: String(next.fee),
+    minted: String(view.minted),
+    block: { height: view.block.height, hash: view.block.hash },
+  };
+  const range = feeRange(start.lot, BigInt(terms.maxFeePerLot));
+  const costs = {
+    networkFee: String(networkFee),
+    networkReserve: String(networkFee * BigInt(NETWORK_FEE_MARGIN)),
+    ticket: String(ticket),
+    margin: NETWORK_FEE_MARGIN,
+  };
+  const capacity = {
+    remaining: JOURNAL_CAPACITY - state.transactions.length,
+    needed: terms.maxLots + terms.maxAttempts,
+    records,
+  };
+  const policy = {
+    version: pinned.version,
+    rulesHash: pinned.rulesHash,
+    runtimeHash: pinned.runtimeHash,
+  };
+  const horizonBlocks = 256;
+  // One fixed property order: the digest is over the JSON text.
+  const digest = await digestOf({
+    id,
+    origin,
+    owner: a.owner,
+    genesis: a.genesis,
+    terms,
+    asset,
+    start,
+    range,
+    costs,
+    capacity,
+    policy,
+    horizonBlocks,
+  });
+  return { id, terms, asset, start, range, costs, capacity, policy, horizonBlocks, digest };
 }
 async function reviewSender(sender: Sender, id: string): Promise<Job> {
   requireThat(
@@ -694,8 +1041,16 @@ async function reviewSender(sender: Sender, id: string): Promise<Job> {
     requireThat(j.windowId === sender.tab.windowId, 'Wrong confirmation window');
   return j;
 }
-async function approve(id: string, digest: string, sender: Sender): Promise<unknown> {
+async function approve(
+  id: string,
+  digest: string,
+  sender: Sender,
+  page?: unknown,
+): Promise<unknown> {
   const job = await reviewSender(sender, id);
+  // A session keeps the wallet mutex after its approval: it never reaches the finally below.
+  if (job.kind === 'session') return approveSession(job, id, digest, page, sender);
+  requireThat(page === undefined, 'Invalid approval');
   if (job.kind === 'connect') {
     requireThat(isUnlocked() && session.epoch === job.epoch, 'Unlock wallet first');
     requireThat(digest === 'connect', 'Invalid connection approval');
@@ -847,6 +1202,410 @@ async function approve(id: string, digest: string, sender: Sender): Promise<unkn
     walletBusy = false;
   }
 }
+/**
+ * Starts an approved mint session and answers its site with the running snapshot; the session
+ * keeps the wallet mutex until its `run()` settles. Every refusal finishes the job (not submitted)
+ * and releases the mutex: `cancel()` never finishes a consumed job, so a refusal that skipped this
+ * would keep both until a restart.
+ */
+async function approveSession(
+  job: Job,
+  id: string,
+  digest: string,
+  page: unknown,
+  sender: Sender,
+): Promise<unknown> {
+  const review = job.mintReview!;
+  const refuse = (code: PublicErrorCode, error: unknown): never => {
+    finish(id, { error: publicError(null, code, 'not-submitted') });
+    walletBusy = false;
+    publishStates();
+    throw error instanceof Error ? error : Error('Request cancelled or session changed');
+  };
+  if (typeof page !== 'string' || !SESSION_ID.test(page))
+    return refuse('VERIFICATION_FAILED', Error('Invalid approval'));
+  if (digest !== review.digest)
+    return refuse('VERIFICATION_FAILED', Error('Review changed; approve the new request'));
+  if (!(isUnlocked() && session.epoch === job.epoch))
+    return refuse('CONTEXT_CHANGED', Error('Wallet locked; unlock and request a new review'));
+  // The signing deadline is fixed now and never extended: the approved duration, clamped by the
+  // unlock deadline.
+  const approvedAt = Date.now(),
+    unlockDeadline = session.deadline,
+    deadline = Math.min(approvedAt + review.terms.maxDurationSeconds * 1000, unlockDeadline);
+  if (deadline - approvedAt < MIN_START_MS) return refuse('CONTEXT_CHANGED', Error(LOCKS_TOO_SOON));
+  try {
+    requests.consume(id);
+  } catch (error) {
+    return refuse('CONTEXT_CHANGED', error);
+  }
+  job.phase = 'signing';
+  // Until the session starts, a reload of this window cancels the approval (`abandonStart`).
+  job.approval = { page, documentId: sender.documentId };
+  if (JOURNAL_CAPACITY - state.transactions.length < review.capacity.needed)
+    return refuse('VERIFICATION_FAILED', Error(ARCHIVE_FULL));
+  if (pruneMintRecords() < 1) return refuse('VERIFICATION_FAILED', Error(RECORDS_FULL));
+  const key = job.genesis + ':' + job.owner,
+    connection = job.connection;
+  if (!connection) return refuse('CONTEXT_CHANGED', Error('Site permission revoked'));
+  // The mutex already prevents a second session of this account; this keeps it explicit.
+  if (mintControllers.has(key))
+    return refuse('BUSY', Error('Another operation is pending; finish it before trying again'));
+  const runtime = PROFILE.runtime.codeHash,
+    ticket = ticketCharge(runtime);
+  if (ticket === null)
+    return refuse('VERIFICATION_FAILED', Error('Unsupported runtime; signing disabled'));
+  // Write A. A running record of this account without a controller lost its end write: it ends
+  // here, in the same write as the new record.
+  const ledger = (state.mintSessions ??= []);
+  endStale(ledger, state.transactions, job.owner, job.genesis, approvedAt);
+  const record: MintSessionRecord = {
+    id: review.id,
+    origin: connection.origin,
+    owner: job.owner,
+    genesis: job.genesis,
+    terms: review.terms,
+    digest: review.digest,
+    runtime,
+    ticket: String(ticket),
+    margin: NETWORK_FEE_MARGIN,
+    symbol: review.asset.symbol,
+    decimals: review.asset.decimals,
+    approvedAt,
+    deadline,
+    state: 'running',
+    reason: null,
+    endedAt: null,
+    used: 0,
+    reorganized: false,
+    attempts: [],
+  };
+  ledger.push(record);
+  try {
+    await save();
+  } catch (error) {
+    ledger.splice(ledger.indexOf(record), 1);
+    return refuse('VERIFICATION_FAILED', error);
+  }
+  try {
+    current(job);
+  } catch (error) {
+    // Nothing was signed: the record ends at once.
+    record.state = 'ended';
+    record.reason = 'cancelled';
+    record.endedAt = Date.now();
+    await save().catch(() => undefined);
+    return refuse('CONTEXT_CHANGED', error);
+  }
+  const binding: MintBinding = {
+    connection,
+    revision: job.connectionRevision!,
+    requestId: id,
+    windowId: job.windowId!,
+    documentId: sender.documentId,
+    page,
+    epoch: job.epoch,
+    owner: job.owner,
+    address: account().address,
+    genesis: job.genesis,
+    deadline,
+    unlockDeadline,
+    lease: Date.now() + LEASE_MS,
+    windowGone: false,
+  };
+  const controller = new MintSessionController(record, mintDeps(binding, record), {
+    unlockDeadline,
+  });
+  const run: MintRun = { controller, binding };
+  mintControllers.set(key, run);
+  mintWindows.set(id, run);
+  connection.mint = run;
+  watchUpdates();
+  finish(id, { result: controller.snapshot() }, false);
+  publishMint(connection);
+  // run() never rejects and resolves only after the end write was attempted.
+  void controller.run().finally(() => {
+    if (mintControllers.get(key) === run) mintControllers.delete(key);
+    unwatchUpdates();
+    walletBusy = false;
+    const settling = controller.settling;
+    if (settling) {
+      mintSettling.add(controller);
+      void settling.finally(() => mintSettling.delete(controller));
+    }
+    publishStates();
+  });
+  return { session: controller.view() };
+}
+/** Why a session's signing authority is gone (lock, account, channel, grant, window, deadline), or
+ * null while it holds. The controller checks it right before each reservation, signature and
+ * release; its own stop reason comes first. */
+function mintAuthority(b: MintBinding): WalletEndReason | null {
+  void isUnlocked(); // applies the absolute unlock deadline
+  if (session.epoch !== b.epoch || !isUnlocked()) return 'locked';
+  if (!state.vault || !state.manifest) return 'reset';
+  const a = account();
+  if (a.owner !== b.owner || a.genesis !== b.genesis) return 'account';
+  if (!b.connection.alive) return 'disconnected';
+  if (b.connection.revision !== b.revision || !permitted(b.connection)) return 'revoked';
+  if (b.windowGone || Date.now() > b.lease) return 'window';
+  if (Date.now() >= b.deadline) return b.deadline >= b.unlockDeadline ? 'locked' : 'deadline';
+  return null;
+}
+const journalFinal = (hash: string): boolean =>
+  state.transactions.some((t) => t.hash === hash && FINAL_STATUSES.includes(t.status));
+const journalNeverRan = (hash: string): boolean =>
+  state.transactions.some((t) => t.hash === hash && NEVER_RAN_JOURNAL.includes(t.status));
+/** What a session does outside its memory, each effect through the wallet's own checked paths. */
+function mintDeps(b: MintBinding, record: MintSessionRecord): SessionDeps {
+  const asset = record.terms.asset;
+  const attest = (latest: () => Promise<{ height: number; hash: string }>, signal: AbortSignal) =>
+    attestedAsset(b.owner, b.genesis, asset, latest, API + '/api/attestations/tip', signal);
+  return {
+    now: () => Date.now(),
+    sleep: (ms, signal) =>
+      new Promise<void>((resolve) => {
+        if (signal.aborted) return resolve();
+        const done = () => {
+          clearTimeout(timer);
+          signal.removeEventListener('abort', done);
+          resolve();
+        };
+        const timer = setTimeout(done, ms);
+        signal.addEventListener('abort', done, { once: true });
+      }),
+    authority: () => mintAuthority(b),
+    chain: chainReads(b.owner),
+    proofs: { onAncestry, proveLineage, findInclusion, locatePayment, proveInclusion },
+    attestTip: (signal) => attest(tipBlock, signal),
+    attestAt: (block, signal) => attest(() => Promise.resolve(block), signal),
+    async prepare(view): Promise<Quote> {
+      const next = view.next;
+      requireThat(next, 'All lots of this token are minted');
+      const review = await prepare(
+        state.manifest!,
+        b.owner,
+        {
+          kind: 'mintProgressive',
+          asset,
+          lot: Number(next.lot),
+          profile: PROGRESSIVE_MINT_PROFILE_V2,
+        },
+        attestedTerms(view, next),
+      );
+      const i = review.intent;
+      return {
+        review,
+        intentId: i.id,
+        callHex: i.callHex,
+        context: i.context,
+        expiresAt: i.expiresAt,
+        networkFee: BigInt(i.costs.networkFee),
+        nativeFee: BigInt(i.costs.nativeFee),
+        platformFee: BigInt(i.costs.platformFee),
+        existentialDeposit: BigInt(i.costs.existentialDeposit),
+      };
+    },
+    recheck: (quote) => recheck(quote.review as Review, state.manifest!, b.address),
+    async unlockSigner() {
+      const signer = await wasm();
+      const clear = await walletClear(state.vault!, b.epoch);
+      let phrase: string;
+      try {
+        phrase = new TextDecoder().decode(clear);
+      } finally {
+        clear.fill(0);
+      }
+      // Refuses once the wallet locked during the linked-wallet await.
+      session.phrase(b.epoch);
+      const index = state.derived?.index ?? 0;
+      return (callHex, context) =>
+        signer.signCallFromMnemonic(phrase, fromHex(callHex), context, index, 0, 0);
+    },
+    inspect(bytes) {
+      const p = parseSignedExtrinsic(bytes);
+      return {
+        scheme: p.scheme,
+        accountId: hex(p.accountId),
+        callHex: hex(p.call),
+        nonce: p.nonce,
+        tip: p.tip,
+        eraHex: hex(p.eraBytes),
+        hash: extrinsicHash(bytes),
+      };
+    },
+    era,
+    // Exactly one transport call, never raced: a lost answer leaves the payment uncertain.
+    submit: async (intentId, hash, bytes) =>
+      (await submitOnce(hash, () => api('/api/submit', { id: intentId, raw: hex(bytes) }))).status,
+    journalFull: () => state.transactions.length >= JOURNAL_CAPACITY,
+    journalAdd: (entry) => void state.transactions.unshift({ ...entry }),
+    journalStatus(hash, status) {
+      const tx = state.transactions.find((t) => t.hash === hash);
+      if (tx) tx.status = status;
+    },
+    journalFinal,
+    journalNeverRan,
+    // The phrase and the signed bytes are never part of what is saved.
+    persist: () => save(),
+    changed: () => publishMint(b.connection),
+  };
+}
+/** Every revocation hook: ends signing for the running sessions `which` selects. The first reason
+ * a session receives is the one it ends with; payments already released are not affected. */
+function stopMintSessions(
+  reason: WalletEndReason,
+  which: (b: MintBinding) => boolean = () => true,
+): void {
+  for (const run of mintControllers.values()) if (which(run.binding)) run.controller.stop(reason);
+}
+function within(work: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    work.then(() => undefined),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+/** Stops every running session and waits, at most `ms`, until each has recorded its end. */
+async function stopMintSessionsAndWait(reason: WalletEndReason, ms: number): Promise<void> {
+  const runs = [...mintControllers.values()];
+  if (!runs.length) return;
+  for (const run of runs) run.controller.stop(reason);
+  await within(Promise.all(runs.map((run) => run.controller.run())), ms);
+}
+/** Ends the read-only settle tasks: a reset, a network switch or an update leaves them nothing. */
+function abortMintSettling(): void {
+  for (const controller of mintSettling) controller.abortSettle();
+}
+let updateListener: ((details: { version: string }) => void) | undefined,
+  updating = false;
+/** Listens for updates only while a session runs: a listener makes Firefox keep the old version
+ * until the extension reloads, which `applyUpdate` then does. */
+function watchUpdates(): void {
+  const event = browser.runtime.onUpdateAvailable;
+  if (!event || updateListener) return;
+  updateListener = () => void applyUpdate();
+  event.addListener(updateListener);
+}
+function unwatchUpdates(): void {
+  if (mintControllers.size || !updateListener) return;
+  browser.runtime.onUpdateAvailable?.removeListener(updateListener);
+  updateListener = undefined;
+}
+/** An update revokes every session: each stops and records its end, then the extension reloads so
+ * that the new version installs at once. Keys cannot reload; its page tells the user instead. */
+async function applyUpdate(): Promise<void> {
+  if (updating) return;
+  updating = true;
+  try {
+    abortMintSettling();
+    await stopMintSessionsAndWait('update', UPDATE_SETTLE_MS);
+    // A session that was already ending may have started its settle task meanwhile.
+    abortMintSettling();
+    browser.runtime.reload?.();
+  } finally {
+    updating = false;
+  }
+}
+/** The running session, or the latest ended one, whose id is `id`. */
+function mintRunById(id: string): MintRun | undefined {
+  for (const run of [...mintControllers.values(), ...mintWindows.values()])
+    if (run.controller.record.id === id) return run;
+  return undefined;
+}
+/** Whether a message comes from a page of `request`'s confirmation window, with a page token. */
+const confirmationPage = (sender: Sender, request: unknown, page: unknown): boolean =>
+  typeof request === 'string' &&
+  SESSION_ID.test(request) &&
+  typeof page === 'string' &&
+  SESSION_ID.test(page) &&
+  sameExtensionPage(sender.url, root, '/ui.html') &&
+  new URL(sender.url!).searchParams.get('request') === request;
+/** The session a progress window follows: the sender must be the window its approval came from. */
+function mintWindow(sender: Sender, request: unknown, page: unknown): MintRun {
+  requireThat(confirmationPage(sender, request, page), NO_SESSION);
+  const run = mintWindows.get(request as string);
+  requireThat(
+    run && sender.tab?.windowId !== undefined && sender.tab.windowId === run.binding.windowId,
+    NO_SESSION,
+  );
+  const ended = run!.controller.record.endedAt;
+  if (ended !== null && Date.now() - ended > ENDED_RETENTION_MS) {
+    mintWindows.delete(request as string);
+    throw Error(NO_SESSION);
+  }
+  return run!;
+}
+/** The page that approved, in its first document: another one in the same window is a reload. */
+const approvedPage = (
+  approval: { page: string; documentId?: string },
+  sender: Sender,
+  page: unknown,
+): boolean =>
+  page === approval.page &&
+  (approval.documentId === undefined || sender.documentId === approval.documentId);
+/**
+ * An approval whose session has not started yet, because its record is still being saved, is
+ * cancelled as a reload stops a running session: when another page of its window asks for the
+ * session, or when a page of its window leaves. The approval then refuses once the save completes,
+ * so nothing is signed, and the window's next page learns why.
+ */
+function abandonStart(sender: Sender, request: unknown, page: unknown, leaving: boolean): void {
+  if (!confirmationPage(sender, request, page)) return;
+  const job = jobs.get(request as string);
+  if (!job?.approval || sender.tab?.windowId === undefined || sender.tab.windowId !== job.windowId)
+    return;
+  if (!leaving && approvedPage(job.approval, sender, page)) return;
+  job.cancelled = true;
+  const now = Date.now();
+  for (const [id, a] of abandonedStarts) if (now >= a.expires) abandonedStarts.delete(id);
+  abandonedStarts.set(request as string, { windowId: job.windowId, expires: job.expires ?? 0 });
+}
+/** Whether this window abandoned its approval of `request` before the session started. */
+function startAbandoned(sender: Sender, request: unknown, page: unknown): boolean {
+  const a = confirmationPage(sender, request, page)
+    ? abandonedStarts.get(request as string)
+    : undefined;
+  return !!a && Date.now() < a.expires && sender.tab?.windowId === a.windowId;
+}
+/** The selected account's running session, else its latest ended one whose payments are not all
+ * final in history: what the wallet's tracker follows. */
+function mintStatus(): MintSessionStatus | null {
+  if (!state.vault || !state.manifest) return null;
+  const a = account();
+  const run = mintControllers.get(a.genesis + ':' + a.owner);
+  const record =
+    run?.controller.record ??
+    [...(state.mintSessions ?? [])]
+      .reverse()
+      .find(
+        (r) =>
+          r.owner === a.owner &&
+          r.genesis === a.genesis &&
+          r.state === 'ended' &&
+          !settledRecord(r, state.transactions),
+      );
+  if (!record) return null;
+  const snapshot = run
+    ? run.controller.snapshot()
+    : sessionSnapshot(record, journalFinal, 'running', journalNeverRan);
+  return {
+    id: record.id,
+    state: snapshot.state,
+    reason: record.reason,
+    symbol: record.symbol,
+    included: snapshot.lots.included,
+    maxLots: record.terms.maxLots,
+    used: record.used,
+    maxAttempts: record.terms.maxAttempts,
+    deadline: record.deadline,
+    // Released and not in a block yet: it can still be included.
+    outstanding: snapshot.pending !== null && snapshot.pending.status !== 'included',
+    reorganized: record.reorganized,
+  };
+}
 async function handlePage(c: Connection, input: unknown): Promise<void> {
   let r: Request | undefined;
   try {
@@ -866,6 +1625,7 @@ async function handlePage(c: Connection, input: unknown): Promise<void> {
     }
     if (c.ids.has(r.id)) {
       c.alive = false;
+      stopMintSessions('disconnected', (b) => b.connection === c);
       invalidate((j) => j.connection === c);
       connections.delete(c);
       c.port.disconnect();
@@ -878,9 +1638,26 @@ async function handlePage(c: Connection, input: unknown): Promise<void> {
     if (c.ids.size >= 8 && r.method !== 'cancelRequest')
       throw new QlyphsError('BUSY', 'Too many outstanding requests', 'not-submitted');
     c.ids.add(r.id);
+    // Mainnet builds and builds without witness pins neither advertise nor serve mint sessions.
+    if (
+      (r.method === 'requestMintSession' ||
+        r.method === 'mintSession' ||
+        r.method === 'stopMintSession') &&
+      !mintSessionsAvailable()
+    )
+      throw new QlyphsError(
+        'UNSUPPORTED_METHOD',
+        'Mint sessions are not available on this network',
+        r.method === 'requestMintSession' ? 'not-submitted' : undefined,
+      );
     switch (r.method) {
       case 'capabilities':
-        send(c, r.id, { result: capabilities(PROFILE.network) });
+        send(c, r.id, {
+          result: capabilities(
+            PROFILE.network,
+            mintSessionsAvailable() ? MINT_SESSION_LIMITS : null,
+          ),
+        });
         break;
       case 'state': {
         c.subscribed = true;
@@ -923,11 +1700,43 @@ async function handlePage(c: Connection, input: unknown): Promise<void> {
         await createJob('transaction', c, r.id, r.params.command);
         break;
       }
+      case 'requestMintSession': {
+        // The same account, network and permission checks as a transaction request.
+        const a = state.vault && state.manifest ? account() : null;
+        if (!a || !permitted(c) || r.params.owner !== a.owner || r.params.genesis !== a.genesis)
+          throw new QlyphsError(
+            'UNAUTHORIZED',
+            'Wrong account, network or permission',
+            'not-submitted',
+          );
+        if (walletBusy)
+          throw new QlyphsError('BUSY', 'Another operation is pending', 'not-submitted');
+        await createJob('session', c, r.id, r.params.terms);
+        break;
+      }
+      case 'mintSession':
+        send(c, r.id, { result: mintProjection(c) });
+        break;
+      case 'stopMintSession': {
+        // Only the creating channel sees its session, so only it can stop it; idempotent.
+        const run =
+          mintProjection(c) !== null && c.mint?.controller.record.id === r.params.session
+            ? c.mint
+            : undefined;
+        run?.controller.stop('cancelled');
+        send(c, r.id, { result: run ? run.controller.snapshot() : null });
+        break;
+      }
     }
   } catch (error) {
     const candidate = r?.id ?? (input as { id?: unknown } | null)?.id;
+    const failure = publicError(error, 'VERIFICATION_FAILED', 'not-submitted');
+    // Session reads change nothing: their errors carry no write outcome, whatever refused them,
+    // including a refusal before or while parsing. So the method comes from the input itself.
+    const method = (input as { method?: unknown } | null)?.method;
+    const read = method === 'mintSession' || method === 'stopMintSession';
     if (typeof candidate === 'string' && /^[A-Za-z0-9_-]{16,80}$/.test(candidate))
-      send(c, candidate, { error: publicError(error, 'VERIFICATION_FAILED', 'not-submitted') });
+      send(c, candidate, { error: read ? { code: failure.code } : failure });
   } finally {
     publishStates();
   }
@@ -958,6 +1767,7 @@ browser.runtime.onConnect.addListener((port) => {
     });
     port.onDisconnect.addListener(() => {
       c.alive = false;
+      stopMintSessions('disconnected', (b) => b.connection === c);
       connections.delete(c);
       invalidate((j) => j.connection === c);
     });
@@ -970,6 +1780,8 @@ function invalidateTab(tabId: number): void {
   for (const c of connections)
     if (c.tabId === tabId) {
       c.alive = false;
+      // Any URL change counts, in-page navigation included: the page that asked may be gone.
+      stopMintSessions('disconnected', (b) => b.connection === c);
       invalidate((j) => j.connection === c);
       try {
         c.port.disconnect();
@@ -985,9 +1797,30 @@ browser.tabs.onUpdated.addListener((id, change) => {
 browser.tabs.onRemoved.addListener(invalidateTab);
 browser.windows.onRemoved.addListener((id) => {
   invalidate((j) => j.windowId === id);
+  // Closing the progress window ends signing; Keys reports it before dropping the site's port.
+  for (const [request, run] of mintWindows)
+    if (run.binding.windowId === id) {
+      run.binding.windowGone = true;
+      run.controller.stop('window');
+      mintWindows.delete(request);
+    }
 });
 browser.alarms.onAlarm.addListener(() => {
   publishStates();
+  // A backstop: each session's loop checks its authority on its own, every second while it waits.
+  for (const run of mintControllers.values()) {
+    let lost: WalletEndReason | null;
+    try {
+      lost = mintAuthority(run.binding);
+    } catch {
+      lost = 'unavailable';
+    }
+    if (lost) run.controller.stop(lost);
+  }
+  for (const [request, run] of mintWindows) {
+    const ended = run.controller.record.endedAt;
+    if (ended !== null && Date.now() - ended > ENDED_RETENTION_MS) mintWindows.delete(request);
+  }
   for (const [id, job] of jobs)
     try {
       // Consuming a review is normal while asynchronous verification runs.
@@ -1099,6 +1932,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
         display: displayStatus(),
         sites: Object.keys(state.grants),
         transactions: accountTransactions(),
+        mintSession: mintStatus(),
         passkey: !!state.vault && !!accessRecord().passkey,
         unlockSetup:
           session.unlocked && unlinkedWallets().length
@@ -1389,6 +2223,12 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
     case 'account-derive': {
       exact(m, ['action']);
       changingAccountAllowed();
+      // Deriving selects the new account: like a switch, it ends a running mint session first.
+      if (mintControllers.size) {
+        await stopMintSessionsAndWait('account', ACCOUNT_STOP_MS);
+        changingAccountAllowed();
+        requireThat(!walletBusy, 'Finish the current operation before changing accounts');
+      }
       requireThat(
         state.vault && isUnlocked() && state.backed && !walletBusy,
         'Unlock and back up this wallet before adding an account',
@@ -1442,6 +2282,11 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
             : ['action', 'password', 'backup'],
       );
       changingAccountAllowed();
+      // Adding an account selects it: like a switch, it ends a running mint session first.
+      if (additional && mintControllers.size) {
+        await stopMintSessionsAndWait('account', ACCOUNT_STOP_MS);
+        changingAccountAllowed();
+      }
       requireThat(
         state.manifest && !walletBusy,
         'Finish the current operation before changing accounts',
@@ -1768,6 +2613,11 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       exact(m, ['action', 'network']);
       requireThat(SWITCHABLE, 'This wallet has a single network');
       requireThat(m.network === 'development' || m.network === 'mainnet', 'Unknown network');
+      if (m.network !== NETWORK) {
+        // No session runs on a switchable build; stopping first still keeps the reason exact.
+        stopMintSessions('network');
+        abortMintSettling();
+      }
       requireThat(!walletBusy && !keyBusy, 'Finish the current operation before switching network');
       if (m.network === NETWORK) return true;
       lock();
@@ -1777,6 +2627,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       state = emptyState();
       accessReady = false;
       historyPending = undefined;
+      mintWindows.clear();
       await readState();
       // Pages reconnect on the new network, where each origin is checked against its list again.
       for (const c of [...connections]) {
@@ -1816,6 +2667,11 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       resetting = true;
       keyBusy = true;
       try {
+        // A reset needs a locked, idle wallet, so every session has already ended; this stays as
+        // defence in depth and ends the settle tasks, which would read for a wallet gone.
+        stopMintSessions('reset');
+        abortMintSettling();
+        mintWindows.clear();
         lock();
         await writes;
         const archive = structuredClone(state);
@@ -1932,6 +2788,20 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       exact(m, ['action', 'id']);
       requireThat(typeof m.id === 'string', 'Invalid request');
       const j = await reviewSender(sender, m.id);
+      if (j.kind === 'session')
+        return {
+          id: m.id,
+          kind: j.kind,
+          origin: j.connection?.origin ?? 'Qlyphs Wallet',
+          account: account(),
+          expires: requests.get(m.id).expires,
+          review: null,
+          session: j.mintReview,
+          digest: j.mintReview!.digest,
+          unlocked: isUnlocked(),
+          // Shown so that the window can tell when signing would stop; never sent to a site.
+          unlockDeadline: session.deadline,
+        };
       return {
         id: m.id,
         kind: j.kind,
@@ -1944,9 +2814,47 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       };
     }
     case 'approve':
-      exact(m, ['action', 'id', 'digest']);
+      // A mint session's approval names the page that will follow it: its window lease.
+      exact(
+        m,
+        Object.hasOwn(m, 'page') ? ['action', 'id', 'digest', 'page'] : ['action', 'id', 'digest'],
+      );
       requireThat(typeof m.id === 'string' && typeof m.digest === 'string', 'Invalid approval');
-      return approve(m.id, m.digest, sender);
+      return approve(m.id, m.digest, sender, m.page);
+    case 'session-state': {
+      // Answers from memory only: a slow node can never starve the window's lease.
+      exact(m, ['action', 'request', 'page']);
+      abandonStart(sender, m.request, m.page, false);
+      requireThat(!startAbandoned(sender, m.request, m.page), RELOADED_BEFORE_START);
+      const run = mintWindow(sender, m.request, m.page);
+      // Another page or document in the approved window is a reload: signing stops, and the new
+      // page may still follow the session.
+      if (!approvedPage(run.binding, sender, m.page)) run.controller.stop('window');
+      else run.binding.lease = Date.now() + LEASE_MS;
+      run.controller.nudge();
+      return run.controller.view();
+    }
+    case 'session-stop': {
+      // Any wallet page may stop a session: stopping only reduces authority.
+      exact(m, ['action', 'session']);
+      const run = typeof m.session === 'string' ? mintRunById(m.session) : undefined;
+      requireThat(run, NO_SESSION);
+      run!.controller.stop('stopped');
+      return run!.controller.view();
+    }
+    case 'session-leave': {
+      // The approval or progress window is closing or reloading; best effort, the lease stays
+      // authoritative.
+      exact(m, ['action', 'request', 'page']);
+      abandonStart(sender, m.request, m.page, true);
+      try {
+        const run = mintWindow(sender, m.request, m.page);
+        if (approvedPage(run.binding, sender, m.page)) run.controller.stop('window');
+      } catch {
+        /* not this window's session: nothing to stop */
+      }
+      return true;
+    }
     case 'reject':
       exact(m, ['action', 'id']);
       requireThat(typeof m.id === 'string', 'Invalid request');

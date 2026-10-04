@@ -28,15 +28,19 @@ export interface Review {intent:Prepared;command:Record<string,unknown>;ticket?:
 /** Attested terms of the next lot (pq-guard's attestedLot), passed in by the background. `block` is
  * the best block both witnesses attested; the mint is signed with an era born exactly there. */
 export interface AttestedTerms {lot:ProgressiveLot;symbol:string;decimals:number;cap:bigint;minted:bigint;creator:string;block:{height:number;hash:string}}
-export async function getJSON<T>(url:string, body?:unknown):Promise<T> {
+/** `max` raises the 1 MiB response cap, for block bodies only. `signal` ends the read early; the
+ * 15 s timeout still applies. */
+export interface ReadOptions {max?:number;signal?:AbortSignal}
+export async function getJSON<T>(url:string, body?:unknown, options:ReadOptions={}):Promise<T> {
+  const timeout=AbortSignal.timeout(15000), max=options.max??1024*1024;
   const res=await fetch(url,{method:body===undefined?'GET':'POST',cache:'no-store',credentials:'omit',
     headers:body===undefined?{}:{'content-type':'application/json'},
-    ...(body===undefined?{}:{body:json(body)}),signal:AbortSignal.timeout(15000)});
+    ...(body===undefined?{}:{body:json(body)}),signal:options.signal?AbortSignal.any([options.signal,timeout]):timeout});
   requireThat(res.body,'Missing response');
   const reader=res.body!.getReader(); const chunks:Uint8Array[]=[]; let size=0;
   try {
     for (;;) {const c=await reader.read(); if(c.done)break; size+=c.value.length;
-      requireThat(size<=1024*1024,'Response too large');chunks.push(c.value);}
+      requireThat(size<=max,'Response too large');chunks.push(c.value);}
   } finally {await reader.cancel().catch(()=>undefined);}
   const bytes=new Uint8Array(size);let at=0;for(const c of chunks){bytes.set(c,at);at+=c.length;}
   const data:unknown=JSON.parse(new TextDecoder().decode(bytes));
@@ -44,9 +48,9 @@ export async function getJSON<T>(url:string, body?:unknown):Promise<T> {
   return data as T;
 }
 export const api=<T>(path:string,body?:unknown)=>getJSON<T>(API+path,body);
-export async function rpc<T>(method:string,params:unknown[]=[]):Promise<T> {
+export async function rpc<T>(method:string,params:unknown[]=[],options:ReadOptions={}):Promise<T> {
   const id=crypto.randomUUID();
-  const r=await getJSON<{id:string;result:T;error?:unknown}>(RPC,{jsonrpc:'2.0',id,method,params});
+  const r=await getJSON<{id:string;result:T;error?:unknown}>(RPC,{jsonrpc:'2.0',id,method,params},options);
   requireThat(r.id===id && !r.error && Object.hasOwn(r,'result'),'RPC unavailable or invalid response'); return r.result;
 }
 export function decimal(value:unknown):string {
@@ -96,7 +100,9 @@ export async function ticket(key:string,owner:string,buy:boolean,head:number):Pr
   else requireThat(t.seller===owner,'Only seller may cancel');
   return t;
 }
-async function digest(value:unknown):Promise<string> {
+/** SHA-256 of `json(value)`, the digest that binds an approval to its review. Property order
+ * counts, so a review value is always built in one order. */
+export async function digestOf(value:unknown):Promise<string> {
   return hex(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(json(value)))));
 }
 export async function prepare(pinned:Manifest,owner:string,input:unknown,attested?:AttestedTerms):Promise<Review> {
@@ -148,7 +154,7 @@ export async function prepare(pinned:Manifest,owner:string,input:unknown,atteste
     fee:String(lot.fee),mintedAfter:String(attested.minted+lot.amount),anchor:{...lot.anchor},block:{...attested.block}}:undefined;
   const value={intent,command:JSON.parse(json(command)) as Record<string,unknown>,...(t?{ticket:t}:{}),...(asset?{asset}:{}),
     ...(progressive?{progressive}:{})};
-  return {...value,digest:await digest(value)};
+  return {...value,digest:await digestOf(value)};
 }
 /** The block a lot mint is attested at and signed on: this node's best block, where a right
  * settled in that block is already used. */

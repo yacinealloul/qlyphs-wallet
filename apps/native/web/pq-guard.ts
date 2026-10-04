@@ -1,8 +1,15 @@
-/** Browser worker / future extension entrypoint. Trust pins MUST be compiled into
- * the installed wallet, not accepted from an API response or from a page message. */
+/** The wallet's use of witness attestations: purchases, lot mints and mint sessions. Trust pins
+ * MUST be compiled into the installed wallet, not accepted from an API response or from a page
+ * message. */
 import { fromHex, hex, requireThat } from '../../../packages/native/src/codec.ts';
-import { progressiveLot } from '../../../packages/native/src/protocol.ts';
+import {
+  balanceOf,
+  progressiveLot,
+  progressiveProfile,
+} from '../../../packages/native/src/protocol.ts';
 import type { ProgressiveLot, State } from '../../../packages/native/src/protocol.ts';
+import { PROGRESSIVE_MINT_LOTS } from '../../../packages/native/src/progressive-mint.ts';
+import type { Anchor, ProgressiveProfile } from '../../../packages/native/src/progressive-mint.ts';
 import {
   verifyBundle,
   verifyTipBundle,
@@ -10,7 +17,7 @@ import {
   policy,
   cursorValue,
 } from '../src/pq/checkpoint.ts';
-import type { Policy, Cursor } from '../src/pq/checkpoint.ts';
+import type { Policy, Cursor, Bundle } from '../src/pq/checkpoint.ts';
 import { boundedJson } from '../src/pq/transport.ts';
 declare const QLYPHS_PQ_POLICY: Policy | null;
 const pins: Policy | null = typeof QLYPHS_PQ_POLICY === 'undefined' ? null : QLYPHS_PQ_POLICY;
@@ -103,6 +110,132 @@ export async function attestedLot(
       block: { height: block.height, hash: block.hash },
     };
   }
+}
+/** What both witnesses attest about one progressive asset at `block`, with no expectation about
+ * its next lot: a mint session takes its next lot from here, whatever its number, and judges a
+ * payment's outcome from the same view at the block that included it. */
+export interface AttestedAsset {
+  block: { height: number; hash: string };
+  /** The parent of `block` as every witness statement signs it, so that the block before can be
+   * attested without trusting a header from the wallet's node. */
+  parent: string;
+  profile: ProgressiveProfile;
+  cap: bigint;
+  lotSize: bigint;
+  minted: bigint;
+  /** Where the current right was created; null once every lot is minted. */
+  right: Anchor | null;
+  /** The next lot and the exact call that buys it; null once every lot is minted. */
+  next: ProgressiveLot | null;
+  /** The owner's token balance: whether a payment credited a lot shows here. */
+  held: bigint;
+  symbol: string;
+  decimals: number;
+  creator: string;
+}
+/** Bound on one attestation request: boundedJson's own default, which a caller's signal would
+ * otherwise replace. */
+const REQUEST_MS = 12000;
+/** One progressive asset from both witnesses' attestation of the block `latest()` names. Same retry
+ * rule as attestedLot: one more try a second later on `latest()` again, never on an older block. A
+ * `latest` that always names the same block attests exactly that block. Once `signal` fires,
+ * nothing more is fetched or retried, and the call rejects with the signal's reason. */
+export async function attestedAsset(
+  owner: string,
+  genesis: string,
+  asset: string,
+  latest: () => Promise<{ height: number; hash: string }>,
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<AttestedAsset> {
+  requireThat(pins, 'Progressive mint disabled: trusted PQ witnesses are not configured');
+  const p = policy(pins);
+  requireThat(p.genesis === genesis, 'attestation network mismatch');
+  fromHex(owner, 32);
+  fromHex(asset, 40);
+  // Only a wallet-owned call site supplies the endpoint; never accept it from a dapp.
+  const base = new URL(endpoint);
+  requireThat(
+    !base.username && !base.password && !base.search && !base.hash,
+    'invalid attestation endpoint',
+  );
+  for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
+    const block = await latest();
+    fromHex(block.hash, 32);
+    signal?.throwIfAborted();
+    const challenge = hex(crypto.getRandomValues(new Uint8Array(32)));
+    const url = new URL(base);
+    url.searchParams.set('block', block.hash);
+    url.searchParams.set('challenge', challenge);
+    const limit = AbortSignal.timeout(REQUEST_MS);
+    let s: State, parent: string;
+    try {
+      const bundle = await boundedJson(url.href, signal ? AbortSignal.any([signal, limit]) : limit);
+      s = verifyTipBundle(bundle, p, challenge, block);
+      parent = signedParent(bundle);
+    } catch (error) {
+      // A stop is not a witness failure: it ends the attestation instead of earning a new try.
+      signal?.throwIfAborted();
+      if (attempt > 0) throw error;
+      await pause(RETRY_MS, signal);
+      continue;
+    }
+    const a = s.assets.get(asset);
+    const profile = a ? progressiveProfile(a.definition.policy) : null;
+    requireThat(a && profile, 'not a progressive asset');
+    const right = a.right ? { ...a.right } : null;
+    return {
+      block: { height: block.height, hash: block.hash },
+      parent,
+      profile,
+      cap: a.definition.cap,
+      lotSize: a.definition.cap / PROGRESSIVE_MINT_LOTS,
+      minted: a.minted,
+      right,
+      next:
+        right === null || a.minted === a.definition.cap ? null : progressiveLot(s, genesis, asset),
+      held: balanceOf(s, asset, owner),
+      symbol: a.definition.symbol,
+      decimals: a.definition.decimals,
+      creator: a.creator,
+    };
+  }
+}
+/** The parent hash that every statement of a verified tip bundle signs. verifyTipBundle already
+ * refuses statements that disagree; checking again keeps the meaning of this value local. */
+function signedParent(bundle: unknown): string {
+  const parents = (bundle as Bundle).attestations.map((a) => a.statement.parentHash);
+  const parent = parents[0];
+  requireThat(parent !== undefined && parents.every((x) => x === parent), 'divergent parent');
+  fromHex(parent, 32);
+  return parent;
+}
+/** Resolves after `ms`, or rejects with the abort reason as soon as `signal` fires. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const stop = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', stop);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', stop, { once: true });
+  });
+}
+/** The public identity of the compiled witness policy, which a mint session's review shows and
+ * binds; null in a build without one. */
+export function attestationPolicy(): {
+  version: number;
+  rulesHash: string;
+  runtimeHash: string;
+} | null {
+  return (
+    pins && { version: pins.version, rulesHash: pins.rulesHash, runtimeHash: pins.runtimeHash }
+  );
 }
 /** Verify a fresh bundle from every required witness, run `check` on its state, then record the
  * checkpoint as this wallet's high-water mark. */

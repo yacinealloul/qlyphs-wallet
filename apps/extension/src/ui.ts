@@ -33,6 +33,37 @@ import {
   txStage,
 } from './tx-progress.ts';
 import type { ChainHeights, TxStage } from './tx-progress.ts';
+import {
+  DETAIL_ROWS,
+  LIMIT_ROWS,
+  NO_SESSION,
+  RELOADED_BEFORE_START,
+  UI_CALL_TIMEOUT_MS,
+  UI_POLL_MS,
+  afterPoll,
+  afterStartPoll,
+  approvalBlock,
+  endedLocally,
+  parseMintSessionView,
+  pollDelay,
+  progress,
+  reviewAmount,
+  reviewExpiry,
+  reviewRows,
+  reviewTitle,
+  reviewWarning,
+  signingStops,
+  trackerText,
+} from './mint-session-view.ts';
+import type {
+  MintSessionReview,
+  MintSessionStatus,
+  MintSessionView,
+  PollOutcome,
+  Progress,
+  Row,
+  SessionAnswer,
+} from './mint-session-view.ts';
 import type { Asset, Review, Manifest, Status } from './network.ts';
 import { renderQlyph, qlyphSize } from './qlyph-render.ts';
 /** Display name of an asset: its symbol, or 'Quark #n' for a Quark (1-of-1 inscription, no symbol). */
@@ -152,6 +183,8 @@ interface UIState {
   pqConfigured: boolean;
   /** Which network this wallet is on, and whether Settings may switch it. */
   network?: { active: 'development' | 'mainnet'; switchable: boolean; carry?: boolean };
+  /** The selected account's running mint session, or its last one whose payments are not settled. */
+  mintSession?: MintSessionStatus | null;
   api: string;
   rpc: string;
   extensionOrigin: string;
@@ -168,6 +201,9 @@ interface Tx {
   to?: string;
   symbol?: string;
   decimals?: number;
+  /** Set on the payments of a mint session: the session and the lot it paid for. */
+  session?: string;
+  lot?: number;
 }
 interface Confirmation {
   kind: string;
@@ -177,6 +213,9 @@ interface Confirmation {
   review: Review | null;
   digest: string;
   unlocked: boolean;
+  /** A mint session's review, and when the unlock ends (it bounds the session's signing time). */
+  session?: MintSessionReview;
+  unlockDeadline?: number;
 }
 let state: UIState | undefined,
   pending: Confirmation | undefined,
@@ -394,9 +433,17 @@ function syncViews() {
   $('wallet').hidden =
     !state?.account || !!requestId || (!state.unlocked && !watchOnly) || recovery || addingWallet;
   $('confirmation').hidden =
-    !requestId || !pending || !state?.unlocked || !pending.unlocked || recovery || !!sent;
+    !requestId ||
+    !pending ||
+    !state?.unlocked ||
+    !pending.unlocked ||
+    recovery ||
+    !!sent ||
+    !!minting;
   $('tx-result').hidden = !requestId || !sent;
-  if (sent) $('unlock').hidden = true;
+  $('mint-session').hidden = !requestId || !minting;
+  // A lock ends signing; the progress shows it in place, never the unlock form.
+  if (sent || minting) $('unlock').hidden = true;
   syncControls();
   if (requestId && !wasReviewing && !$('confirmation').hidden) {
     $('confirmation').querySelector('.review-content')!.scrollTop = 0;
@@ -412,23 +459,30 @@ function node(tag: string, text: string, className = ''): HTMLElement {
   e.className = className;
   return e;
 }
-function pairs(id: string, items: [string, string][]) {
+function pairs(id: string, items: readonly Row[]) {
   if (id !== 'review-summary') {
     $(id).replaceChildren(...items.flatMap(([k, v]) => [node('dt', k), node('dd', v)]));
     return;
   }
   // Keep exact identifiers and charges available without making every review a stack of cards.
-  const groups = new Map<string, [string, string][]>();
+  // Only a session review has limits of its own: other reviews may reuse a label such as `Lots`.
+  const session = pending?.kind === 'session';
+  const groups = new Map<string, Row[]>();
   for (const item of items) {
-    const title = /^(Network|Signing account|Genesis)$/.test(item[0])
-      ? 'Account & network'
-      : /^(Network fee|Native |Qlyphs fee$|Estimated total)/.test(item[0])
-        ? 'Estimated fees'
-        : 'Transaction details';
+    const title =
+      session && LIMIT_ROWS.test(item[0])
+        ? 'Limits'
+        : session && DETAIL_ROWS.test(item[0])
+          ? 'Transaction details'
+          : /^(Network|Signing account|Genesis)$/.test(item[0])
+            ? 'Account & network'
+            : /^(Network fee|Native |Qlyphs fee$|Estimated total)/.test(item[0])
+              ? 'Estimated fees'
+              : 'Transaction details';
     if (!groups.has(title)) groups.set(title, []);
     groups.get(title)!.push(item);
   }
-  const rows = (values: [string, string][], recipientOnly = false) => {
+  const rows = (values: readonly Row[], recipientOnly = false) => {
     const list = node('dl', '', 'rows');
     for (const [k, v] of values) {
       const row = node(
@@ -436,7 +490,7 @@ function pairs(id: string, items: [string, string][]) {
         '',
         'review-row' +
           (/recipient|account|genesis|asset ID|buyer|payout/i.test(k) ? ' identifier' : '') +
-          (k === 'Estimated total' ? ' review-total' : ''),
+          (k === 'Estimated total' || k === 'Maximum protocol spend' ? ' review-total' : ''),
       );
       row.append(node('dt', k, recipientOnly ? 'sr-only' : ''), node('dd', v));
       list.append(row);
@@ -491,7 +545,10 @@ async function task(work: () => Promise<void>, trigger?: HTMLElement) {
   document.body.dataset.busy = 'true';
   $('main').setAttribute('aria-busy', 'true');
   const controls = [...document.querySelectorAll<HTMLButtonElement>('button')].filter(
-    (b) => !b.disabled && !b.matches('[role=tab], [data-password], #hide-balance'),
+    // Stop, and Done once signing ended, stay usable whatever else the window is doing.
+    (b) =>
+      !b.disabled &&
+      !b.matches('[role=tab], [data-password], #hide-balance, #mint-session-stop, #mint-session-done'),
   );
   for (const button of controls) {
     button.disabled = true;
@@ -530,15 +587,26 @@ async function task(work: () => Promise<void>, trigger?: HTMLElement) {
     }
   }
 }
+let approvalNote = '';
 function guardApproval() {
+  const now = Date.now();
+  // A locked wallet reports no unlock deadline; the unlock form explains that case instead.
+  const blocked =
+    pending?.kind === 'session' && pending.session && pending.unlocked && state?.unlocked
+      ? approvalBlock(pending.session, pending.unlockDeadline ?? 0, now)
+      : null;
   $<HTMLButtonElement>('approve').disabled =
     busy ||
     !pending ||
     !state?.unlocked ||
     !pending.unlocked ||
-    Date.now() >= pending.expires ||
-    (pending.kind === 'transaction' && (!state?.unlocked || !state.backed));
+    now >= pending.expires ||
+    (pending.kind === 'transaction' && (!state?.unlocked || !state.backed)) ||
+    (pending.kind === 'session' && (!pending.session || !state?.backed || blocked !== null));
   $<HTMLButtonElement>('reject').disabled = busy || !pending;
+  // Say once why a session cannot start; the guard runs every second.
+  if (blocked && blocked !== approvalNote) message(blocked, true);
+  approvalNote = blocked ?? '';
 }
 type OnboardingScreen =
   | 'choice'
@@ -809,9 +877,29 @@ async function render() {
     );
     renderHistory(state.transactions);
   }
-  if (requestId && !sent) {
-    pending = await call<Confirmation>('review', { id: requestId });
+  if (requestId && !sent && !minting) {
+    try {
+      pending = await call<Confirmation>('review', { id: requestId });
+    } catch (error) {
+      // A reloaded progress window has no review left, but its session may still be known.
+      const restored = await sessionCall('session-state', { request: requestId, page: PAGE });
+      // Or the reload cancelled an approval that had not started its session yet.
+      if (restored.kind === 'error' && restored.error === RELOADED_BEFORE_START)
+        throw Error(RELOADED_BEFORE_START, { cause: error });
+      if (restored.kind !== 'view') throw error;
+      showSession(restored.view);
+      message('');
+      return;
+    }
     state.unlocked = pending.unlocked;
+    if (pending.kind === 'session') {
+      if (!pending.session) throw Error('Invalid mint session review');
+      renderSessionReview(pending, pending.session);
+      message('');
+      approvalNote = '';
+      syncViews();
+      return;
+    }
     $('review-title').textContent =
       pending.kind === 'connect'
         ? 'Connect to this site?'
@@ -990,7 +1078,49 @@ async function render() {
     guardApproval();
   }
   message('');
+  approvalNote = '';
   syncViews();
+}
+function renderSessionReview(review: Confirmation, session: MintSessionReview) {
+  const now = Date.now(),
+    unlockDeadline = review.unlockDeadline ?? 0;
+  $('review-title').textContent = reviewTitle(session);
+  $('review-origin').textContent = review.origin;
+  $('approve').textContent = 'Start minting';
+  $('review-qlyph').hidden = true;
+  $('review-qlyph').replaceChildren();
+  const amount = reviewAmount(session);
+  $('review-amount').replaceChildren(
+    document.createTextNode('Up to '),
+    node('span', amount.quantity, 'review-quantity'),
+    document.createTextNode(' '),
+    node('span', amount.currency, 'review-currency'),
+  );
+  $('review-amount').hidden = false;
+  pairs('review-summary', [
+    ...reviewRows(session, now, unlockDeadline),
+    ['Network', networkName() + ' only'],
+    ['Signing account', review.account.address],
+    ['Genesis', review.account.genesis],
+  ]);
+  $('review-warning').textContent = reviewWarning(
+    session,
+    document.documentElement.dataset.extension === 'true',
+  );
+  $('review-full').textContent = JSON.stringify(session, null, 2);
+  $('expires').textContent = reviewExpiry(review.expires, unlockDeadline);
+  guardApproval();
+}
+/** Signing time left changes every second; only that value is rewritten. */
+function tickSessionReview() {
+  if (pending?.kind !== 'session' || !pending.session) return;
+  for (const row of $('review-summary').querySelectorAll('.review-row'))
+    if (row.firstChild?.textContent === 'Signing stops')
+      row.lastChild!.textContent = signingStops(
+        pending.session,
+        Date.now(),
+        pending.unlockDeadline ?? 0,
+      );
 }
 const expandedActivity = new Set<string>();
 const seenActivity = new Map<string, string>();
@@ -1026,7 +1156,11 @@ function renderHistory(txs: Tx[]) {
           const info = node('span', '', 'activity-info');
           const amount = transferLine(tx);
           info.append(
-            node('strong', labels[tx.label] ?? tx.label),
+            node(
+              'strong',
+              (labels[tx.label] ?? tx.label) +
+                (tx.session && Number.isSafeInteger(tx.lot) ? ` · Lot ${tx.lot}` : ''),
+            ),
             amount
               ? node('span', `−${amount} · to ${recipientLine(tx.to)}`, 'activity-hash')
               : node('span', short(tx.hash), 'activity-hash mono'),
@@ -1138,9 +1272,10 @@ function recipientLine(to?: string) {
     return short(to);
   }
 }
-function paintSteps(element: HTMLElement, stage: TxStage) {
+/** `idle` is a mint session that ended with no lot in a block: no step is lit. */
+function paintSteps(element: HTMLElement, stage: TxStage | 'idle') {
   element.dataset.stage = stage;
-  element.dataset.step = String(stageStep(stage));
+  element.dataset.step = String(stage === 'idle' ? 0 : stageStep(stage));
 }
 function paintResult(first = false) {
   if (!sent) return;
@@ -1166,6 +1301,208 @@ function paintResult(first = false) {
   syncViews();
   if (first) $('tx-result-title').focus({ preventScroll: true });
 }
+/* Mint session progress: after approval the window follows the session until its payments settle. */
+/** Identifies this document to the wallet; a reloaded window gets a new one, which stops signing. */
+const PAGE = crypto.randomUUID();
+let minting: MintSessionView | undefined;
+/** An approval was sent and its session is not shown yet: leaving the page asks to cancel it. */
+let sessionStarting = false;
+let shownSession: Progress | undefined;
+let sessionNote = '';
+let sessionTimer: ReturnType<typeof setTimeout> | undefined;
+let sessionPolling = false;
+let sessionInFlight = false;
+let stopInFlight = false;
+/**
+ * The wallet's answer to a session action. Unlike `call()`, it tells the wallet's refusal from a
+ * dead extension context.
+ */
+function sessionAnswer(action: string, params: Record<string, unknown>): Promise<SessionAnswer> {
+  return Promise.resolve()
+    .then(() => browser.runtime.sendMessage({ action, ...params }))
+    .then(
+      (reply): SessionAnswer => {
+        const r = reply as { result?: unknown; error?: string } | undefined;
+        if (typeof r?.error === 'string') return { kind: 'error', error: r.error };
+        try {
+          const result = r?.result as { session?: unknown } | undefined;
+          return {
+            kind: 'view',
+            view: parseMintSessionView(action === 'approve' ? result?.session : result),
+          };
+        } catch (e) {
+          return { kind: 'error', error: e instanceof Error ? e.message : 'Invalid answer' };
+        }
+      },
+      (): SessionAnswer => ({ kind: 'transport' }),
+    );
+}
+/** `sessionAnswer`, given up after UI_CALL_TIMEOUT_MS instead of waiting forever. */
+function sessionCall(action: string, params: Record<string, unknown>): Promise<PollOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<PollOutcome>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: 'timeout' }), UI_CALL_TIMEOUT_MS);
+  });
+  return Promise.race([sessionAnswer(action, params), timeout]).finally(() => clearTimeout(timer));
+}
+/**
+ * Approves a mint session and shows it. The approval has no time bound: a slow storage write can
+ * delay its answer, and the session it starts meanwhile keeps signing only while this page polls
+ * it. So the window polls `session-state` once a second until an answer settles the start
+ * (`afterStartPoll`): each poll renews the lease of a session that runs, and shows it at once.
+ */
+async function startSession(review: Confirmation) {
+  let approval: SessionAnswer | undefined;
+  sessionStarting = true;
+  const answered = sessionAnswer('approve', {
+    id: requestId,
+    digest: review.digest,
+    page: PAGE,
+  }).then((answer) => {
+    approval = answer;
+  });
+  try {
+    for (;;) {
+      await Promise.race([answered, new Promise((resolve) => setTimeout(resolve, UI_POLL_MS))]);
+      // The approval's answer as it stood before this poll was sent.
+      const answer = approval;
+      if (answer?.kind === 'view') return showSession(answer.view);
+      const polledAt = Date.now();
+      const poll = await sessionCall('session-state', { request: requestId, page: PAGE });
+      const step = afterStartPoll(answer, poll, polledAt, review.expires);
+      if (step.kind === 'show') return showSession(step.view);
+      if (step.kind === 'fail') throw Error(step.error);
+    }
+  } finally {
+    sessionStarting = false;
+  }
+}
+/** Block rate for time estimates, sampled once per answer rather than once per repaint. */
+function sampleSessionChain(view: MintSessionView) {
+  if (view.chain && chainSamples[chainSamples.length - 1]?.at !== view.chain.at) recordChain(view.chain);
+}
+function showSession(view: MintSessionView) {
+  minting = view;
+  sampleSessionChain(view);
+  shownSession = undefined;
+  sessionNote = '';
+  pending = undefined;
+  paintSession(true);
+  if (!sessionPolling) {
+    sessionPolling = true;
+    scheduleSessionPoll();
+  }
+}
+/** Polls are never paused for `busy` or a hidden window: they are what keeps signing alive. */
+function scheduleSessionPoll() {
+  clearTimeout(sessionTimer);
+  const delay = sessionPolling && minting ? pollDelay(minting, Date.now()) : null;
+  if (delay === null) {
+    sessionPolling = false;
+    return;
+  }
+  sessionTimer = setTimeout(() => {
+    void pollSession();
+    scheduleSessionPoll();
+  }, delay);
+}
+function applySessionOutcome(outcome: PollOutcome) {
+  if (!minting) return;
+  const next = afterPoll(minting, outcome, Date.now());
+  minting = next.view;
+  sampleSessionChain(minting);
+  if (next.note !== null) sessionNote = next.note;
+  if (next.stop) {
+    sessionPolling = false;
+    clearTimeout(sessionTimer);
+  }
+  paintSession();
+}
+async function pollSession() {
+  if (sessionInFlight || !minting || !requestId || !sessionPolling) return;
+  sessionInFlight = true;
+  try {
+    applySessionOutcome(await sessionCall('session-state', { request: requestId, page: PAGE }));
+  } finally {
+    sessionInFlight = false;
+  }
+}
+/** Rewrites only the values that changed, so a reader's place in the rows survives each poll. */
+function paintRows(list: HTMLElement, rows: readonly Row[]) {
+  const current = [...list.children];
+  if (
+    current.length !== rows.length ||
+    current.some((row, i) => row.firstChild?.textContent !== rows[i]![0])
+  ) {
+    list.replaceChildren(
+      ...rows.map(([k, v]) => {
+        const row = node('div', '', 'review-row');
+        row.append(node('dt', k), node('dd', v));
+        return row;
+      }),
+    );
+    return;
+  }
+  rows.forEach(([, v], i) => {
+    const value = current[i]!.lastElementChild!;
+    if (value.textContent !== v) value.textContent = v;
+  });
+}
+function paintSession(first = false) {
+  if (!minting) return;
+  const focused = document.activeElement;
+  const p = progress(minting, Date.now(), { rate: blockRate(chainSamples) });
+  const before = shownSession;
+  shownSession = p;
+  const section = $('mint-session'),
+    seal = $('mint-session-seal'),
+    count = $('mint-session-count'),
+    stop = $('mint-session-stop'),
+    done = $('mint-session-done'),
+    hash = $('mint-session-hash');
+  $('mint-session-title').textContent = p.title;
+  count.textContent = p.count;
+  paintRows($('mint-session-rows'), p.rows);
+  $('mint-session-detail').textContent = sessionNote || p.detail;
+  hash.hidden = !p.hash;
+  hash.querySelector('span')!.textContent = p.hash ? short(p.hash) : '';
+  hash.title = p.hash ? 'Copy transaction ID ' + p.hash : '';
+  seal.dataset.stage = p.stage;
+  // CSSOM writes are allowed by the extension's style-src; inline style attributes are not.
+  if (p.ring === null) seal.style.removeProperty('--p');
+  else seal.style.setProperty('--p', String(p.ring));
+  stop.hidden = !p.stopVisible;
+  // While stopping, Stop keeps keyboard focus but ignores clicks (aria-disabled, not disabled).
+  if (p.stopBusy || stopInFlight) stop.setAttribute('aria-disabled', 'true');
+  else stop.removeAttribute('aria-disabled');
+  done.hidden = !p.doneVisible;
+  if (first || !before || before.ended !== p.ended) syncViews();
+  if (before && before.announce !== p.announce)
+    $('mint-session-announce').textContent = p.announce;
+  if (before && p.included > before.included) {
+    pop(seal);
+    flash(count, 'up');
+  }
+  if (first) $('mint-session-title').focus({ preventScroll: true });
+  else if (before && !before.ended && p.ended)
+    (focused && section.contains(focused) ? done : $('mint-session-title')).focus({
+      preventScroll: true,
+    });
+}
+$('mint-session-stop').addEventListener('click', () => {
+  const stop = $('mint-session-stop');
+  if (!minting || minting.state === 'ended' || stopInFlight) return;
+  if (stop.getAttribute('aria-disabled') === 'true') return;
+  stopInFlight = true;
+  stop.setAttribute('aria-disabled', 'true');
+  void sessionCall('session-stop', { session: minting.id }).then((outcome) => {
+    stopInFlight = false;
+    if (outcome.kind === 'error' && outcome.error !== NO_SESSION)
+      message(outcome.error, true);
+    applySessionOutcome(outcome);
+  });
+});
+$('mint-session-done').addEventListener('click', () => window.close());
 function followResult(txs: Tx[]) {
   const tx = sent?.hash ? txs.find((t) => t.hash === sent!.hash) : undefined;
   if (!sent || !tx) return;
@@ -1177,6 +1514,19 @@ function followResult(txs: Tx[]) {
 function paintTracker(txs: Tx[]) {
   if (requestId) return;
   const now = Date.now();
+  const tracker = $('tx-tracker');
+  // A session's lots are followed as one series, not one card per payment.
+  if (state?.mintSession) {
+    const text = trackerText(state.mintSession);
+    $('tx-tracker-title').textContent = text.title;
+    $('tx-tracker-detail').textContent = text.detail;
+    paintSteps($('tx-tracker-seal'), text.stage);
+    paintSteps($('tx-tracker-steps'), text.stage);
+    tracker.dataset.stage = text.stage;
+    delete tracker.dataset.hash;
+    tracker.hidden = false;
+    return;
+  }
   let tx: Tx | undefined;
   if (awaitingSince) {
     tx = txs
@@ -1204,7 +1554,6 @@ function paintTracker(txs: Tx[]) {
       tx = undefined;
     }
   }
-  const tracker = $('tx-tracker');
   if (!tx && cancelledUntil) {
     if (now > cancelledUntil) cancelledUntil = 0;
     else {
@@ -2418,6 +2767,7 @@ click('approve', async () => {
   if (!review || Date.now() >= review.expires) throw Error('No valid review to approve');
   // A consumed/failed review cannot be clicked a second time from a stale popup.
   pending = undefined;
+  if (review.kind === 'session') return startSession(review);
   if (review.kind !== 'transaction') {
     await call('approve', { id: requestId, digest: review.digest });
     window.close();
@@ -2459,6 +2809,9 @@ click('tx-result-explorer', async () => {
 });
 click('tx-result-hash', async () => {
   if (sent?.hash) await copyText($('tx-result-hash'), sent.hash);
+});
+click('mint-session-hash', async () => {
+  if (shownSession?.hash) await copyText($('mint-session-hash'), shownSession.hash);
 });
 function requireSigning() {
   if (!state?.unlocked) {
@@ -2923,6 +3276,14 @@ click('test-notification', async () => {
   );
 });
 window.addEventListener('pagehide', () => {
+  // Best effort: closing the window and the lease stop signing anyway. Sent while the approval is
+  // still being saved, it cancels that approval before its session starts.
+  if (requestId && (sessionStarting || (minting && minting.state !== 'ended')))
+    void Promise.resolve()
+      .then(() =>
+        browser.runtime.sendMessage({ action: 'session-leave', request: requestId, page: PAGE }),
+      )
+      .catch(() => undefined);
   for (const restore of copyTimers.values()) restore();
   passkeyAbort?.abort();
   clearSecrets();
@@ -2940,6 +3301,8 @@ void task(async () => {
 });
 setInterval(() => {
   guardApproval();
+  tickSessionReview();
+  if (minting && minting.state !== 'ended') paintSession();
   if (pending && Date.now() >= pending.expires)
     message('This request expired. Start a new request from the site.', true);
 }, 1000);
@@ -2959,7 +3322,9 @@ setInterval(() => {
         passkeyAbort?.abort();
         addingWallet = false;
         resetAccountView();
-        await render();
+        // The progress stays in place: the session poll reports the account change.
+        if (minting) state = next;
+        else await render();
         if (!requestId) await balances();
         if ($<HTMLDialogElement>('accounts-dialog').open) showAccounts();
         return;
@@ -2982,7 +3347,7 @@ setInterval(() => {
       }
       if (changed) {
         watchOnly = false;
-        if (requestId && next.unlocked) await render();
+        if (requestId && next.unlocked && !minting) await render();
         else syncViews();
       }
       syncPreferences();
@@ -2990,6 +3355,8 @@ setInterval(() => {
     })
     .catch(() => {
       pending = undefined;
+      if (minting) minting = endedLocally(minting, 'restarted', Date.now());
+      paintSession();
       if (state) state = { ...state, unlocked: false, unlockSetup: null };
       addingWallet = false;
       passkeyAbort?.abort();

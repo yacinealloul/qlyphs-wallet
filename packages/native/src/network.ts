@@ -1,6 +1,8 @@
 import { fromHex, requireThat } from './codec.ts';
 import { checkRules, LEGACY_RULES, MAINNET, mainnetRules } from './protocol.ts';
 import type { Rules } from './protocol.ts';
+import { checkFeeRules } from './fee-schedule.ts';
+import type { FeeRules } from './fee-schedule.ts';
 
 /** Fingerprint of the only development runtime supported by this alpha. */
 export const DEV_RUNTIME_HASH =
@@ -89,13 +91,32 @@ export function mainnetProfile(pins: unknown): NetworkProfile {
   };
 }
 
-/** The rules for the configured activation heights: NATIVE_PROGRESSIVE_FROM (progressive-1000-v1,
- * tag 11) and NATIVE_PROGRESSIVE_V2_FROM (progressive-1000-v2, tag 12). An absent height keeps its
- * tag an unknown operation. Mainnet has no reviewed activation, so any value is refused. */
+/** The configured fee schedule (NATIVE_FEE_SCHEDULE): strict JSON of a fee schedule, or unset for
+ * none. Mainnet takes its schedule from the reviewed release only, so any value is refused. */
+export function feeScheduleInput(network: NetworkName, raw: string | undefined): FeeRules | null {
+  if (raw === undefined || raw === '') return null;
+  requireThat(
+    network === 'development',
+    'mainnet takes its fee schedule from the reviewed release only',
+  );
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error('invalid fee schedule');
+  }
+  return value === null ? null : checkFeeRules(value);
+}
+
+/** The rules for the configured activations: NATIVE_PROGRESSIVE_FROM (progressive-1000-v1, tag
+ * 11), NATIVE_PROGRESSIVE_V2_FROM (progressive-1000-v2, tag 12) and NATIVE_FEE_SCHEDULE. An absent
+ * height keeps its tag an unknown operation. Mainnet has no reviewed activation, so any value is
+ * refused. */
 export function progressiveRules(
   network: NetworkName,
   from: string | undefined,
   fromV2: string | undefined,
+  fees: string | undefined,
 ): Rules {
   const height = (v: string | undefined, name: string) => {
     if (v === undefined || v === '') return null;
@@ -106,25 +127,27 @@ export function progressiveRules(
   const rules = {
     progressive: height(from, 'progressive'),
     progressiveV2: height(fromV2, 'progressive v2'),
+    feeSchedule: feeScheduleInput(network, fees),
   };
-  return rules.progressive === null && rules.progressiveV2 === null
+  return rules.progressive === null && rules.progressiveV2 === null && rules.feeSchedule === null
     ? LEGACY_RULES
     : checkRules(rules);
 }
 
-/** The rules a service or witness of `profile` runs. Development takes the configured activation
- * heights; mainnet runs only the reviewed ones (mainnetRules), and refuses any height configured
- * for it. */
+/** The rules a service or witness of `profile` runs. Development takes the configured activations;
+ * mainnet runs only the reviewed ones (mainnetRules), and refuses any value configured for it. */
 export function profileRules(
   profile: NetworkProfile,
   from: string | undefined,
   fromV2: string | undefined,
+  fees: string | undefined,
 ): Rules {
-  if (profile.network === 'development') return progressiveRules('development', from, fromV2);
+  if (profile.network === 'development') return progressiveRules('development', from, fromV2, fees);
   requireThat(
     !from && !fromV2,
     'mainnet takes progressive activations from the reviewed release only',
   );
+  feeScheduleInput('mainnet', fees);
   return mainnetRules();
 }
 

@@ -3,6 +3,7 @@ import type {
   NativeBalance,
   PublicState,
   PublicAsset,
+  PublicFeeSchedule,
   PublicTicket,
   PublicBlock,
   PublicInscription,
@@ -35,6 +36,8 @@ export interface ActivityItem {
   height: number;
   success: 0 | 1;
   verdict: string | null;
+  /** True when the operation was rejected but its Qlyphs fee was paid (not refunded). */
+  feeKept?: boolean;
 }
 function offset(value: number | undefined, fallback = 0): number {
   const n = value ?? fallback;
@@ -224,6 +227,12 @@ export class IndexerClient {
       options,
     );
   }
+  /** The fee schedule at the indexer's head: mode, current, previous and pending rate grids, and
+   * the fees they give. For display only: a wallet prices rate-derived fees itself from an attested
+   * rate, and the fee it signs is authoritative. */
+  schedule(options: RequestOptions = {}): Promise<PublicFeeSchedule> {
+    return this.checked('fee-schedule', read.feeSchedule, options);
+  }
   ticket(key: string, options: RequestOptions = {}): Promise<PublicTicket> {
     const id = asTicketKey(key);
     return this.checked(
@@ -264,6 +273,7 @@ export class IndexerClient {
               height: read.integer(row.height),
               success,
               verdict: row.verdict === null ? null : read.text(row.verdict, 2048),
+              ...(row.feeKept === undefined ? {} : { feeKept: read.flag(row.feeKept) }),
             };
           },
           30,

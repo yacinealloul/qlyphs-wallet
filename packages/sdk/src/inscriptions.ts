@@ -2,8 +2,9 @@
  * - A DEPLOY whose symbol is already claimed is rejected ('symbol taken') and its fee is
  *   not refunded: check `indexer.symbol(symbol)` right before requesting it. A claim in the same
  *   block can still win.
- * - INSCRIBE pays INSCRIBE_FEE (0.1 QTC, exported from fees) to QLYPHS_FEE_ACCOUNT in the same signed batch. Each
- *   Quark is a 1-of-1 asset: TRANSFER / OFFER it with amount 1.
+ * - INSCRIBE pays a rate-derived fee (qlyphsFee with a fee schedule, exported from fees) to
+ *   QLYPHS_FEE_ACCOUNT in the same signed batch. Each Quark is a 1-of-1 asset: TRANSFER / OFFER
+ *   it with amount 1.
  * - Rendering (§5): never interpret content as HTML or script. Images (including SVG) only as an
  *   <img> from a data: URL, text/* and application/json as escaped text, anything else as a
  *   download link and a hex/size summary. */

@@ -20,7 +20,7 @@ import {
   FIRST_INSCRIPTION,
   INSCRIPTION_DEFINITION,
   MAINNET,
-  MAINNET_PROGRESSIVE_V2_FROM,
+  mainnetReviewed,
   progressiveLot,
   progressiveProfile,
   PROTOCOL_LABEL,
@@ -28,6 +28,8 @@ import {
   saleFee,
 } from '../../../../packages/native/src/protocol.ts';
 import { PROGRESSIVE_MINT_LOTS } from '../../../../packages/native/src/progressive-mint.ts';
+import { checkFeeState } from '../../../../packages/native/src/fee-schedule.ts';
+import type { FeeState, Grid } from '../../../../packages/native/src/fee-schedule.ts';
 import type { Anchor } from '../../../../packages/native/src/progressive-mint.ts';
 import type {
   Asset,
@@ -126,8 +128,30 @@ const sorted = <T>(xs: T[], key: (x: T) => string): T[] => {
   }
   return xs;
 };
+/** A fee grid in a snapshot: the rate as a decimal string. */
+export interface SnapshotGrid {
+  id: number;
+  rate: string;
+  effective: number;
+  height: number;
+  index: number;
+}
+/** The fee schedule state in a snapshot, field for field, with null for empty slots. */
+export interface SnapshotFees {
+  operator: string | null;
+  guardian: string;
+  sentinel: string;
+  pendingOperator: { account: string; effective: number } | null;
+  pendingGuardian: { account: string; effective: number } | null;
+  current: SnapshotGrid;
+  previous: SnapshotGrid | null;
+  pending: SnapshotGrid | null;
+  nextGrid: number;
+  nextReset: number;
+}
 export interface Snapshot {
-  format: 1;
+  /** Format 2 adds `fees`; format 1 is no longer read. */
+  format: 2;
   height: number;
   hash: string;
   /** A progressive asset also carries `right`, the anchor of its current mint right (or null). */
@@ -164,6 +188,79 @@ export interface Snapshot {
     index: number;
   }[];
   nextInscription: number;
+  /** The fee schedule state, or null while the schedule is not active. */
+  fees: SnapshotFees | null;
+}
+const snapshotGrid = (g: Grid): SnapshotGrid => ({
+  id: g.id,
+  rate: String(g.rate),
+  effective: g.effective,
+  height: g.height,
+  index: g.index,
+});
+function snapshotFees(f: FeeState): SnapshotFees {
+  return {
+    operator: f.operator,
+    guardian: f.guardian,
+    sentinel: f.sentinel,
+    pendingOperator: f.pendingOperator && { ...f.pendingOperator },
+    pendingGuardian: f.pendingGuardian && { ...f.pendingGuardian },
+    current: snapshotGrid(f.current),
+    previous: f.previous && snapshotGrid(f.previous),
+    pending: f.pending && snapshotGrid(f.pending),
+    nextGrid: f.nextGrid,
+    nextReset: f.nextReset,
+  };
+}
+/** Strict decoding of a snapshot's fee state: exact keys, ids, integers and decimal rates. */
+function feesValue(v: unknown, height: number): FeeState | null {
+  if (v === null) return null;
+  const f = object(v, [
+    'operator',
+    'guardian',
+    'sentinel',
+    'pendingOperator',
+    'pendingGuardian',
+    'current',
+    'previous',
+    'pending',
+    'nextGrid',
+    'nextReset',
+  ]);
+  const role = (x: unknown) => {
+    if (x === null) return null;
+    const p = object(x, ['account', 'effective']);
+    return { account: identifier(p.account), effective: natural(p.effective, 0xffffffff) };
+  };
+  const grid = (x: unknown): Grid | null => {
+    if (x === null) return null;
+    const g = object(x, ['id', 'rate', 'effective', 'height', 'index']);
+    requireThat(typeof g.rate === 'string' && /^[1-9][0-9]{0,19}$/.test(g.rate), 'fee rate');
+    return {
+      id: natural(g.id, 0xffffffff),
+      rate: BigInt(g.rate),
+      effective: natural(g.effective, 0xffffffff),
+      height: natural(g.height, 0xffffffff),
+      index: natural(g.index, 0xffffffff),
+    };
+  };
+  const current = grid(f.current);
+  requireThat(current !== null, 'fee state invariant');
+  const fees: FeeState = {
+    operator: f.operator === null ? null : identifier(f.operator),
+    guardian: identifier(f.guardian),
+    sentinel: identifier(f.sentinel),
+    pendingOperator: role(f.pendingOperator),
+    pendingGuardian: role(f.pendingGuardian),
+    current,
+    previous: grid(f.previous),
+    pending: grid(f.pending),
+    nextGrid: natural(f.nextGrid, 0xffffffff),
+    nextReset: natural(f.nextReset, 0xff),
+  };
+  // Without the rules, the `previous` window cannot be checked here; the reducer checks it.
+  checkFeeState(fees, height);
+  return fees;
 }
 /** Canonical definition bytes of an asset, normalized to sequence 0: the DEPLOY payload, or the
  * INSCRIBE payload for an inscription. */
@@ -207,7 +304,7 @@ export function tipSnapshot(s: State, genesis: string): Snapshot {
 function encodeSnapshot(s: State, genesis: string): Snapshot {
   const pairs = <T>(m: Map<string, T>) => [...m].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return {
-    format: 1,
+    format: 2,
     height: s.height,
     hash: s.hash,
     assets: pairs(s.assets).map(([id, a]) => ({
@@ -251,15 +348,15 @@ function encodeSnapshot(s: State, genesis: string): Snapshot {
         index: x.index,
       })),
     nextInscription: s.nextInscription,
+    fees: s.fees && snapshotFees(s.fees),
   };
 }
 /** Decode an authenticated snapshot defensively. Never use an unsigned API checkpoint. Mainnet
- * snapshots exist only once its progressive activation is reviewed (`reviewed`, a parameter for
- * tests). */
+ * snapshots exist only once its activation is reviewed (`reviewed`, a parameter for tests). */
 export function snapshotState(
   input: unknown,
   genesis: string,
-  reviewed: number | null = MAINNET_PROGRESSIVE_V2_FROM,
+  reviewed: boolean = mainnetReviewed(),
 ): State {
   const v = object(input, [
     'format',
@@ -273,9 +370,10 @@ export function snapshotState(
     'symbols',
     'inscriptions',
     'nextInscription',
+    'fees',
   ]);
   requireThat(
-    v.format === 1 && (genesis !== MAINNET || reviewed !== null),
+    v.format === 2 && (genesis !== MAINNET || !!reviewed),
     'unsupported snapshot/network',
   );
   const height = natural(v.height, 0xffffffff);
@@ -291,6 +389,7 @@ export function snapshotState(
     symbols: new Map(),
     inscriptions: new Map(),
     nextInscription: natural(v.nextInscription),
+    fees: feesValue(v.fees, height),
     journal: [],
   };
   requireThat(s.nextInscription >= FIRST_INSCRIPTION, 'inscription counter');
@@ -512,12 +611,12 @@ export interface Policy {
   implementations?: Record<string, string>;
 }
 /** A trust policy exactly as wallets and witnesses accept it. On mainnet, a policy exists only
- * once the progressive activation is reviewed (`reviewed`, a parameter for tests); it must start
- * at QLYP's activation block and name the witnesses' implementations. */
+ * once the activation is reviewed (`reviewed`, a parameter for tests); it must start at QLYP's
+ * activation block and name the witnesses' implementations. */
 export function policy(
   input: unknown,
   now = Date.now(),
-  reviewed: number | null = MAINNET_PROGRESSIVE_V2_FROM,
+  reviewed: boolean = mainnetReviewed(),
 ): Policy {
   const fields = [
     'format',
@@ -535,7 +634,7 @@ export function policy(
   const p = object(input, withImplementations ? [...fields, 'implementations'] : fields);
   requireThat(p.format === 1 && natural(p.version) > 0, 'policy version');
   const onMainnet = identifier(p.genesis) === MAINNET;
-  requireThat(!onMainnet || reviewed !== null, 'mainnet disabled');
+  requireThat(!onMainnet || !!reviewed, 'mainnet disabled');
   const a = object(p.activation, ['height', 'hash']);
   natural(a.height, 0xffffffff);
   requireThat(
@@ -784,4 +883,23 @@ export function verifiedPurchase(callHex: string, owner: string, s: State): void
     'not a finalized live reservation for buyer',
   );
   requireThat(hex(callBytes(buyCall(t))) === callHex, 'purchase differs from attested reservation');
+}
+/** The fee grids of a verified state, for a wallet to price a rate-derived operation at exactly
+ * that block. null while the schedule is not active there. */
+export function verifiedFeeSchedule(v: { state: State }): {
+  current: Grid;
+  previous: Grid | null;
+  pending: Grid | null;
+  height: number;
+  hash: string;
+} | null {
+  const f = v.state.fees;
+  if (!f) return null;
+  return {
+    current: { ...f.current },
+    previous: f.previous && { ...f.previous },
+    pending: f.pending && { ...f.pending },
+    height: v.state.height,
+    hash: v.state.hash,
+  };
 }

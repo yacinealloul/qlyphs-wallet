@@ -4,13 +4,29 @@ import {
   decode,
   fromHex,
   hex,
+  MAINNET,
   MAX_U64,
   parseCall,
   PROTOCOL_HEADER,
+  QLYPHS_FEE_ACCOUNT,
   requireThat,
   ZERO,
 } from './codec.ts';
 import type { Call, Envelope, Id, Operation } from './codec.ts';
+import {
+  allowedFees,
+  applyFeeAdmin,
+  applyFeeRate,
+  checkFeeRules,
+  checkFeeState,
+  feeMode,
+  isFeeBearing,
+  isRateDerived,
+  legacyFee,
+  stepFees,
+  symbolClass,
+} from './fee-schedule.ts';
+import type { FeeRules, FeeState } from './fee-schedule.ts';
 import {
   mintTicket,
   PROGRESSIVE_MINT_LOTS,
@@ -22,17 +38,28 @@ import {
 } from './progressive-mint.ts';
 import type { Anchor, MintTicket, ProgressiveProfile } from './progressive-mint.ts';
 
-export { PROTOCOL_VERSION } from './codec.ts';
+export { MAINNET, PROTOCOL_VERSION, QLYPHS_FEE_ACCOUNT } from './codec.ts';
 export const PROTOCOL_LABEL = 'QLYP-v1';
 /** Revision of the installed replay rules. A durable index written under another revision (e.g.
  * an exploration build that interpreted the now-reserved tags 4..8) is re-derived from its
  * finalized blocks on open. Bump whenever the reducer's interpretation of existing blocks changes. */
-export const RULES_MARKER = 'QLYP-v1+inscriptions-2';
-export const MAINNET = '0xfb5487c0be6ae4ade2d41d16e50465129861636c2b8d61fa94d7a19631626fba';
+export const RULES_MARKER = 'QLYP-v1+inscriptions-2+fees-1b';
 
-/* QLYP-v1 fees. Protocol constants, identical on every network.
- * - DEPLOY and MINT are valid only inside utility.batch_all([system.remark_with_event(payload),
- *   balances.transfer_keep_alive(QLYPHS_FEE_ACCOUNT, exact fee)]), signed by the operation owner.
+/* QLYP-v1 fees.
+ * - DEPLOY (tags 0, 11, 12), INSCRIBE and MINT are valid only inside utility.batch_all(
+ *   [system.remark_with_event(payload), balances.transfer_keep_alive(QLYPHS_FEE_ACCOUNT, fee)]),
+ *   signed by the operation owner.
+ * - MINT pays exactly MINT_FEE at every height, on every network.
+ * - DEPLOY and INSCRIBE are rate-derived (fee-schedule.ts): a USD target converted at a rate the
+ *   chain holds, which a fee operator posts and which applies only after a public delay. The fee
+ *   paid must be the fee at the current rate, or at the previous one for `grace` blocks after a
+ *   change. Without a schedule, and before its first block, every network reads the fixed legacy
+ *   fees of QLYP-v1, mainnet included: pinning a schedule changes nothing below its `from`, and
+ *   the legacy fee stays accepted for `grace` blocks from it, so an operation signed under the old
+ *   rules and included after `from` is still read. A blocked symbol is never deployed under the
+ *   schedule.
+ * - FEE_RATE and FEE_ADMIN (tags 13, 14) govern the rate. Each is a direct remark_with_event of a
+ *   role account and carries no fee.
  * - TRANSFER is free: a direct signed system.remark_with_event.
  * - Exchange fee, a general rule: ANY token-for-QTC exchange pays saleFee(price), 1% of the QTC
  *   price rounded up, to QLYPHS_FEE_ACCOUNT, committed in the signed operation and paid by the
@@ -40,20 +67,21 @@ export const MAINNET = '0xfb5487c0be6ae4ade2d41d16e50465129861636c2b8d61fa94d7a1
  *   open-offer/DEX operation inherits the same rule. Tags 4..8 are RESERVED for the planned
  *   launchpad/AMM (docs/native/LAUNCHPAD-AMM.md, not part of the protocol) and rejected.
  * - Plain QTC sends are not QLYP operations and carry no fee. */
-/** Qlyphs fee account (SS58 qzkCoLhkccQnzEG79s61bFpf5bLKfKKnq7S5YqazgzdCwgARA). */
-export const QLYPHS_FEE_ACCOUNT =
-  '0x2139a57532fbf4764ad95754c17545fed7af915fb008b6494b02e503084da8b3';
 /** Which rules a reducer applies. Always passed explicitly: never read from a checkpoint or a block. */
 export interface Rules {
   /** First block whose tag-11 DEPLOYs (progressive-1000-v1) count, or null for never. */
   progressive: { from: number } | null;
   /** First block whose tag-12 DEPLOYs (progressive-1000-v2) count, or null for never. */
   progressiveV2: { from: number } | null;
+  /** The fee schedule, or null: then no fee state, no tag 13 or 14, and the legacy fees on
+   * every network. */
+  feeSchedule: FeeRules | null;
 }
-/** QLYP-v1 before progressive mint: tags 11 and 12 stay unknown operations. */
+/** QLYP-v1 before progressive mint and the fee schedule: tags 11 to 14 stay unknown operations. */
 export const LEGACY_RULES: Rules = /* @__PURE__ */ Object.freeze({
   progressive: null,
   progressiveV2: null,
+  feeSchedule: null,
 });
 const activation = (v: unknown, name: string): { from: number } | null => {
   if (v === null) return null;
@@ -76,68 +104,98 @@ export function checkRules(rules: unknown): Rules {
   );
   const r = rules as Record<string, unknown>;
   requireThat(
-    Object.keys(r).length === 2 && 'progressive' in r && 'progressiveV2' in r,
+    Object.keys(r).length === 3 && 'progressive' in r && 'progressiveV2' in r && 'feeSchedule' in r,
     'invalid rules',
   );
   return {
     progressive: activation(r.progressive, 'progressive'),
     progressiveV2: activation(r.progressiveV2, 'progressive v2'),
+    feeSchedule: r.feeSchedule === null ? null : checkFeeRules(r.feeSchedule),
   };
 }
 export const progressiveActive = (rules: Rules, height: number): boolean =>
   rules.progressive !== null && height >= rules.progressive.from;
 export const progressiveV2Active = (rules: Rules, height: number): boolean =>
   rules.progressiveV2 !== null && height >= rules.progressiveV2.from;
+export const feeScheduleActive = (rules: Rules, height: number): boolean =>
+  rules.feeSchedule !== null && height >= rules.feeSchedule.from;
+/** Which optional tags a block at this height reads: the options for `decode`. */
+export const decodeOptions = (rules: Rules, height: number) => ({
+  progressive: progressiveActive(rules, height),
+  progressiveV2: progressiveV2Active(rules, height),
+  feeSchedule: feeScheduleActive(rules, height),
+});
 /** The reviewed mainnet activation of progressive-1000-v2: the first Quantus mainnet block whose
  * tag-12 DEPLOYs count. null keeps progressive mint off on mainnet, and no configuration can switch
  * it on: setting this value, with the mainnet witness policy that binds it, is the activation. The
  * Python verifier mirrors it (apps/native/verifier/replay.py). progressive-1000-v1 never runs on
  * mainnet. */
 export const MAINNET_PROGRESSIVE_V2_FROM: number | null = null;
+/** The reviewed mainnet fee schedule. null until the activation release, which sets it with the
+ * same `from` as MAINNET_PROGRESSIVE_V2_FROM and `legacyBefore` true: mainnet reads the legacy fees
+ * up to `from` exactly as before, and for `grace` blocks after it. The Python verifier mirrors it. */
+export const MAINNET_FEE_SCHEDULE: FeeRules | null = null;
 /** The rules every mainnet reader runs: legacy until the reviewed activation, then
- * progressive-1000-v2 from it. `from` is a parameter only for tests of an activation. */
-export const mainnetRules = (from: number | null = MAINNET_PROGRESSIVE_V2_FROM): Rules =>
-  from === null ? LEGACY_RULES : checkRules({ progressive: null, progressiveV2: { from } });
-/** Whether a mainnet reader that starts at `activationHeight` may run `rules`: exactly the mainnet
- * rules, with an activation after the block QLYP starts reading. Anything else would read paid
- * lots differently from the wallets and witnesses of the release. */
+ * progressive-1000-v2 and the fee schedule from it. The parameters exist only for tests of an
+ * activation. */
+export const mainnetRules = (
+  from: number | null = MAINNET_PROGRESSIVE_V2_FROM,
+  fees: FeeRules | null = MAINNET_FEE_SCHEDULE,
+): Rules =>
+  from === null && fees === null
+    ? LEGACY_RULES
+    : checkRules({
+        progressive: null,
+        progressiveV2: from === null ? null : { from },
+        feeSchedule: fees,
+      });
+/** JSON with sorted keys: rules hold only plain JSON values. */
+const sortedJson = (v: unknown): string =>
+  v !== null && typeof v === 'object' && !Array.isArray(v)
+    ? '{' +
+      Object.keys(v)
+        .sort()
+        .map((k) => JSON.stringify(k) + ':' + sortedJson((v as Record<string, unknown>)[k]))
+        .join(',') +
+      '}'
+    : Array.isArray(v)
+      ? '[' + v.map(sortedJson).join(',') + ']'
+      : JSON.stringify(v);
+/** Whether `rules` are exactly the mainnet rules of the release: progressive v2 and the fee schedule
+ * activated together, with the legacy reading kept below `from` and for `grace` blocks after it.
+ * Anything else would read paid operations differently from the wallets and witnesses of the
+ * release, or reject an operation signed under the old rules and included after `from`. */
+function mainnetRulesMatch(rules: Rules, from: number | null, fees: FeeRules | null): boolean {
+  if ((from === null) !== (fees === null)) return false;
+  if (sortedJson(rules) !== sortedJson(mainnetRules(from, fees))) return false;
+  return fees === null || (fees.from === from && fees.legacyBefore);
+}
+/** Whether a mainnet reader that starts at `activationHeight` may run `rules`: the mainnet rules
+ * of the release, activated after the block QLYP starts reading. */
 export function mainnetRulesAllowed(
   rules: Rules,
   activationHeight: number,
   from: number | null = MAINNET_PROGRESSIVE_V2_FROM,
+  fees: FeeRules | null = MAINNET_FEE_SCHEDULE,
 ): boolean {
-  const expected = mainnetRules(from);
-  return (
-    rules.progressive === null &&
-    (rules.progressiveV2 === null
-      ? expected.progressiveV2 === null
-      : expected.progressiveV2 !== null &&
-        rules.progressiveV2.from === expected.progressiveV2.from &&
-        rules.progressiveV2.from > activationHeight)
-  );
+  return mainnetRulesMatch(rules, from, fees) && (from === null || from > activationHeight);
 }
-/** 1 QTC (12 decimals). */
-export const DEPLOY_FEE = 1_000_000_000_000n;
-/** 0.01 QTC (12 decimals). */
+/** True once the mainnet activation is reviewed: both pins set, at the same height. Every mainnet
+ * activation gate reads this rather than one pin alone. */
+export const mainnetReviewed = (
+  from: number | null = MAINNET_PROGRESSIVE_V2_FROM,
+  fees: FeeRules | null = MAINNET_FEE_SCHEDULE,
+): boolean => from !== null && fees !== null && fees.from === from;
+/** 0.01 QTC (12 decimals): the fixed MINT fee, not rate-derived. */
 export const MINT_FEE = 10_000_000_000n;
 /** 1% of the QTC price of any token-for-QTC exchange. */
 export const SALE_FEE_BPS = 100n;
-/** 0.1 QTC (12 decimals), paid in the fee batch of an INSCRIBE (docs/native/INSCRIPTIONS.md §2). */
-export const INSCRIBE_FEE = 100_000_000_000n;
 /** Inscription numbers start at 1 and are never reused. */
 export const FIRST_INSCRIPTION = 1;
 /** ceil(price * SALE_FEE_BPS / 10000): at least 1 base unit for any positive price. */
 export function saleFee(price: bigint): bigint {
   requireThat(typeof price === 'bigint' && price >= 0n, 'invalid price');
   return (price * SALE_FEE_BPS + 9999n) / 10000n;
-}
-/** The fixed Qlyphs fee an operation kind must pay in its fee batch (0n when none applies). */
-export function operationFee(kind: Operation['kind']): bigint {
-  if (kind === 'deploy' || kind === 'deployProgressive' || kind === 'deployProgressiveV2')
-    return DEPLOY_FEE;
-  if (kind === 'mint') return MINT_FEE;
-  if (kind === 'inscribe') return INSCRIBE_FEE;
-  return 0n;
 }
 /** The only valid runtime call for a fee-bearing operation (deploy/mint/inscribe). */
 export function feeBatchCall(payload: string, fee: bigint): Call {
@@ -256,6 +314,8 @@ export interface State {
   inscriptions: Map<Id, Inscription>;
   /** Number of the next accepted inscription (starts at FIRST_INSCRIPTION). */
   nextInscription: number;
+  /** The fee schedule state: null exactly while the schedule is not active. */
+  fees: FeeState | null;
   journal: { height: number; index: number; verdict: string }[];
 }
 export const ticketKey = (multisig: Id, proposal: number): string => `${multisig}:${proposal}`;
@@ -447,7 +507,14 @@ function batchReceipt(r: Receipt, from: Id, to: Id, amount: bigint): boolean {
     r.events.filter((x) => x.kind === 'batchCompleted').length === 1
   );
 }
-function applyOperation(s: State, genesis: Id, r: Receipt, e: Envelope, call: Call): void {
+function applyOperation(
+  s: State,
+  genesis: Id,
+  r: Receipt,
+  e: Envelope,
+  call: Call,
+  rules: Rules = LEGACY_RULES,
+): void {
   requireThat(r.signer !== null, 'unsigned protocol operation');
   const owner = r.signer;
   fromHex(owner, 32);
@@ -458,7 +525,14 @@ function applyOperation(s: State, genesis: Id, r: Receipt, e: Envelope, call: Ca
     'wrong/exhausted sequence',
   );
   const p = e.op;
-  if (p.kind === 'deployProgressive' || p.kind === 'deployProgressiveV2') {
+  if (p.kind === 'feeRate' || p.kind === 'feeAdmin') {
+    // Tags 13 and 14 decode only while the schedule is active, so both are set here.
+    requireThat(s.fees !== null && rules.feeSchedule !== null, 'fee schedule not active');
+    s.fees =
+      p.kind === 'feeRate'
+        ? applyFeeRate(s.fees, rules.feeSchedule, owner, p, s.height, r.index)
+        : applyFeeAdmin(s.fees, rules.feeSchedule, owner, p, s.height);
+  } else if (p.kind === 'deployProgressive' || p.kind === 'deployProgressiveV2') {
     const v2 = p.kind === 'deployProgressiveV2';
     progressiveMintQuote(p.cap, 0n, v2 ? PROGRESSIVE_MINT_PROFILE_V2 : PROGRESSIVE_MINT_PROFILE);
     const id = assetId(owner, e.sequence);
@@ -569,29 +643,95 @@ function applyOperation(s: State, genesis: Id, r: Receipt, e: Envelope, call: Ca
   }
   s.sequences.set(owner, e.sequence + 1n);
 }
+/** What a fee check reads besides the receipt: the network, the rules, the block height and the
+ * fee state at the start of the receipt. */
+interface FeeContext {
+  genesis: Id;
+  rules: Rules;
+  height: number;
+  fees: FeeState | null;
+}
+/** The fee rule of today: the exact fee batch, paying exactly `fee`. MINT reads it at every height,
+ * and the rate-derived kinds wherever the legacy reading applies. */
+function requireExactFee(
+  r: Receipt,
+  kind: Operation['kind'],
+  call: Call,
+  payload: string,
+  fee: bigint,
+): void {
+  requireThat(
+    call.kind === 'batch',
+    `${kind === 'inscribe' ? kind : 'deploy/mint'} requires the Qlyphs fee batch`,
+  );
+  requireThat(
+    hex(callBytes(call)) === hex(callBytes(feeBatchCall(payload, fee))),
+    'fee batch must be exactly remark_with_event + transfer of the exact fee to Qlyphs',
+  );
+  requireThat(
+    r.signer !== null && batchReceipt(r, r.signer, QLYPHS_FEE_ACCOUNT, fee),
+    'fee batch receipt does not show the exact Qlyphs fee',
+  );
+}
 /** Binds every operation kind to exactly one call context. Throws (=> rejected verdict). */
-function requireContext(r: Receipt, e: Envelope, call: Call, payload: string): void {
+function requireContext(
+  r: Receipt,
+  e: Envelope,
+  call: Call,
+  payload: string,
+  ctx: FeeContext,
+): void {
   const owner = r.signer;
-  const kind = e.op.kind;
-  if (
-    kind === 'deploy' ||
-    kind === 'mint' ||
-    kind === 'inscribe' ||
-    kind === 'deployProgressive' ||
-    kind === 'deployProgressiveV2'
-  ) {
-    const fee = operationFee(kind);
+  const op = e.op;
+  const kind = op.kind;
+  if (kind === 'mint') requireExactFee(r, kind, call, payload, MINT_FEE);
+  else if (isRateDerived(kind)) {
+    // No schedule is today's reading on every network: the legacy fees.
+    const mode =
+      ctx.rules.feeSchedule === null ? 'legacy' : feeMode(ctx.rules, ctx.genesis, ctx.height);
+    if (mode === 'legacy') return requireExactFee(r, kind, call, payload, legacyFee(kind));
     requireThat(
       call.kind === 'batch',
       `${kind === 'inscribe' ? kind : 'deploy/mint'} requires the Qlyphs fee batch`,
     );
+    // The amount is whatever the transfer leg pays; the rest of the batch is fixed byte for byte.
+    const leg = call.calls[1];
     requireThat(
-      hex(callBytes(call)) === hex(callBytes(feeBatchCall(payload, fee))),
-      'fee batch must be exactly remark_with_event + transfer of the exact fee to Qlyphs',
+      call.calls.length === 2 &&
+        leg?.kind === 'pay' &&
+        hex(callBytes(call)) === hex(callBytes(feeBatchCall(payload, leg.amount))),
+      'fee batch must be exactly remark_with_event + transfer to Qlyphs',
+    );
+    const amount = leg.amount;
+    const schedule = ctx.rules.feeSchedule;
+    requireThat(
+      mode === 'schedule' && schedule !== null && ctx.fees !== null,
+      'fee schedule not active',
+    );
+    if (
+      op.kind === 'deploy' ||
+      op.kind === 'deployProgressive' ||
+      op.kind === 'deployProgressiveV2'
+    )
+      requireThat(symbolClass(op.symbol) === 'allowed', 'symbol blocked');
+    // No fee check reads a role: a role set between signing and inclusion cannot cost a user a fee.
+    requireThat(
+      allowedFees(ctx.fees, schedule, op, ctx.height).includes(amount),
+      'fee does not match the fee schedule',
     );
     requireThat(
-      owner !== null && batchReceipt(r, owner, QLYPHS_FEE_ACCOUNT, fee),
-      'fee batch receipt does not show the exact Qlyphs fee',
+      owner !== null && batchReceipt(r, owner, QLYPHS_FEE_ACCOUNT, amount),
+      'fee batch receipt does not show the paid Qlyphs fee',
+    );
+  } else if (kind === 'feeRate' || kind === 'feeAdmin') {
+    // The native extrinsic signature is the governance signature: only a direct call has one signer.
+    const remarked = r.events.filter((x) => x.kind === 'remarked');
+    requireThat(
+      call.kind === 'remark' &&
+        call.event &&
+        remarked.length === 1 &&
+        remarked[0]?.sender === owner,
+      'fee schedule requires a direct remark_with_event',
     );
   } else if (kind === 'transfer') {
     requireThat(
@@ -607,24 +747,36 @@ function requireContext(r: Receipt, e: Envelope, call: Call, payload: string): v
   }
 }
 /** The rejection verdict for a failed signed extrinsic that declares a fee-bearing operation. */
-/** Which progressive DEPLOY tags a block at this height reads: the options for `decode`. */
-export const progressiveTags = (rules: Rules, height: number) => ({
-  progressive: progressiveActive(rules, height),
-  progressiveV2: progressiveV2Active(rules, height),
-});
 function failedFeeOperation(
   r: Receipt,
-  tags: ReturnType<typeof progressiveTags>,
+  options: ReturnType<typeof decodeOptions>,
 ): string | undefined {
   try {
     const call = parseCall(fromHex(r.callHex));
     const payload = declaredPayload(call);
     if (payload === undefined) return undefined;
-    if (operationFee(decode(fromHex(payload), tags).op.kind) === 0n) return undefined;
+    if (!isFeeBearing(decode(fromHex(payload), options).op.kind)) return undefined;
     return call.kind === 'batch' ? 'rejected: fee batch failed' : 'rejected: extrinsic failed';
   } catch {
     return undefined; // outside the call grammar or not a decodable QLYP-v1 payload
   }
+}
+/** Whether a rejected operation still cost its signer the Qlyphs fee: the extrinsic succeeded
+ * natively, it declares a fee-bearing operation, and it paid Qlyphs. Derived from the journal and
+ * the receipt; not part of the state. */
+export function feeKept(r: Receipt, verdict: string | null, rules: Rules, height: number): boolean {
+  if (verdict === null || !verdict.startsWith('rejected: ') || !r.success || r.signer === null)
+    return false;
+  try {
+    const payload = declaredPayload(parseCall(fromHex(r.callHex)));
+    if (payload === undefined) return false;
+    if (!isFeeBearing(decode(fromHex(payload), decodeOptions(rules, height)).op.kind)) return false;
+  } catch {
+    return false;
+  }
+  return r.events.some(
+    (e) => e.kind === 'paid' && e.from === r.signer && e.to === QLYPHS_FEE_ACCOUNT,
+  );
 }
 function applyReceipt(
   s: State,
@@ -633,7 +785,7 @@ function applyReceipt(
   rules: Rules,
   rights: Map<string, Id> | null,
 ): State {
-  const tags = progressiveTags(rules, s.height);
+  const tags = decodeOptions(rules, s.height);
   const progressive = tags.progressive || tags.progressiveV2;
   const used: ProgressiveLot[] = [];
   // Lifecycle events are authoritative even for calls outside our operation grammar.
@@ -668,8 +820,13 @@ function applyReceipt(
       const next = structuredClone(s);
       try {
         const envelope = decode(fromHex(payload), tags);
-        requireContext(r, envelope, call, payload);
-        applyOperation(next, genesis, r, envelope, call);
+        requireContext(r, envelope, call, payload, {
+          genesis,
+          rules,
+          height: s.height,
+          fees: s.fees,
+        });
+        applyOperation(next, genesis, r, envelope, call, rules);
         s = next;
         s.journal.push({ height: s.height, index: r.index, verdict: 'accepted' });
       } catch (error) {
@@ -743,8 +900,12 @@ function assertProgressiveInvariants(s: State): void {
   }
 }
 /** `progressive = false` skips the progressive section: `apply` checks it once per block, since a
- * pass over every progressive asset after every receipt would make a block cost receipts × assets. */
-export function assertInvariants(s: State, progressive = true): void {
+ * pass over every progressive asset after every receipt would make a block cost receipts × assets.
+ * `rules`, when given, also binds the fee state to the schedule and bounds `previous` by its grace. */
+export function assertInvariants(s: State, progressive = true, rules?: Rules): void {
+  if (rules)
+    requireThat((s.fees !== null) === feeScheduleActive(rules, s.height), 'fee state invariant');
+  if (s.fees) checkFeeState(s.fees, s.height, rules?.feeSchedule?.grace);
   for (const [id, a] of s.assets) {
     let total = 0n;
     for (const [key, n] of s.balances) {
@@ -797,6 +958,9 @@ export function assertInvariants(s: State, progressive = true): void {
     numbers.add(ins.number);
   }
 }
+/** Passed only by fromCheckpoint: the indexer starts at a restored checkpoint, which may lie past
+ * the activations, rather than at the block QLYP starts reading. No other module can name it. */
+const AT_CHECKPOINT: unique symbol = Symbol('restored checkpoint');
 /** Reference in-memory replay engine, not a production database or independently verified node.
  * All state is detached on input/output; failed blocks cannot partially mutate the checkpoint. */
 export class NativeIndexer {
@@ -811,14 +975,28 @@ export class NativeIndexer {
     retainHistory = true,
     // A mainnet reader may run no other rules, so they are its default.
     rules: Rules = genesis === MAINNET ? mainnetRules() : LEGACY_RULES,
+    start?: typeof AT_CHECKPOINT,
   ) {
     fromHex(genesis, 32);
     this.rules = checkRules(rules);
-    // Mainnet reads progressive mint only from its reviewed activation: no configuration can switch
-    // it on, move it, or turn on progressive-1000-v1.
+    const restored = start === AT_CHECKPOINT;
+    // Mainnet reads progressive mint and the fee schedule only from the reviewed activation: no
+    // configuration can switch them on, move them, or turn on progressive-1000-v1. A fresh reader
+    // also starts before that activation; a restored checkpoint may lie past it, and fromCheckpoint
+    // checks that its state agrees with the rules at its height.
     requireThat(
-      genesis !== MAINNET || mainnetRulesAllowed(this.rules, activation.height),
+      genesis !== MAINNET ||
+        (restored
+          ? mainnetRulesMatch(this.rules, MAINNET_PROGRESSIVE_V2_FROM, MAINNET_FEE_SCHEDULE)
+          : mainnetRulesAllowed(this.rules, activation.height)),
       'progressive mint is not enabled on mainnet',
+    );
+    // The fee state is installed at `from`, a block the reducer applies.
+    requireThat(
+      restored ||
+        this.rules.feeSchedule === null ||
+        this.rules.feeSchedule.from > activation.height,
+      'fee schedule must start after the activation block',
     );
     fromHex(activation.hash, 32);
     requireThat(
@@ -843,6 +1021,7 @@ export class NativeIndexer {
       symbols: new Map(),
       inscriptions: new Map(),
       nextInscription: FIRST_INSCRIPTION,
+      fees: null,
       journal: [],
     };
     this.history.set(activation.height, structuredClone(this.current));
@@ -878,7 +1057,13 @@ export class NativeIndexer {
       requireThat(map instanceof Map, 'invalid checkpoint map');
     requireThat(Number.isSafeInteger(checkpoint.nextInscription), 'invalid checkpoint counters');
     requireThat(Array.isArray(checkpoint.journal), 'invalid checkpoint journal');
-    assertInvariants(checkpoint);
+    // A checkpoint written before the fee schedule existed has no fee state.
+    const fees = checkpoint.fees ?? null;
+    requireThat(
+      feeScheduleActive(checkRules(rules), checkpoint.height) === (fees !== null),
+      'checkpoint fee state differs from rules',
+    );
+    assertInvariants({ ...checkpoint, fees }, true, rules);
     // A progressive asset's right would silently stop moving under rules that are not yet active.
     for (const [policy, active] of [
       ['progressive', rules.progressive],
@@ -894,9 +1079,10 @@ export class NativeIndexer {
       { height: checkpoint.height, hash: checkpoint.hash },
       retainHistory,
       rules,
+      AT_CHECKPOINT,
     );
-    x.current = structuredClone(checkpoint);
-    x.history.set(checkpoint.height, structuredClone(checkpoint));
+    x.current = structuredClone({ ...checkpoint, fees });
+    x.history.set(checkpoint.height, structuredClone(x.current));
     return x;
   }
   state(): State {
@@ -924,6 +1110,7 @@ export class NativeIndexer {
     s.hash = b.hash;
     s.finalized = b.finalized;
     for (const t of s.tickets.values()) if (b.height > t.offer.expiry) release(s, t);
+    s.fees = stepFees(s.fees, this.rules.feeSchedule, b.height);
     // Built only for blocks that create a 2-of-2 multisig: nothing else can use a right.
     const rights =
       (progressiveActive(this.rules, b.height) || progressiveV2Active(this.rules, b.height)) &&
@@ -938,9 +1125,9 @@ export class NativeIndexer {
       last = r.index;
       fromHex(r.hash, 32);
       s = applyReceipt(s, this.genesis, r, this.rules, rights);
-      assertInvariants(s, false);
+      assertInvariants(s, false, this.rules);
     }
-    assertInvariants(s);
+    assertInvariants(s, true, this.rules);
     // Journal entries are also persisted separately by the durable adapter; keep a bounded view.
     if (s.journal.length > 10000) s.journal = s.journal.slice(-10000);
     this.current = s;

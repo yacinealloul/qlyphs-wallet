@@ -2,6 +2,7 @@
  * readers for the native read APIs and the checks the wallet runs before a review is shown. */
 import { isContentType, MAX_PAYLOAD, requireThat } from '../../../packages/native/src/codec.ts';
 import type { Command } from '../../../packages/native/src/commands.ts';
+import { BLOCKED_SET } from '../../../packages/native/src/fee-schedule.ts';
 import type {
   PublicInscription,
   PublicInscriptionSummary,
@@ -15,6 +16,7 @@ import {
   QLYPH_SIZE_ERROR,
   SYMBOL_READ_ERROR,
   symbolTakenError,
+  TICKER_RESERVED_ERROR,
 } from './qlyph-errors.ts';
 export {
   QLYPH_AMOUNT_ERROR,
@@ -23,6 +25,7 @@ export {
   QLYPH_SIZE_ERROR,
   SYMBOL_READ_ERROR,
   symbolTakenError,
+  TICKER_RESERVED_ERROR,
 };
 const compactLength = (n: number) => (n < 64 ? 1 : n < 16384 ? 2 : 4);
 /** Largest content (bytes) an INSCRIBE of this content type can carry: the whole payload is
@@ -107,8 +110,9 @@ export function parseInscriptionPage(value: unknown): {
   return { inscriptions: v.inscriptions.map(parseInscriptionSummary), more: v.more };
 }
 type Get = (path: string) => Promise<unknown>;
-/** Refuse a DEPLOY (legacy or progressive) whose symbol is already claimed: the protocol would
- * reject it after charging its fee. Run right before the review and again right before signing. */
+/** Refuse a DEPLOY (legacy or progressive) whose symbol is blocked or already claimed: the
+ * protocol would reject it after charging its fee. Run right before the review and again right
+ * before signing. */
 export async function checkSymbol(command: Command, get: Get): Promise<void> {
   if (
     command.kind !== 'deploy' &&
@@ -116,6 +120,7 @@ export async function checkSymbol(command: Command, get: Get): Promise<void> {
     command.kind !== 'deployProgressiveV2'
   )
     return;
+  requireThat(!BLOCKED_SET.has(command.symbol), TICKER_RESERVED_ERROR);
   let value: unknown;
   try {
     value = await get('/api/symbol?symbol=' + encodeURIComponent(command.symbol));

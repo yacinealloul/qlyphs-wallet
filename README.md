@@ -47,7 +47,9 @@ Both run the same wallet code: the same vault, signing and UI. Only the browser 
   allowlist are fixed at build time. The server refuses to start if any file differs from the release.
 - **Checks purchase attestations in development.** With a compiled public witness policy, the wallet
   checks two separately keyed ML-DSA-87 attestations of the finalized reservation. Mainnet purchases
-  remain disabled. The wallet recomputes Qlyphs fees and refuses inconsistent quotes.
+  remain disabled. The wallet recomputes Qlyphs fees and refuses inconsistent quotes; the fees of
+  token creation and inscriptions come from an attested, bounded, delayed on-chain rate, capped by a
+  compiled ceiling ([fee schedule](docs/extension/PROTOCOL-FEES.md)).
 - **Mainnet is pinned.** Mainnet builds compile in the chain's genesis, runtime and activation pins
   ([`deploy/mainnet/pins.json`](deploy/mainnet/pins.json)). They refuse any other network.
 
@@ -134,8 +136,9 @@ message names the source commit it was exported from.
 These are stated plainly so you don't have to guess.
 
 - The extension is not in the Chrome Web Store or Firefox Add-ons yet. For now, load a build unpacked.
-- Token purchases stay refused on mainnet until the post-quantum witnesses are validated there
-  ([MAINNET.md](docs/MAINNET.md)). Sending QTC works.
+- Token purchases stay refused on mainnet until the post-quantum witnesses are validated there, and
+  token creation and inscriptions until the reviewed fee schedule activation
+  ([MAINNET.md](docs/MAINNET.md), [fee schedule](docs/extension/PROTOCOL-FEES.md)). Sending QTC works.
 - A web wallet downloads its code on every visit. A release check proves what the site served *to you,
   when you checked*. It cannot prove what another visitor received.
 - Keys live in your browser profile, so clearing site data deletes the wallet. Keep your recovery phrase

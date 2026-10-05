@@ -6,14 +6,22 @@ signs Qlyphs operations (Quarks, fair-mint tokens, bilateral token sales) for th
 not runtime-native `pallet_assets` balances; the bilateral market is not an AMM or open-taker order book.
 
 Mainnet builds require reviewed network pins. Purchases and progressive lot mints stay refused on
-mainnet until the post-quantum witnesses are validated there ([MAINNET.md](../../docs/MAINNET.md)).
+mainnet until the post-quantum witnesses are validated there, and token creation and inscriptions
+until the reviewed fee schedule activation ([MAINNET.md](../../docs/MAINNET.md)).
 The development build is for local chains only; do not import an account holding real funds into it.
 
 **Fees.** QLYP-v1 charges a Qlyphs fee, paid to the Qlyphs fee account in the same signed extrinsic:
-1 QTC to create a token, 0.01 QTC per mint, per lot of a progressive token 0.1 to 0.5 QTC
+creating a token (any allowed symbol) and inscribing a Quark each cost a 25 USD target converted at
+the on-chain rate of the [fee schedule](../../docs/extension/PROTOCOL-FEES.md) (0.25 QTC at 100 USD per
+QTC); 0.01 QTC per mint, fixed; per lot of a progressive token 0.1 to 0.5 QTC
 (progressive-1000-v1, 300 QTC for all 1,000 lots) or 0.01 to 0.44 QTC (progressive-1000-v2, 210 QTC
-in all) by lot number, 0.1 QTC per inscription, and 1% (rounded up, paid by the
-buyer) of the QTC price of any token sale. A progressive lot also burns the runtime's multisig fee
+in all) by lot number; and 1% (rounded up, paid by the
+buyer) of the QTC price of any token sale. The wallet reads the rate from a tip attestation of both
+witnesses, signs at that attested block so a rate change cannot cost the fee, and refuses a fee
+above its compiled ceiling (1 QTC per creation or inscription) and the six blocked tickers
+`BTC ETH QLYPHS QTC USDC USDT`. Before a fee schedule is active, the protocol keeps the legacy fees
+(1 QTC per creation, 0.1 QTC per inscription); on mainnet the wallet signs neither until the reviewed
+fee schedule release. A progressive lot also burns the runtime's multisig fee
 (0.03 QTC on the pinned development runtime) for its one-shot mint right. Token transfers and plain QTC sends carry no Qlyphs fee. The
 wallet recomputes the expected fee itself and refuses to sign when the service asks for a different one.
 Network fees come on top.
@@ -70,7 +78,8 @@ pnpm --filter @qotc/wallet-extension build
 
 Build-time overrides: `QLYPHS_EXTENSION_API`, `QLYPHS_EXTENSION_RPC`, `QLYPHS_EXTENSION_EXPLORER`,
 `QLYPHS_EXTENSION_DAPP_ORIGINS` (JSON array of 1–16 exact origins allowed for provider injection),
-`QLYPHS_EXTENSION_OUTPUT` (default `dist`) and `NATIVE_PQ_POLICY_FILE`. The API, RPC and explorer are
+`QLYPHS_EXTENSION_OUTPUT` (default `dist`), `NATIVE_PQ_POLICY_FILE` and the rules inputs
+`NATIVE_PROGRESSIVE_FROM`, `NATIVE_PROGRESSIVE_V2_FROM` and `NATIVE_FEE_SCHEDULE` (below). The API, RPC and explorer are
 developer-configured trust sources recorded in `BUILD.json`; a website cannot change them.
 `python3 apps/extension/package.py` writes deterministic ZIPs to `dist/packages/`. Packaging and store
 gates: [DISTRIBUTION.md](../../docs/extension/DISTRIBUTION.md).
@@ -145,8 +154,12 @@ verification.
 
 **Purchases, lot mints and mint sessions are disabled on mainnet and in switchable builds.** These
 builds reject a witness policy because mainnet witnesses have not been validated. Development builds
-without a policy also refuse them. QTC sends, creation, legacy mint, inscription and ordinary
-transfers do not require this policy.
+without a policy also refuse them. QTC sends, legacy mint and ordinary transfers do not require
+this policy. Token creation and inscriptions require it once a fee schedule is active, because their
+fee comes from the attested rate: the wallet then verifies a tip attestation of both witnesses, prices
+the operation with the attested `current` rate, and signs with an era born exactly at that block. A
+rejection whose fee was paid (for example a symbol claimed first by another deploy) shows "Qlyphs
+fee kept".
 
 ### Mint sessions (development and test builds)
 
@@ -222,10 +235,14 @@ NATIVE_PQ_POLICY_FILE=/absolute/path/to/public-policy.json pnpm --filter @qotc/w
 ```
 
 The build rejects policies for another rules fingerprint, runtime or activation. The rules
-fingerprint includes the witnesses' progressive mint activations: build with the same
-`NATIVE_PROGRESSIVE_FROM` and `NATIVE_PROGRESSIVE_V2_FROM` heights the witnesses use (unset when they
-have none). The wallet fetches
-attestations from its fixed API origin, never an endpoint supplied by a dapp. Witness private keys do
+fingerprint includes the witnesses' rules inputs, so build with the same values the witnesses use:
+
+| Variable | Meaning |
+| --- | --- |
+| `NATIVE_PROGRESSIVE_FROM`, `NATIVE_PROGRESSIVE_V2_FROM` | activation heights of progressive-1000-v1 (tag 11) and -v2 (tag 12); unset when the witnesses have none |
+| `NATIVE_FEE_SCHEDULE` | the witnesses' fee schedule, as strict JSON of a `FeeRules` object ([fee schedule, section 4](../../docs/extension/PROTOCOL-FEES.md#4-activation-model)), or unset for none. Refused for mainnet builds, whose schedule is compiled into the reviewed release. Part of `rulesHash`, so the build compares it with the witness policy |
+
+The wallet fetches attestations from its fixed API origin, never an endpoint supplied by a dapp. Witness private keys do
 not belong in the build or the wallet. No insecure purchase fallback is supplied.
 
 API balances/history remain provisional, unsigned views. QPA1 authenticates operator claims

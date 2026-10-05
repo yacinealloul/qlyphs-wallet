@@ -42,9 +42,21 @@ trusts the configured services for public views; it does not run a full node or 
 ## Purchase and identity limits
 
 Mainnet and switchable builds reject `NATIVE_PQ_POLICY_FILE` and refuse token purchases. Witness
-verification has not been validated for mainnet. QTC sends, token creation, minting, inscriptions and
-ordinary token transfers do not use the purchase policy; their normal network and review checks
-still apply.
+verification has not been validated for mainnet.
+
+QLYP fees are not active on mainnet before activation. The wallet refuses to sign every
+rate-derived operation (token creation, progressive token creation and inscriptions) on mainnet
+until the reviewed activation of the [fee schedule](extension/PROTOCOL-FEES.md) ("Qlyphs fees are
+not active on mainnet yet."). Until its activation height, the protocol still reads such an
+operation signed by another client at the fixed legacy fees (1 QTC per creation, 0.1 QTC per
+inscription), as before the fee schedule. For the schedule's grace window after that height it still
+reads one signed before it with a mortal era within the bounds of the fee schedule, section 6.3.
+After the grace window the legacy amount is no longer accepted as a transition amount: it remains
+accepted only if it equals an amount allowed by the current or previous grid; otherwise the
+operation is rejected and its fee kept. From that height on, a new one needs a verified tip attestation from both witnesses, because its fee comes from the
+attested on-chain rate. Minting keeps its fixed 0.01 QTC fee and needs no rate, and is possible
+only once a token exists. QTC sends and ordinary token transfers are
+unchanged; their normal network and review checks still apply.
 
 Accounts use ML-DSA-87 with the pinned SDK and derivation `m/44'/189189'/account'/0'/0'`. Importing the
 same phrase into a wallet that uses another scheme or derivation path may produce another address.

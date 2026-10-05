@@ -66,6 +66,7 @@ import type {
 } from './mint-session-view.ts';
 import type { Asset, Review, Manifest, Status } from './network.ts';
 import { renderQlyph, qlyphSize } from './qlyph-render.ts';
+import { FEE_KEPT, feeKept, feeValue, LOW_SUPPLY_WARNING, pendingFeeNotice, raceWarning } from './fee-copy.ts';
 /** Display name of an asset: its symbol, or 'Quark #n' for a Quark (1-of-1 inscription, no symbol). */
 const assetName = (a: Asset) =>
   a.definition.policy === 'inscription'
@@ -195,6 +196,8 @@ interface Tx {
   status: string;
   nativeSuccess?: boolean | null;
   verdict?: string | null;
+  /** The rejected operation's Qlyphs fee was paid and is not refunded. */
+  feeKept?: boolean;
   createdAt?: number;
   height?: number;
   amount?: string;
@@ -476,7 +479,7 @@ function pairs(id: string, items: readonly Row[]) {
           ? 'Transaction details'
           : /^(Network|Signing account|Genesis)$/.test(item[0])
             ? 'Account & network'
-            : /^(Network fee|Native |Qlyphs fee$|Estimated total)/.test(item[0])
+            : /^(Network fee|Native |Qlyphs fee$|Qlyphs fee change$|Estimated total)/.test(item[0])
               ? 'Estimated fees'
               : 'Transaction details';
     if (!groups.has(title)) groups.set(title, []);
@@ -1022,11 +1025,13 @@ async function render() {
           ['Expiry block', String(offer.expiry)],
         );
       const f = r.intent.costs;
-      // QLYP-v1 Qlyphs fee: 1 QTC per token created, 0.01 QTC per mint, 0.1 QTC per Quark
-      // created, 1% of a purchase price.
+      // QLYP-v1 Qlyphs fee: creating a token or a Quark from the attested on-chain rate, 0.01 QTC
+      // per mint, 1% of a purchase price.
       const qlyphsFee = formatUnits(BigInt(f.platformFee), 12) + ' QTC';
+      const pendingFee = r.fees ? pendingFeeNotice(r.fees) : null;
       rows.push(
-        ['Qlyphs fee', c.kind === 'buy' ? '1% · ' + qlyphsFee : qlyphsFee],
+        ['Qlyphs fee', r.fees ? feeValue(r.fees) : c.kind === 'buy' ? '1% · ' + qlyphsFee : qlyphsFee],
+        ...(pendingFee ? ([['Qlyphs fee change', pendingFee]] as [string, string][]) : []),
         ['Network fee estimate', formatUnits(BigInt(f.networkFee), 12) + ' QTC'],
         ['Native non-refundable charge', formatUnits(BigInt(f.nativeFee), 12) + ' QTC'],
         ['Native refundable deposit', formatUnits(BigInt(f.deposit), 12) + ' QTC'],
@@ -1061,6 +1066,17 @@ async function render() {
           : c.kind === 'mintProgressive'
           ? 'This lot and its price come from fresh ML-DSA attestations by both configured witnesses. If someone mints this lot first, your transaction fails on chain: you pay the network fee only, never the Qlyphs fee. Fees are estimates.'
           : 'Fees are estimates, not a guaranteed cap. Approval signs only this operation.';
+      // A deploy can lose its fee to another claim of the symbol; a mint, to the cap.
+      const notices = [
+        r.fees && typeof c.symbol === 'string'
+          ? raceWarning(c.symbol, r.fees.fee, r.notice?.pooled === true)
+          : '',
+        c.kind === 'mint' && r.notice?.lowSupply ? LOW_SUPPLY_WARNING : '',
+      ].filter(Boolean);
+      if (notices.length) {
+        $('review-warning').textContent = notices.join(' ') + ' ' + $('review-warning').textContent;
+        if (r.notice) requestAnimationFrame(() => flash($('review-warning'), 'down'));
+      }
       $('review-full').textContent = JSON.stringify(JSON.parse(json(r)), null, 2);
     } else {
       $('review-warning').textContent =
@@ -1193,6 +1209,11 @@ function renderHistory(txs: Tx[]) {
           identity.append(id, copy);
           detail.append(identity);
           if (tx.verdict) detail.append(node('p', tx.verdict, 'activity-verdict'));
+          if (feeKept(tx)) {
+            const kept = node('p', FEE_KEPT, 'activity-verdict activity-fee-kept');
+            detail.append(kept);
+            if (seen !== undefined && seen !== status) requestAnimationFrame(() => pop(kept));
+          }
           if (/^0x[0-9a-f]{64}$/i.test(tx.hash)) {
             const explore = node('button', 'View in explorer ', 'secondary activity-explorer');
             explore.setAttribute('type', 'button');

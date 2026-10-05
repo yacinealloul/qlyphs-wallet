@@ -2,7 +2,7 @@
 
 ## Reused protocol, not a new chain
 
-The extension imports the active QLYP-v1 command parser, canonical encoders, Quantus address/extrinsic codec and pinned WASM glue from this repository. It changes neither token consensus rules nor the QLYP-v1 fee rules (deploy 1 QTC, mint 0.01 QTC, lot n of a progressive token 0.1 to 0.5 QTC (progressive-1000-v1) or 0.01 to 0.44 QTC (progressive-1000-v2) by tier, inscription 0.1 QTC, 1% sale fee paid by the buyer, all to the fixed Qlyphs fee account). `sendQtc` is a native transfer, not a token purchase. Purchases require finalized bilateral reservations and canonical batch settlement.
+The extension imports the active QLYP-v1 command parser, canonical encoders, Quantus address/extrinsic codec and pinned WASM glue from this repository. It changes neither token consensus rules nor the QLYP-v1 fee rules: creating a token and inscribing a Quark cost a 25 USD target converted at the on-chain rate of the [fee schedule](PROTOCOL-FEES.md) (the fixed legacy fees of 1 QTC and 0.1 QTC without a schedule and before it; on mainnet this wallet signs neither until the reviewed fee schedule release), mint 0.01 QTC, lot n of a progressive token 0.1 to 0.5 QTC (progressive-1000-v1) or 0.01 to 0.44 QTC (progressive-1000-v2) by tier, 1% sale fee paid by the buyer, all to the fixed Qlyphs fee account. `sendQtc` is a native transfer, not a token purchase. Purchases require finalized bilateral reservations and canonical batch settlement.
 
 ## Privilege boundaries
 
@@ -39,7 +39,9 @@ Displayed balances, metadata, history and fee estimates rely on the configured A
 unsigned/provisional. It does not run an independent full node, indexer or light client inside the browser.
 
 Development **purchases** and **progressive lot mints** additionally require QPA1 agreement from
-every compiled witness operator. A lot mint uses a tip attestation: both witnesses sign the state at
+every compiled witness operator, and so do **token creation and inscriptions** once a fee schedule
+is active: their fee comes from the rate in a tip attestation of both witnesses (see the Qlyphs fee
+paragraph below). A lot mint uses a tip attestation: both witnesses sign the state at
 the best block X of the wallet's node (with one more try on a fresh best block, never an older
 one), under a statement domain of its own, so it can never
 stand in for a finalized checkpoint. The review's token, lot number, amount, Qlyphs fee and mint
@@ -56,7 +58,7 @@ and IndexedDB high-water cursor. It verifies signatures, network/activation/rule
 lifetime, same finalized snapshot, rollback/equivocation rules and exact purchase bytes before
 using the signing key. After waiting it repeats cancellation, account, permission, session epoch
 and deadline checks. Trust pins are not accepted from page messages, storage or API responses.
-A development package without a compiled policy refuses purchases and lot mints. Mainnet and switchable builds reject a policy and disable both pending mainnet witness validation. Missing/divergent/invalid attestations never
+A development package without a compiled policy refuses purchases, lot mints, and creation and inscriptions priced by a fee schedule. Mainnet and switchable builds reject a policy and disable both pending mainnet witness validation. Missing/divergent/invalid attestations never
 fall back to the unsigned view or an ordinary QTC payment.
 
 Witnesses are attestations by configured operators, not a proof of honest computation. Witness operators remain dependent on their full nodes, metadata and rules; collusion or
@@ -66,7 +68,14 @@ Trust-key rotation and revocation require a reviewed rebuilt wallet and trusted 
 Old clients do not learn new revocations automatically. Post-quantum transaction and witness signatures
 do not make browser-store or update authentication post-quantum.
 
-Fee quotes are estimates tied to the runtime and review block, not a signed fee cap. The confirmation separates native network fee, non-refundable native charge, refundable native deposit and the Qlyphs fee. The Qlyphs fee is the QLYP-v1 protocol fee (1 QTC per deploy, 0.01 QTC per mint, 0.1 to 0.5 QTC (v1) or 0.01 to 0.44 QTC (v2) per progressive lot by its number, 0.1 QTC per inscription, 1% of the price on a purchase, rounded up), a protocol constant rather than a configurable value: it is paid only to the fixed Qlyphs fee account defined in the shared protocol code, a call carrying any other fee amount or recipient is invalid under the protocol, and the wallet recomputes the fee itself and refuses to sign when the service quotes a different amount. In a mint session, Qlyphs fees and native ticket charges are capped exactly (attested fees and a native charge pinned for the runtime); network fees are estimates, reserved at twice the service's estimate for a payment not yet in a block, and are not part of the cap.
+Fee quotes are estimates tied to the runtime and review block, not a signed fee cap. The confirmation separates native network fee, non-refundable native charge, refundable native deposit and the Qlyphs fee. The Qlyphs fee is paid only to the fixed Qlyphs fee account defined in the shared protocol code; a call carrying any other fee amount or recipient is invalid under the protocol, and the wallet recomputes the fee itself and refuses to sign when the service quotes a different amount. Where the fee comes from depends on the operation:
+
+- **Mint, progressive lots and purchases.** The fee is a protocol constant rather than a configurable value: 0.01 QTC per mint, 0.1 to 0.5 QTC (v1) or 0.01 to 0.44 QTC (v2) per progressive lot by its number, 1% of the price on a purchase, rounded up.
+- **Create and inscribe (contract change in fees-1).** The fee is no longer a protocol constant. It comes from an attested, bounded, delayed on-chain rate, capped by a compiled wallet ceiling (`WALLET_MAX_RATE`, 25 USD per QTC: at most 1 QTC per DEPLOY or INSCRIBE). The rate is QLYP state, posted by a Qlyphs operator key within fixed bounds (5 to 5,000 USD per QTC), by at most ×5/4 per change and at least `delay` blocks before it applies; a sentinel or guardian key can cancel a pending rate or freeze the operator. The wallet reads the rate only from a tip attestation that both witnesses sign, prices the operation at that block, signs with an era born at that block (period 256, tip 0), and thereby never loses a fee to a rate change ([fee schedule, section 6](PROTOCOL-FEES.md#6-overlap-bound-and-no-fee-loss-guarantee)). The ceiling bounds what colluding witnesses or a compromised operator key can make this wallet pay.
+
+The wallet refuses to sign a create or inscribe when: no verified tip attestation is available ("Fees cannot be verified right now."); the symbol is one of the six blocked tickers `BTC ETH QLYPHS QTC USDC USDT` ("This ticker is reserved and cannot be deployed."); the symbol is taken at the attested block; the signer is the Qlyphs fee account or a current or pending fee role; the service's quoted fee differs from the local fee; the signing context is not born at the attested block, in number and hash; the fee is above the ceiling ("Fee above this wallet's limit; update the wallet."); the witnesses' rules fingerprint differs from the build's; the era is immortal or its period is not 256; the attested state has no fee schedule where the network has no legacy fees; or the network is mainnet before its reviewed fee schedule activation ("Qlyphs fees are not active on mainnet yet."). Every deploy shows that a competing deploy of the same symbol included first keeps the fee. A rejection whose fee was paid is shown as "Qlyphs fee kept".
+
+In a mint session, Qlyphs fees and native ticket charges are capped exactly (attested fees and a native charge pinned for the runtime); network fees are estimates, reserved at twice the service's estimate for a payment not yet in a block, and are not part of the cap.
 
 ## Validation and remaining limits
 

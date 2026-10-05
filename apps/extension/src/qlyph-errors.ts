@@ -3,6 +3,8 @@ export const QLYPH_READ_ERROR = 'This Quark could not be read. Try again.';
 export const QLYPH_AMOUNT_ERROR = 'A Quark moves as a whole: the amount must be exactly 1.';
 export const QLYPH_MINT_ERROR = 'A Quark is unique (1 of 1) and cannot be minted.';
 export const SYMBOL_READ_ERROR = 'Symbol availability could not be checked. Try again.';
+/** A blocked ticker: the protocol rejects its deploy after the fee is paid, so it is never signed. */
+export const TICKER_RESERVED_ERROR = 'This ticker is reserved and cannot be deployed.';
 /** Fixed shape, so the UI may show it (errors.ts accepts exactly this pattern). */
 export const symbolTakenError = (symbol: string, asset: string) =>
   `The symbol ${symbol} is already taken by token ${asset}. Choose another symbol: a second claim is rejected and its fee is not refunded.`;

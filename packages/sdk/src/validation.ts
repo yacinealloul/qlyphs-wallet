@@ -1,7 +1,15 @@
 /** Strict parsers for wallet and service responses, and canonical forms of request inputs. */
 import { fromHex, isContentType, MAX_PAYLOAD, MAX_U128, MAX_U64 } from '../../native/src/codec.ts';
 import { sha256 } from './sha256.ts';
-import { MAINNET, PROTOCOL_LABEL } from '../../native/src/protocol.ts';
+import { MAINNET, MINT_FEE, PROTOCOL_LABEL } from '../../native/src/protocol.ts';
+import {
+  FEE_TARGETS_CENTS,
+  GENESIS_GRID_INDEX,
+  LEGACY_DEPLOY_FEE,
+  LEGACY_INSCRIBE_FEE,
+  checkRate,
+  feeAt,
+} from '../../native/src/fee-schedule.ts';
 import { json, parseCommand } from '../../native/src/commands.ts';
 import {
   QlyphsError,
@@ -21,6 +29,8 @@ import type {
   IndexerStatus,
   NativeBalance,
   PublicAsset,
+  PublicFeeGrid,
+  PublicFeeSchedule,
   PublicInscription,
   PublicInscriptions,
   PublicInscriptionSummary,
@@ -156,6 +166,7 @@ export function status(value: unknown, expectedGenesis?: string): IndexerStatus 
     ...(s.progressiveV2 === undefined
       ? {}
       : { progressiveV2: progressiveActivation(s.progressiveV2) }),
+    ...(s.feeSchedule === undefined ? {} : { feeSchedule: progressiveActivation(s.feeSchedule) }),
     ...(s.pqWitnessesConfigured === undefined
       ? {}
       : { pqWitnessesConfigured: flag(s.pqWitnessesConfigured) }),
@@ -408,6 +419,91 @@ export function receipt(value: unknown, expectedHash: string): TransactionReceip
     nativeSuccess,
     verdict,
     ...(v.height === undefined ? {} : { height: integer(v.height) }),
+    ...(v.feeKept === undefined ? {} : { feeKept: flag(v.feeKept) }),
+  };
+}
+function feeGrid(value: unknown): PublicFeeGrid | null {
+  if (value === null) return null;
+  const v = object(value);
+  exactKeys(v, ['id', 'rate', 'effective', 'height', 'index']);
+  const rate = amount(v.rate);
+  if (!checkRate(BigInt(rate))) invalid();
+  return {
+    id: integer(v.id),
+    rate,
+    effective: integer(v.effective),
+    height: integer(v.height),
+    index: integer(v.index, GENESIS_GRID_INDEX),
+  };
+}
+function feeAmounts<K extends string>(value: unknown, keys: K[]): Record<K, string> | null {
+  if (value === null) return null;
+  const v = object(value);
+  exactKeys(v, keys);
+  return Object.fromEntries(keys.map((k) => [k, amount(v[k])])) as Record<K, string>;
+}
+/** GET /api/fee-schedule. Display only: besides the shape, the fees must be the ones the protocol
+ * derives from the grids shown, so an inconsistent response is refused rather than displayed. */
+export function feeSchedule(value: unknown): PublicFeeSchedule {
+  const v = object(value);
+  exactKeys(v, [
+    'height',
+    'hash',
+    'mode',
+    'from',
+    'current',
+    'previous',
+    'pending',
+    'frozen',
+    'fees',
+    'pendingFees',
+  ]);
+  if (v.mode !== 'schedule' && v.mode !== 'legacy' && v.mode !== 'inactive') invalid();
+  const mode = v.mode;
+  const current = feeGrid(v.current),
+    previous = feeGrid(v.previous),
+    pending = feeGrid(v.pending);
+  const fees = feeAmounts(v.fees, ['deploy', 'inscribe', 'mint']);
+  const pendingFees = feeAmounts(v.pendingFees, ['deploy', 'inscribe']);
+  const frozen = flag(v.frozen);
+  const at = (grid: PublicFeeGrid) => {
+    const rate = BigInt(grid.rate);
+    return {
+      deploy: String(feeAt(FEE_TARGETS_CENTS.deploy, rate)),
+      inscribe: String(feeAt(FEE_TARGETS_CENTS.inscribe, rate)),
+    };
+  };
+  const same = (a: Record<string, string> | null, b: Record<string, string> | null) =>
+    a === null || b === null ? a === b : Object.keys(b).every((k) => a[k] === b[k]);
+  const expected =
+    mode === 'schedule' && current
+      ? { ...at(current), mint: String(MINT_FEE) }
+      : mode === 'legacy'
+        ? {
+            deploy: String(LEGACY_DEPLOY_FEE),
+            inscribe: String(LEGACY_INSCRIBE_FEE),
+            mint: String(MINT_FEE),
+          }
+        : null;
+  if (
+    (mode === 'schedule') !== (current !== null) ||
+    (current === null && (previous !== null || pending !== null || frozen)) ||
+    !same(fees, expected) ||
+    !same(pendingFees, pending ? at(pending) : null)
+  )
+    invalid();
+  const from = v.from === null ? null : integer(v.from);
+  return {
+    height: integer(v.height),
+    hash: id(v.hash),
+    mode,
+    from,
+    current,
+    previous,
+    pending,
+    frozen,
+    fees,
+    pendingFees,
   };
 }
 export function submission(value: unknown): SubmittedTransaction {

@@ -1,7 +1,8 @@
 /** Experimental QLYP-v1 wire protocol. Fixed-width integers use SCALE little endian;
  * vectors use canonical SCALE compact lengths. No JavaScript numbers for money.
  * Every payload starts with ASCII "QLYP" followed by the protocol version byte. The codec is
- * generic about fee values: the fee rules live in protocol.ts. */
+ * generic about fee values: the fee rules live in protocol.ts and fee-schedule.ts, and the fee
+ * schedule operations (tags 13 and 14) are described in docs/extension/PROTOCOL-FEES.md. */
 export const PROTOCOL_VERSION = 1;
 /** "QLYP" + version byte. Payloads with any other header (including v0) are not QLYP operations. */
 export const PROTOCOL_HEADER = '0x514c5950' + PROTOCOL_VERSION.toString(16).padStart(2, '0');
@@ -11,9 +12,23 @@ export const MAX_PAYLOAD = 1024;
 /** Every runtime batch the protocol reads has at most 3 calls. */
 export const MAX_BATCH_CALLS = 3;
 /** Tags 4..8 are RESERVED for the planned launchpad/AMM (docs/native/LAUNCHPAD-AMM.md: planned,
- * not part of the protocol). A payload carrying one of them is rejected, never interpreted. */
-export const RESERVED_TAGS: readonly number[] = [4, 5, 6, 7, 8];
+ * not part of the protocol). Tag 15 is reserved for a later name commit, so that a symbol can be
+ * claimed without exposing it in the transaction pool first. A payload carrying a reserved tag is
+ * rejected, never interpreted. */
+export const RESERVED_TAGS: readonly number[] = [4, 5, 6, 7, 8, 15];
 export const ZERO = '0x' + '00'.repeat(32);
+/** Genesis hash of Quantus mainnet. Kept here so that the fee rules can tell mainnet apart without
+ * depending on the reducer. */
+export const MAINNET = '0xfb5487c0be6ae4ade2d41d16e50465129861636c2b8d61fa94d7a19631626fba';
+/** Qlyphs fee account (SS58 qzkCoLhkccQnzEG79s61bFpf5bLKfKKnq7S5YqazgzdCwgARA). */
+export const QLYPHS_FEE_ACCOUNT =
+  '0x2139a57532fbf4764ad95754c17545fed7af915fb008b6494b02e503084da8b3';
+/** FEE_RATE (tag 13) and FEE_ADMIN (tag 14): read only from the fee schedule's first block, else
+ * each stays an unknown operation. */
+export const FEE_RATE_TAG = 13;
+export const FEE_ADMIN_TAG = 14;
+/** FEE_ADMIN actions, in their wire order (action byte 0..4). */
+export const FEE_ADMIN_ACTIONS = ['cancel', 'freeze', 'setOperator', 'setGuardian', 'setSentinel'] as const;
 /** PROGRESSIVE DEPLOY (tag 11, progressive-1000-v1) and PROGRESSIVE DEPLOY V2 (tag 12,
  * progressive-1000-v2), docs/native/PROGRESSIVE-MINT.md: each read only where the caller has
  * activated its profile, else it stays an unknown operation. Tag 10 is allocated to open listings,
@@ -47,7 +62,20 @@ export type Operation =
    * or policy to choose. The reducer checks that `cap` splits into 1,000 whole lots. */
   | { kind: 'deployProgressive'; symbol: string; decimals: number; cap: bigint }
   /* The same fields on the progressive-1000-v2 profile, tag 12: only the fees differ. */
-  | { kind: 'deployProgressiveV2'; symbol: string; decimals: number; cap: bigint };
+  | { kind: 'deployProgressiveV2'; symbol: string; decimals: number; cap: bigint }
+  /* Fee schedule governance, tag 13: the operator posts a rate (QTC base units per USD) that
+   * applies from block `effective`. */
+  | { kind: 'feeRate'; effective: number; rate: bigint }
+  | FeeAdminOp;
+/** Fee schedule governance, tag 14. Only the codec syntax lives here; who may sign what is decided
+ * by the reducer. */
+export type FeeAdminOp =
+  | { kind: 'feeAdmin'; action: 'cancel' | 'freeze' }
+  | { kind: 'feeAdmin'; action: 'setOperator' | 'setGuardian'; account: Id; effective: number }
+  | { kind: 'feeAdmin'; action: 'setSentinel'; account: Id };
+/** The operations a wallet user signs: everything except fee schedule governance. */
+export type UserOperation = Exclude<Operation, { kind: 'feeRate' | 'feeAdmin' }>;
+export type FeeGovernanceOperation = Extract<Operation, { kind: 'feeRate' | 'feeAdmin' }>;
 
 export interface Envelope { genesis: Id; sequence: bigint; op: Operation }
 export function requireThat(ok: unknown, message: string): asserts ok {
@@ -102,6 +130,10 @@ export class Reader {
   end(): void { requireThat(this.at === this.data.length, 'trailing bytes'); }
 }
 export const assetId = (creator: Id, sequence: bigint): Id => hex(concat(fromHex(creator, 32), uint(sequence, 8)));
+const u32 = (n: number): Uint8Array => {
+  requireThat(Number.isInteger(n) && n >= 0 && n <= 0xffffffff, 'invalid effective height');
+  return uint(BigInt(n), 4);
+};
 export function encode(e: Envelope): Uint8Array {
   const p = e.op; const parts = [fromHex(PROTOCOL_HEADER), fromHex(e.genesis, 32), uint(e.sequence, 8)];
   const positive = (n: bigint) => { requireThat(n > 0n, 'amount must be positive'); return uint(n, 16); };
@@ -120,6 +152,14 @@ export function encode(e: Envelope): Uint8Array {
     const content = fromHex(p.content);
     requireThat(content.length >= 1, 'empty inscription content');
     parts.push(Uint8Array.of(9), vec(new TextEncoder().encode(p.contentType)), vec(content));
+  } else if (p.kind === 'feeRate') {
+    parts.push(Uint8Array.of(FEE_RATE_TAG), u32(p.effective), uint(p.rate, 8));
+  } else if (p.kind === 'feeAdmin') {
+    const action = FEE_ADMIN_ACTIONS.indexOf(p.action);
+    requireThat(action >= 0, 'unknown fee admin action');
+    parts.push(Uint8Array.of(FEE_ADMIN_TAG, action));
+    if (p.action === 'setOperator' || p.action === 'setGuardian') parts.push(fromHex(p.account, 32), u32(p.effective));
+    else if (p.action === 'setSentinel') parts.push(fromHex(p.account, 32));
   } else {
     requireThat(['mint', 'transfer', 'offer'].includes(p.kind), 'unknown operation');
     parts.push(Uint8Array.of(p.kind === 'mint' ? 1 : p.kind === 'transfer' ? 2 : 3), fromHex(p.asset, 40), positive(p.amount));
@@ -133,11 +173,11 @@ export function encode(e: Envelope): Uint8Array {
   }
   const out = concat(...parts); requireThat(out.length <= MAX_PAYLOAD, 'payload too large'); return out;
 }
-/** `progressive` reads tag 11 and `progressiveV2` tag 12; callers set each only at heights where
- * that profile is active. */
+/** `progressive` reads tag 11, `progressiveV2` tag 12 and `feeSchedule` tags 13 and 14; callers set
+ * each only at heights where it is active. */
 export function decode(
   data: Uint8Array,
-  options: { progressive?: boolean; progressiveV2?: boolean } = {},
+  options: { progressive?: boolean; progressiveV2?: boolean; feeSchedule?: boolean } = {},
 ): Envelope {
   requireThat(data.length <= MAX_PAYLOAD, 'payload too large');
   const r = new Reader(data); requireThat(r.id(5) === PROTOCOL_HEADER, 'unknown protocol/version');
@@ -159,6 +199,14 @@ export function decode(
   } else if (tag === PROGRESSIVE_DEPLOY_V2_TAG && options.progressiveV2 === true) {
     const sym = symbol();
     op = { kind: 'deployProgressiveV2', symbol: sym, decimals: r.small(1), cap: r.int(16) };
+  } else if (tag === FEE_RATE_TAG && options.feeSchedule === true) {
+    op = { kind: 'feeRate', effective: r.small(4), rate: r.int(8) };
+  } else if (tag === FEE_ADMIN_TAG && options.feeSchedule === true) {
+    const action = FEE_ADMIN_ACTIONS[r.small(1)];
+    requireThat(action !== undefined, 'unknown fee admin action');
+    if (action === 'setOperator' || action === 'setGuardian') op = { kind: 'feeAdmin', action, account: r.id(), effective: r.small(4) };
+    else if (action === 'setSentinel') op = { kind: 'feeAdmin', action, account: r.id() };
+    else op = { kind: 'feeAdmin', action };
   } else {
     requireThat(!RESERVED_TAGS.includes(tag), 'reserved operation');
     requireThat(tag <= 3, 'unknown operation'); const asset = r.id(40), amount = r.int(16);

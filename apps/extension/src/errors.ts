@@ -13,7 +13,14 @@ import {
   QLYPH_SIZE_ERROR,
   SYMBOL_READ_ERROR,
   SYMBOL_TAKEN_PATTERN,
+  TICKER_RESERVED_ERROR,
 } from './qlyph-errors.ts';
+import {
+  FEE_CEILING_ERROR,
+  FEE_ROLE_ERROR,
+  FEES_UNVERIFIED_ERROR,
+  MAINNET_FEES_OFF,
+} from './fee-copy.ts';
 /** Only fixed, locally authored messages cross into the UI. SDK exceptions and
  * arbitrary server strings may contain input data and are deliberately hidden. */
 import {
@@ -39,6 +46,10 @@ const REWORDED: Readonly<Record<string, string>> = {
   'mint differs from the attested right': 'This lot was just taken. Review the next lot.',
   'mint right is not finalized': 'The next lot is not final yet; try again shortly',
   'this token has another progressive profile': 'This token uses another price schedule. Review it again.',
+  // The protocol package's own refusals of rate-derived fees; the wallet never names the protocol.
+  [MAINNET_FEES_OFF]: 'Qlyphs fees are not active on mainnet yet.',
+  'fee schedule not active': 'Qlyphs fees are not active on this network yet.',
+  'symbol blocked': TICKER_RESERVED_ERROR,
 };
 const FALLBACK_MAINNET = 'Wallet operation failed. Check permissions, password and your connection.';
 const FALLBACK_DEV =
@@ -56,6 +67,10 @@ const safe = new Set([
   QLYPH_READ_ERROR,
   QLYPH_SIZE_ERROR,
   SYMBOL_READ_ERROR,
+  TICKER_RESERVED_ERROR,
+  FEES_UNVERIFIED_ERROR,
+  FEE_CEILING_ERROR,
+  FEE_ROLE_ERROR,
   'Another operation is pending; finish it before trying again',
   'Save and acknowledge your recovery backup first',
   'Wait for the previous operation to finalize. Unknown submissions are never recreated',

@@ -105,6 +105,14 @@ a running mint session.
 - Every signature is shown and approved in the wallet's own confirmation UI. A dapp only makes requests.
 - The endpoints are fixed at build time and recorded in `BUILD.json`: the RPC (`rpc`), the indexer
   (`api`), the explorer and the dapp allowlist. A website cannot change them.
+- Qlyphs fees are computed by the wallet, never taken from the service: a fixed 0.01 QTC per mint,
+  the lot fee of a progressive lot, 1% of a purchase price, and for creating a token or inscribing a
+  Quark a 25 USD target converted at the on-chain rate of the
+  [fee schedule](../../docs/extension/PROTOCOL-FEES.md). That rate is read from a tip attestation of
+  both witnesses, the transaction is signed at that attested block so a rate change cannot cost the
+  fee, and a fee above the compiled ceiling (1 QTC per creation or inscription) or a blocked ticker
+  (`BTC ETH QLYPHS QTC USDC USDT`) is refused. On mainnet, creation and inscriptions stay refused
+  until the reviewed fee schedule activation.
 
 **What the server sends, and how the browser is locked down** (`serve.mjs`)
 
@@ -351,6 +359,7 @@ QLYPHS_KEYS_DAPP_ORIGINS='["https://app.testnet.example"]' node build.mjs
 | `QLYPHS_KEYS_API`, `QLYPHS_KEYS_RPC`, `QLYPHS_KEYS_EXPLORER` | endpoint overrides; required for testnet |
 | `NATIVE_PQ_POLICY_FILE` | reviewed public witness policy for development purchases and progressive lot mints only; rejected with mainnet or switchable |
 | `NATIVE_PROGRESSIVE_FROM`, `NATIVE_PROGRESSIVE_V2_FROM` | the witnesses' activation heights of progressive-1000-v1 (tag 11) and -v2 (tag 12), checked with `NATIVE_PQ_POLICY_FILE`; unset when they have none |
+| `NATIVE_FEE_SCHEDULE` | the witnesses' fee schedule, strict JSON of a `FeeRules` object ([fee schedule, section 4](../../docs/extension/PROTOCOL-FEES.md#4-activation-model)), or unset for none; refused for mainnet builds; part of `rulesHash`, so it is compared with `NATIVE_PQ_POLICY_FILE` |
 | `QLYPHS_KEYS_DAPP_ORIGINS` | JSON array of 1 to 16 exact dapp origins; required for testnet |
 | `QLYPHS_KEYS_SKIP_CORS_CHECK=1` | offline build; the CORS check must then be done by hand |
 | `KEYS_PORT`, `KEYS_LISTEN`, `KEYS_HOST` | `serve.mjs` port, bind address and expected `Host` |

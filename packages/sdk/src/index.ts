@@ -46,5 +46,7 @@ export type {
   PublicInscriptionSummary,
   PublicInscription,
   PublicInscriptions,
+  PublicFeeGrid,
+  PublicFeeSchedule,
 } from '../../native/src/public.ts';
 export type { ExplorerData, ExplorerView } from '../../shared/src/explorer.ts';

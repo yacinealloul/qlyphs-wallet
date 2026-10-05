@@ -126,7 +126,7 @@ full 32-byte hexadecimal IDs; assets are full 40-byte IDs, never tickers. Comman
 `deployProgressive`, `deployProgressiveV2` and `mintProgressive` from
 [`packages/native/src/commands.ts`](../../packages/native/src/commands.ts). No second dapp encoder is required.
 `mintProgressive` is `{ kind, asset, lot, profile? }` with `lot` a JSON integer from 1 to 1000:
-the lot the dapp showed its user, and `profile` the fee schedule it priced it with,
+the lot the dapp showed its user, and `profile` the lot fee profile it priced it with,
 `progressive-1000-v1` (the default) or `progressive-1000-v2`. The wallet signs it only when fresh
 attested state names that same lot as the next one of a token on that profile, so a price the dapp
 displayed can never turn into another.
@@ -138,8 +138,13 @@ runtime/nonce/sequence/ticket checks; a transaction request and an extension min
 require the live requesting document, while a Keys mint session requires the live popup channel.
 Development purchases, progressive lot mints and mint sessions require compiled PQ trust pins and
 fail-closed attestation checks; mainnet and switchable builds reject witness policies and refuse all
-three. No signRaw, arbitrary bytes, caller RPC, permanent signing grant, fee other than the fixed
-QLYP-v1 Qlyphs fee, or mainnet activation is exposed. A payment is never retried automatically, with
+three. Where a [fee schedule](PROTOCOL-FEES.md) is active, `deploy`, `deployProgressive`,
+`deployProgressiveV2` and `inscribe` also require a verified tip attestation: their Qlyphs fee is a
+25 USD target converted at the attested on-chain rate, capped by the wallet's compiled ceiling (1 QTC),
+and a blocked symbol (`BTC ETH QLYPHS QTC USDC USDT`) is refused. On mainnet these four are refused
+until the reviewed fee schedule activation; `mint` keeps its fixed 0.01 QTC fee. No signRaw,
+arbitrary bytes, caller RPC, permanent signing grant, Qlyphs fee other than the one the wallet
+computes itself, or mainnet activation is exposed. A payment is never retried automatically, with
 one bounded exception inside an approved mint session whose terms allow retries
 (`maxAttempts > maxLots`): when a lot payment failed on chain because that lot's right was used
 first (a lost race), the wallet may sign one new payment for the lot that attested state then

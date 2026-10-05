@@ -22,6 +22,8 @@ export interface IndexerStatus {
   progressive?: { from: number } | null;
   /** The same for progressive-1000-v2 (tag 12). */
   progressiveV2?: { from: number } | null;
+  /** First block of the fee schedule on this indexer, or null. Display only. */
+  feeSchedule?: { from: number } | null;
   ready: boolean;
   head: number;
   finalized: number;
@@ -62,6 +64,8 @@ export interface TransactionReceipt {
   height?: number;
   nativeSuccess: boolean | null;
   verdict: string | null;
+  /** True when the operation was rejected but its Qlyphs fee was paid: the indexer cannot refund. */
+  feeKept?: boolean;
 }
 export interface SubmittedTransaction {
   hash: string;
@@ -99,4 +103,27 @@ export interface PublicInscriptions {
   offset: number;
   more: boolean;
   total: number;
+}
+/** A posted fee rate: `rate` is QTC base units per USD, as a decimal string. */
+export interface PublicFeeGrid {
+  id: number;
+  rate: string;
+  effective: number;
+  height: number;
+  index: number;
+}
+/** The fee schedule at a block, for display. `fees` are the fees at the current rate (or the
+ * legacy fees, or null while inactive); `pendingFees` the fees once the pending rate applies. MINT
+ * is always the fixed MINT_FEE. */
+export interface PublicFeeSchedule {
+  height: number;
+  hash: string;
+  mode: 'schedule' | 'legacy' | 'inactive';
+  from: number | null;
+  current: PublicFeeGrid | null;
+  previous: PublicFeeGrid | null;
+  pending: PublicFeeGrid | null;
+  frozen: boolean;
+  fees: { deploy: string; inscribe: string; mint: string } | null;
+  pendingFees: { deploy: string; inscribe: string } | null;
 }

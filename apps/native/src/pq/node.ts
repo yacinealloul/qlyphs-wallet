@@ -96,6 +96,8 @@ export function rulesHash(root = resolve('../..'), rules: Rules = LEGACY_RULES):
     readFileSync(resolve(root, 'packages/native/src/protocol.ts'), 'utf8'),
     readFileSync(resolve(root, 'packages/native/src/progressive-mint.ts'), 'utf8'),
     readFileSync(resolve(root, 'packages/native/src/sha512.ts'), 'utf8'),
+    readFileSync(resolve(root, 'packages/native/src/fee-schedule.ts'), 'utf8'),
+    readFileSync(resolve(root, 'packages/native/src/tickers.ts'), 'utf8'),
     canonical(checkRules(rules)),
   ]);
 }

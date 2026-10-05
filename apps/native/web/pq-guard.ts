@@ -1,4 +1,4 @@
-/** The wallet's use of witness attestations: purchases, lot mints and mint sessions. Trust pins
+/** The wallet's use of witness attestations: purchases, lot mints, mint sessions and fees. Trust pins
  * MUST be compiled into the installed wallet, not accepted from an API response or from a page
  * message. */
 import { fromHex, hex, requireThat } from '../../../packages/native/src/codec.ts';
@@ -13,6 +13,7 @@ import type { Anchor, ProgressiveProfile } from '../../../packages/native/src/pr
 import {
   verifyBundle,
   verifyTipBundle,
+  verifiedFeeSchedule,
   verifiedPurchase,
   policy,
   cursorValue,
@@ -199,6 +200,60 @@ export async function attestedAsset(
       symbol: a.definition.symbol,
       decimals: a.definition.decimals,
       creator: a.creator,
+    };
+  }
+}
+/** The fee grids at `block` as both witnesses attest them, with the attested state itself: the
+ * wallet prices a rate-derived operation there and signs it with an era born exactly at `block`.
+ * `schedule` is null while the fee schedule is not active at `block`. */
+export interface AttestedFees {
+  block: { height: number; hash: string };
+  schedule: ReturnType<typeof verifiedFeeSchedule>;
+  state: State;
+}
+/** Fee grids from both witnesses' attestation of the block `latest()` names. Same retry rule as
+ * attestedAsset: one more try a second later on `latest()` again, never on an older block. */
+export async function attestedFees(
+  owner: string,
+  genesis: string,
+  latest: () => Promise<{ height: number; hash: string }>,
+  endpoint: string,
+  signal?: AbortSignal,
+): Promise<AttestedFees> {
+  requireThat(pins, 'Trusted PQ witnesses are not configured');
+  const p = policy(pins);
+  requireThat(p.genesis === genesis, 'attestation network mismatch');
+  fromHex(owner, 32);
+  // Only a wallet-owned call site supplies the endpoint; never accept it from a dapp.
+  const base = new URL(endpoint);
+  requireThat(
+    !base.username && !base.password && !base.search && !base.hash,
+    'invalid attestation endpoint',
+  );
+  for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
+    const block = await latest();
+    fromHex(block.hash, 32);
+    signal?.throwIfAborted();
+    const challenge = hex(crypto.getRandomValues(new Uint8Array(32)));
+    const url = new URL(base);
+    url.searchParams.set('block', block.hash);
+    url.searchParams.set('challenge', challenge);
+    const limit = AbortSignal.timeout(REQUEST_MS);
+    let state: State;
+    try {
+      const bundle = await boundedJson(url.href, signal ? AbortSignal.any([signal, limit]) : limit);
+      state = verifyTipBundle(bundle, p, challenge, block);
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (attempt > 0) throw error;
+      await pause(RETRY_MS, signal);
+      continue;
+    }
+    return {
+      block: { height: block.height, hash: block.hash },
+      schedule: verifiedFeeSchedule({ state }),
+      state,
     };
   }
 }

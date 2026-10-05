@@ -85,7 +85,11 @@ import {
 import type { MintSessionReview, MintSessionStatus } from './mint-session-view.ts';
 import { generateMnemonic, requireMnemonic } from '../../../packages/chain/src/browser/mnemonic.ts';
 import { fromHex, hex, requireThat, assetId } from '../../../packages/native/src/codec.ts';
-import { MAINNET_PROGRESSIVE_V2_FROM } from '../../../packages/native/src/protocol.ts';
+import { mainnetReviewed } from '../../../packages/native/src/protocol.ts';
+import { isRateDerived } from '../../../packages/native/src/fee-schedule.ts';
+import { feeRulesFor, FEES_UNVERIFIED_ERROR, MAINNET_FEES_OFF, quoteFees } from './fees.ts';
+import type { FeeQuote } from './fees.ts';
+import { feeKept } from './fee-copy.ts';
 import {
   PROGRESSIVE_MINT_LOTS,
   PROGRESSIVE_MINT_PROFILE_V2,
@@ -99,6 +103,7 @@ import { parseCommand, json } from '../../native/src/commands.ts';
 import {
   attestationPolicy,
   attestedAsset,
+  attestedFees,
   attestedLot,
   authorizePurchase,
   pqConfigured,
@@ -135,6 +140,8 @@ interface Transaction {
   validUntil: number;
   nativeSuccess?: boolean | null;
   verdict?: string | null;
+  /** The indexer reports the operation rejected with its Qlyphs fee paid; display only. */
+  feeKept?: true;
   /** Display-only copy of the approved transfer; never used for signing or status. */
   height?: number;
   amount?: string;
@@ -473,6 +480,10 @@ function changeAccountContext(): void {
   passkeyAttempts.invalidate(() => true);
   invalidate(() => true);
 }
+function keptFee(tx: Transaction, reported: unknown): void {
+  if (feeKept({ verdict: tx.verdict, feeKept: reported })) tx.feeKept = true;
+  else delete tx.feeKept;
+}
 function transferDisplay(review: Review): Partial<Transaction> {
   const c = review.command;
   if (c.kind === 'sendQtc')
@@ -700,6 +711,7 @@ async function syncHistory(): Promise<Transaction[]> {
         height?: number | null;
         nativeSuccess?: boolean | null;
         verdict?: string | null;
+        feeKept?: boolean;
       }>('/api/transactions/' + tx.hash);
       if (final(tx)) continue;
       if (
@@ -709,6 +721,7 @@ async function syncHistory(): Promise<Transaction[]> {
         if (Number.isSafeInteger(s.height)) tx.height = s.height!;
         tx.nativeSuccess = s.nativeSuccess;
         tx.verdict = s.verdict;
+        keptFee(tx, s.feeKept);
         changed = true;
       }
       // A crash can occur after recording broadcast uncertainty but before the
@@ -728,6 +741,7 @@ async function syncHistory(): Promise<Transaction[]> {
             height?: number | null;
             nativeSuccess?: boolean | null;
             verdict?: string | null;
+            feeKept?: boolean;
           }>('/api/transactions/' + tx.hash);
           if (final(tx)) continue;
           // A final entry keeps only the height of the report that made it final: an earlier one
@@ -738,12 +752,14 @@ async function syncHistory(): Promise<Transaction[]> {
             else delete tx.height;
             tx.nativeSuccess = latest.nativeSuccess;
             tx.verdict = latest.verdict;
+            keptFee(tx, latest.feeKept);
             changed = true;
           } else if (['pending', 'unknown', 'expired'].includes(latest.status)) {
             tx.status = 'expired';
             delete tx.height;
             tx.nativeSuccess = null;
             tx.verdict = null;
+            delete tx.feeKept;
             changed = true;
           }
         }
@@ -816,14 +832,17 @@ async function createJob(
       const command = parseCommand(input);
       if (command.kind === 'buy')
         requireThat(pqConfigured, 'Purchases disabled: no bundled PQ witness policy');
-      // Mainnet runs progressive-1000-v2 only from its reviewed activation, and never v1: before it,
-      // a progressive deploy or lot is refused there.
+      // Mainnet runs progressive-1000-v2 and the fee schedule only from their reviewed activation,
+      // and never v1: before it, a progressive deploy or lot, and any rate-derived fee, is refused
+      // there.
       if (
         command.kind === 'deployProgressive' ||
         ((command.kind === 'deployProgressiveV2' || command.kind === 'mintProgressive') &&
-          MAINNET_PROGRESSIVE_V2_FROM === null)
+          !mainnetReviewed())
       )
         requireThat(PROFILE.network !== 'mainnet', 'Progressive tokens are not enabled on mainnet');
+      if (isRateDerived(command.kind))
+        requireThat(PROFILE.network !== 'mainnet' || mainnetReviewed(), MAINNET_FEES_OFF);
       // A progressive mint is priced and built only from terms both witnesses attest.
       if (command.kind === 'mintProgressive')
         requireThat(pqConfigured, 'Progressive mint disabled: no bundled PQ witness policy');
@@ -840,7 +859,14 @@ async function createJob(
               API + '/api/attestations/tip',
             )
           : undefined;
-      job.review = await prepare(state.manifest!, a.owner, input, attested);
+      const quote =
+        command.kind === 'deploy' ||
+        command.kind === 'inscribe' ||
+        command.kind === 'deployProgressive' ||
+        command.kind === 'deployProgressiveV2'
+          ? await quoteFor(a, command)
+          : undefined;
+      job.review = await prepare(state.manifest!, a.owner, input, attested, quote);
     } else await network(state.manifest!);
     current(job);
     const p = requests.add(doc, job);
@@ -873,6 +899,21 @@ async function createJob(
     if (kind !== 'connect' && owned) walletBusy = false;
     throw e;
   }
+}
+/** The wallet's own price of a create or inscribe. With a fee schedule, only from both witnesses'
+ * attestation of the best block, which the signature's era is then born at. */
+async function quoteFor(a: Account, command: Parameters<typeof quoteFees>[0]): Promise<FeeQuote> {
+  const rules = feeRulesFor(PROFILE.network);
+  if (rules === null) return quoteFees(command, a.owner, a.genesis, null);
+  const pinned = attestationPolicy();
+  requireThat(pqConfigured && pinned, FEES_UNVERIFIED_ERROR);
+  let attested;
+  try {
+    attested = await attestedFees(a.owner, a.genesis, tipBlock, API + '/api/attestations/tip');
+  } catch {
+    throw Error(FEES_UNVERIFIED_ERROR);
+  }
+  return quoteFees(command, a.owner, a.genesis, rules, attested, pinned!.rulesHash);
 }
 // Qlyphs Keys reports false where its browser may not run sessions (mobile, WebKit, no shared
 // worker); browser extension runtimes have no such member.
@@ -1879,7 +1920,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
     return {
       manifest: state.manifest ?? null,
       transactions: state.transactions.map(
-        ({ hash, label, status, createdAt, owner, genesis, nativeSuccess, verdict }) => ({
+        ({ hash, label, status, createdAt, owner, genesis, nativeSuccess, verdict, feeKept }) => ({
           hash,
           label,
           status,
@@ -1888,6 +1929,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
           genesis,
           nativeSuccess,
           verdict,
+          ...(feeKept ? { feeKept } : {}),
         }),
       ),
     };

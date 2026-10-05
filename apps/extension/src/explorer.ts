@@ -5,6 +5,7 @@ import { uiError } from './errors.ts';
 import { MAINNET_BUILD } from './profile.ts';
 import { applyNetworkCopy, networkName } from './network-copy.ts';
 import { formatUnits } from '../../native/src/commands.ts';
+import { FEE_KEPT, feeKept } from './fee-copy.ts';
 await loadNetwork();
 applyNetworkCopy();
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id)! as T;
@@ -29,6 +30,7 @@ interface Outcome {
   height?: number;
   nativeSuccess: boolean | null;
   verdict: string | null;
+  feeKept?: boolean;
 }
 interface Receipt {
   hash: string;
@@ -187,6 +189,7 @@ async function load(hash = new URL(location.href).searchParams.get('tx') ?? '', 
         data.push(['Submitted', new Date(local.createdAt).toLocaleString()]);
     }
     if (result.verdict) data.push(['Protocol result', result.verdict]);
+    if (feeKept(result)) data.push(['Qlyphs fee', FEE_KEPT]);
     const indexed = ['included', 'finalized'].includes(result.status) && !noBroadcast;
     if (indexed) {
       if (!Number.isSafeInteger(result.height) || result.height! < 0)

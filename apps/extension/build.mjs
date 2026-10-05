@@ -1,7 +1,7 @@
 import { policy } from '../native/src/pq/checkpoint.ts';
 import { rulesHash } from '../native/src/pq/node.ts';
 import { DEV_RUNTIME_HASH, DEVELOPMENT, mainnetProfile, progressiveRules } from '../native/src/network.ts';
-import { MAINNET_PROGRESSIVE_V2_FROM, mainnetRules } from '../../packages/native/src/protocol.ts';
+import { mainnetReviewed, mainnetRules } from '../../packages/native/src/protocol.ts';
 import { licenseNotices } from './licenses.mjs';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
@@ -25,9 +25,9 @@ if (!withMainnet && process.env.QLYPHS_EXTENSION_PINS)
 const pins = withMainnet ? JSON.parse(await readFile(process.env.QLYPHS_EXTENSION_PINS, 'utf8')) : null;
 const mainnetPins = withMainnet ? mainnetProfile(pins) : null;
 const profile = withMainnet ? mainnetPins : DEVELOPMENT;
-// A mainnet wallet carries a witness policy only once the progressive activation is reviewed, and
-// only in a mainnet build: one policy cannot serve both networks of a switchable build.
-if (withMainnet && process.env.NATIVE_PQ_POLICY_FILE && (switchable || MAINNET_PROGRESSIVE_V2_FROM === null))
+// A mainnet wallet carries a witness policy only once the progressive and fee activation is
+// reviewed, and only in a mainnet build: one policy cannot serve both networks of a switchable build.
+if (withMainnet && process.env.NATIVE_PQ_POLICY_FILE && (switchable || !mainnetReviewed()))
   throw Error('PQ witnesses are not validated on mainnet yet; build without NATIVE_PQ_POLICY_FILE');
 if (
   switchable &&
@@ -36,6 +36,19 @@ if (
   )
 )
   throw Error('A switchable build uses the default endpoints of each network; unset QLYPHS_EXTENSION_* overrides');
+// The development rules the witnesses run; their fee schedule is compiled in (QLYPHS_FEE_RULES) so
+// the wallet prices with the schedule its policy binds. Mainnet reads only the reviewed release.
+if (mainnet && process.env.NATIVE_FEE_SCHEDULE)
+  throw Error('A mainnet build takes its fee schedule from the reviewed release; unset NATIVE_FEE_SCHEDULE');
+const developmentRules = mainnet
+  ? null
+  : progressiveRules(
+      'development',
+      process.env.NATIVE_PROGRESSIVE_FROM,
+      process.env.NATIVE_PROGRESSIVE_V2_FROM,
+      process.env.NATIVE_FEE_SCHEDULE,
+    );
+const feeRules = developmentRules?.feeSchedule ?? null;
 const pqPolicy = process.env.NATIVE_PQ_POLICY_FILE
   ? policy(JSON.parse(await readFile(process.env.NATIVE_PQ_POLICY_FILE, 'utf8')))
   : null;
@@ -49,14 +62,15 @@ if (
     pqPolicy.runtimeHash !== mainnetPins.runtime.codeHash ||
     pqPolicy.rulesHash !== rulesHash(undefined, mainnetRules()) ||
     process.env.NATIVE_PROGRESSIVE_FROM ||
-    process.env.NATIVE_PROGRESSIVE_V2_FROM)
+    process.env.NATIVE_PROGRESSIVE_V2_FROM ||
+    process.env.NATIVE_FEE_SCHEDULE)
 )
   throw Error('PQ policy does not match the mainnet pins and the reviewed protocol');
 if (
   pqPolicy &&
   !withMainnet &&
-  // The policy binds the witnesses' progressive activation (NATIVE_PROGRESSIVE_FROM) too.
-  (pqPolicy.rulesHash !== rulesHash(undefined, progressiveRules('development', process.env.NATIVE_PROGRESSIVE_FROM, process.env.NATIVE_PROGRESSIVE_V2_FROM)) ||
+  // The policy binds the witnesses' progressive activations and fee schedule too.
+  (pqPolicy.rulesHash !== rulesHash(undefined, developmentRules) ||
     pqPolicy.runtimeHash !== DEV_RUNTIME_HASH ||
     pqPolicy.activation.height !== 0 ||
     pqPolicy.activation.hash !== pqPolicy.genesis)
@@ -209,6 +223,7 @@ for (const target of ['chrome', 'firefox']) {
       QLYPHS_DAPP_ORIGINS: JSON.stringify(dapps),
       QLYPHS_EXPLORER: JSON.stringify(explorer),
       QLYPHS_PQ_POLICY: JSON.stringify(pqPolicy),
+      QLYPHS_FEE_RULES: JSON.stringify(feeRules),
       QLYPHS_NETWORK_PROFILE: JSON.stringify(profile),
       QLYPHS_NETWORKS: JSON.stringify(networks),
     },

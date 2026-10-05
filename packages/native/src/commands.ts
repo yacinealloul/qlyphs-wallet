@@ -12,19 +12,22 @@ import {
   isContentType,
   MAX_PAYLOAD,
   MAX_U128,
+  MAINNET,
   MAX_U64,
   ZERO,
   requireThat,
 } from './codec.ts';
-import type { Operation } from './codec.ts';
+import type { FeeGovernanceOperation, Id, Operation, UserOperation } from './codec.ts';
 import {
   buyCall,
   balanceOf,
   feeBatchCall,
-  INSCRIBE_FEE,
+  feeScheduleActive,
   LEGACY_RULES,
+  mainnetReviewed,
+  mainnetRules,
+  MINT_FEE,
   NativeIndexer,
-  operationFee,
   progressiveActive,
   progressiveLot,
   progressiveProfile,
@@ -34,6 +37,22 @@ import {
 } from './protocol.ts';
 import type { ProgressiveLot, Rules, State, Ticket } from './protocol.ts';
 import {
+  applyFeeAdmin,
+  applyFeeRate,
+  FEE_TARGETS_CENTS,
+  fee,
+  feeAt,
+  feeMode,
+  isRateDerived,
+  LEGACY_DEPLOY_FEE,
+  LEGACY_INSCRIBE_FEE,
+  legacyFee,
+  stepFees,
+  symbolClass,
+} from './fee-schedule.ts';
+import type { Grid } from './fee-schedule.ts';
+import type { PublicFeeGrid, PublicFeeSchedule } from './public.ts';
+import {
   PROGRESSIVE_MINT_PROFILE,
   PROGRESSIVE_MINT_PROFILE_V2,
   progressiveLotFee,
@@ -41,7 +60,7 @@ import {
 } from './progressive-mint.ts';
 import type { ProgressiveProfile } from './progressive-mint.ts';
 export type Command =
-  | Operation
+  | UserOperation
   /** Buy lot `lot` (1 to 1000) of a progressive asset through its current native right. `profile`
    * is the fee schedule the dapp priced it with (default progressive-1000-v1); a wallet refuses
    * a lot whose attested asset has another profile. */
@@ -189,23 +208,49 @@ export function parseCommand(input: unknown): Command {
       throw Error('unsupported command');
   }
 }
-/** The Qlyphs fee (QTC base units) the signer of this command pays at signing:
- * DEPLOY_FEE for either deploy, MINT_FEE for mint, the lot's fee for a progressive mint,
- * INSCRIBE_FEE for inscribe, the ticket's committed 1% sale fee for buy, else 0n. The seller of
- * an offer pays nothing. */
-export function qlyphsFee(command: Command, ticket?: Ticket): bigint {
-  if (
-    command.kind === 'deploy' ||
-    command.kind === 'mint' ||
-    command.kind === 'deployProgressive' ||
-    command.kind === 'deployProgressiveV2'
-  )
-    return operationFee(command.kind);
+/** What a rate-derived fee is priced with: the current rate of an attested state, or the fixed
+ * legacy fees where the network still reads them. */
+export type FeeBasis = { rate: bigint } | { legacy: true };
+type RateDerivedCommand = Extract<
+  Command,
+  { kind: 'deploy' | 'inscribe' | 'deployProgressive' | 'deployProgressiveV2' }
+>;
+const rateDerived = (c: Command): c is RateDerivedCommand => isRateDerived(c.kind);
+const MAINNET_FEES_OFF = 'QLYP fees are not active on mainnet yet.';
+/** The Qlyphs fee (QTC base units) the signer of this command pays at signing: the rate-derived
+ * fee of a deploy or an inscribe (which needs `basis`), MINT_FEE for mint, the lot's fee for a
+ * progressive mint, the ticket's committed 1% sale fee for buy, else 0n. The seller of an offer
+ * pays nothing. */
+export function qlyphsFee(command: Command, ticket?: Ticket, basis?: FeeBasis): bigint {
+  if (command.kind === 'mint') return MINT_FEE;
+  if (rateDerived(command)) {
+    requireThat(basis, 'fee schedule required');
+    return 'rate' in basis ? fee(command, basis.rate) : legacyFee(command.kind);
+  }
   if (command.kind === 'mintProgressive')
     return progressiveLotFee(BigInt(command.lot), command.profile ?? PROGRESSIVE_MINT_PROFILE);
-  if (command.kind === 'inscribe') return INSCRIBE_FEE;
   if (command.kind === 'buy') return ticket?.offer.fee ?? 0n;
   return 0n;
+}
+/** The fee basis of the state `s`, for an operation signed with an era born at `s` (so included at
+ * a later block of a chain that contains it). The rate is the current grid of `s`; the legacy fees
+ * apply where `s` itself still reads them, and stay accepted for `grace` blocks after `from`. */
+export function feeBasis(s: State, rules: Rules, genesis: Id): FeeBasis {
+  // Mainnet reads the legacy fees until the reviewed activation, as it always has; no Qlyphs client
+  // starts signing rate-derived operations there before the release that pins the schedule.
+  requireThat(genesis !== MAINNET || mainnetReviewed(), MAINNET_FEES_OFF);
+  if (s.fees) return { rate: s.fees.current.rate };
+  if (rules.feeSchedule === null || feeMode(rules, genesis, s.height) === 'legacy')
+    return { legacy: true };
+  throw Error('fee schedule not active');
+}
+/** A client rule on top of consensus: no Qlyphs client signs a blocked deploy, and none signs a
+ * rate-derived operation on mainnet before the reviewed activation. */
+function requireSignable(genesis: Id, command: Command): void {
+  if (!rateDerived(command)) return;
+  if (command.kind !== 'inscribe')
+    requireThat(symbolClass(command.symbol) === 'allowed', 'symbol blocked');
+  requireThat(genesis !== MAINNET || mainnetReviewed(), MAINNET_FEES_OFF);
 }
 /** Commit the exact QLYP-v1 sale fee (1% of price, rounded up, to Qlyphs) into an offer. */
 export function withSaleFee<T extends Extract<Operation, { kind: 'offer' }>>(offer: T): T {
@@ -219,9 +264,16 @@ export function buildCall(
   command: Command,
   ticket?: Ticket,
   lot?: ProgressiveLot,
+  basis?: FeeBasis,
 ): Uint8Array {
   fromHex(owner, 32);
   requireThat(owner !== ZERO, 'zero account');
+  const kind: string = command.kind;
+  requireThat(
+    kind !== 'feeRate' && kind !== 'feeAdmin',
+    'governance operations are not wallet commands',
+  );
+  requireSignable(genesis, command);
   switch (command.kind) {
     case 'mintProgressive':
       requireThat(
@@ -244,7 +296,10 @@ export function buildCall(
           : PROGRESSIVE_MINT_PROFILE_V2,
       );
       return callBytes(
-        feeBatchCall(hex(encode({ genesis, sequence, op: command })), operationFee(command.kind)),
+        feeBatchCall(
+          hex(encode({ genesis, sequence, op: command })),
+          qlyphsFee(command, undefined, basis),
+        ),
       );
     case 'sendQtc':
       requireThat(command.amount > 0n && command.to !== ZERO, 'invalid QTC transfer');
@@ -293,7 +348,10 @@ export function buildCall(
     case 'deploy':
     case 'mint':
       return callBytes(
-        feeBatchCall(hex(encode({ genesis, sequence, op: command })), operationFee(command.kind)),
+        feeBatchCall(
+          hex(encode({ genesis, sequence, op: command })),
+          qlyphsFee(command, undefined, basis),
+        ),
       );
     case 'transfer':
       return callBytes({
@@ -303,14 +361,37 @@ export function buildCall(
       });
   }
 }
+/** What preflight checked: the exact call, the Qlyphs fee it pays, the symbol class of a deploy
+ * (a blocked symbol is refused) and whether the user must be warned that another deploy of the
+ * same symbol can be included first, keeping the fee. */
+export interface Preflight {
+  call: Uint8Array;
+  fee: bigint;
+  symbolClass: 'allowed' | null;
+  raceWarning: boolean;
+}
 export function preflight(
   s: State,
   genesis: string,
   owner: string,
   command: Command,
-  rules: Rules = LEGACY_RULES,
-): Uint8Array {
+  // The reader's own default: a mainnet state past the activation is restored under the pinned
+  // rules, never under the legacy ones.
+  rules: Rules = genesis === MAINNET ? mainnetRules() : LEGACY_RULES,
+): Preflight {
   const sequence = s.sequences.get(owner) ?? 0n;
+  requireSignable(genesis, command);
+  const deploys =
+    command.kind === 'deploy' ||
+    command.kind === 'deployProgressive' ||
+    command.kind === 'deployProgressiveV2';
+  const basis = isRateDerived(command.kind) ? feeBasis(s, rules, genesis) : undefined;
+  const done = (call: Uint8Array, fee: bigint): Preflight => ({
+    call,
+    fee,
+    symbolClass: deploys ? 'allowed' : null,
+    raceWarning: deploys,
+  });
   if (command.kind === 'deployProgressive')
     requireThat(
       progressiveActive(rules, s.height + 1),
@@ -336,12 +417,15 @@ export function preflight(
     );
     // An unfinal right is signable: a wallet signs a lot with an era born at the block whose state
     // its witnesses attested, so the payment cannot execute where this right does not exist.
-    return buildCall(genesis, owner, sequence, command, undefined, lot);
+    return done(buildCall(genesis, owner, sequence, command, undefined, lot), lot.fee);
   }
   const t =
     command.kind === 'buy' || command.kind === 'cancel' ? s.tickets.get(command.ticket) : undefined;
   if (command.kind === 'buy')
-    return NativeIndexer.fromCheckpoint(genesis, s, false, rules).prepareBuy(command.ticket, owner);
+    return done(
+      NativeIndexer.fromCheckpoint(genesis, s, false, rules).prepareBuy(command.ticket, owner),
+      qlyphsFee(command, t),
+    );
   if (command.kind === 'mint' || command.kind === 'transfer' || command.kind === 'sell') {
     const p = command.kind === 'sell' ? command.offer : command;
     const a = s.assets.get(p.asset);
@@ -398,7 +482,74 @@ export function preflight(
       'expiry must leave time for finality',
     );
   }
-  return buildCall(genesis, owner, sequence, command, t);
+  return done(
+    buildCall(genesis, owner, sequence, command, t, undefined, basis),
+    qlyphsFee(command, t, basis),
+  );
+}
+/** The direct remark_with_event that carries a fee schedule operation, for a role account to sign. */
+export function feeGovernanceCall(
+  genesis: Id,
+  owner: Id,
+  sequence: bigint,
+  op: FeeGovernanceOperation,
+): Uint8Array {
+  fromHex(owner, 32);
+  requireThat(owner !== ZERO, 'zero account');
+  requireThat(op.kind === 'feeRate' || op.kind === 'feeAdmin', 'not a fee schedule operation');
+  return callBytes({
+    kind: 'remark',
+    event: true,
+    payload: hex(encode({ genesis, sequence, op })),
+  });
+}
+/** Runs the fee schedule checks of `op` as if it were included in the block after `s`, and returns
+ * the call to sign. Throws the reducer's verdict. */
+export function governancePreflight(
+  s: State,
+  genesis: Id,
+  owner: Id,
+  op: FeeGovernanceOperation,
+  rules: Rules,
+): Uint8Array {
+  const h = s.height + 1;
+  requireThat(rules.feeSchedule !== null && feeScheduleActive(rules, h), 'fee schedule not active');
+  const fees = stepFees(s.fees, rules.feeSchedule, h);
+  requireThat(fees, 'fee state missing');
+  if (op.kind === 'feeRate') applyFeeRate(fees, rules.feeSchedule, owner, op, h, 0);
+  else applyFeeAdmin(fees, rules.feeSchedule, owner, op, h);
+  return feeGovernanceCall(genesis, owner, s.sequences.get(owner) ?? 0n, op);
+}
+const publicGrid = (g: Grid | null): PublicFeeGrid | null =>
+  g && { id: g.id, rate: String(g.rate), effective: g.effective, height: g.height, index: g.index };
+/** The fee schedule of a state, for display. Wallets price from attested state, never from this. */
+export function feeScheduleView(s: State, rules: Rules, genesis: Id): PublicFeeSchedule {
+  const f = s.fees;
+  const at = (rate: bigint) => ({
+    deploy: String(feeAt(FEE_TARGETS_CENTS.deploy, rate)),
+    inscribe: String(feeAt(FEE_TARGETS_CENTS.inscribe, rate)),
+  });
+  const mode = f ? 'schedule' : feeMode(rules, genesis, s.height);
+  return {
+    height: s.height,
+    hash: s.hash,
+    mode,
+    from: rules.feeSchedule?.from ?? null,
+    current: publicGrid(f?.current ?? null),
+    previous: publicGrid(f?.previous ?? null),
+    pending: publicGrid(f?.pending ?? null),
+    frozen: f !== null && f.operator === null,
+    fees: f
+      ? { ...at(f.current.rate), mint: String(MINT_FEE) }
+      : mode === 'legacy'
+        ? {
+            deploy: String(LEGACY_DEPLOY_FEE),
+            inscribe: String(LEGACY_INSCRIBE_FEE),
+            mint: String(MINT_FEE),
+          }
+        : null,
+    pendingFees: f?.pending ? at(f.pending.rate) : null,
+  };
 }
 export const json = (value: unknown): string =>
   JSON.stringify(value, (_, v: unknown) => (typeof v === 'bigint' ? v.toString() : v));

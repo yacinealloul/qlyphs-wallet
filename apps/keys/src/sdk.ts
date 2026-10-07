@@ -260,6 +260,7 @@ function make(keys: string, eager: boolean, declared?: KeysNetwork): QlyphsProvi
     const reported = (lastNetwork ?? snapshot.network)?.network;
     const network =
       reported === 'development' || reported === 'mainnet' ? reported : (declared ?? builtNetwork(keys));
+    // capabilities() lists sessions on development only: no Keys release offers them on mainnet yet.
     return browserRunsSessions() ? capabilities(network) : capabilities(network, null);
   };
   const settle = (id: string) => {

@@ -24,16 +24,17 @@ Canonical types and errors are in [`@qlyphs/provider`](../../packages/provider/R
 The web wallet exposes the same interface through [`createKeysProvider` and `openKeysProvider`](../../apps/keys/README.md#for-dapps), with the cached-state behavior described below.
 The original `connect`, `accounts`, `network`, `disconnect`, `requestTransaction`
 names/envelopes remain supported. `capabilities` and `state` are additive. `requestMintSession`,
-`mintSession`, `stopMintSession` and the `mintSessionChanged` event are additive too, on development
-and test builds only (see [Mint sessions](#mint-sessions)). Old providers
+`mintSession`, `stopMintSession` and the `mintSessionChanged` event are additive too, on builds
+that can run sessions (see [Mint sessions](#mint-sessions)), mainnet included. Old providers
 without protocolVersion/events work with explicit SDK `refresh` calls; they are not
 claimed to provide events or reliable cancellation. Do not branch on error text.
 
 `qlyphs:initialized` announces delayed injection. Discovery does not connect a site.
 `capabilities` describes method/event support, the selected network and cancellation;
 arbitrary RPC and persistent signing are explicitly false. `mintSessions` gives this build's mint
-session limits. It is `null` where sessions are unavailable (every mainnet build, and Qlyphs Keys in
-a browser where it does not run them) and absent on wallets older than this feature; test it for
+session limits. It is `null` where sessions are unavailable (a build without a witness policy, a pinned runtime
+or, on mainnet, the reviewed activation; an extension outside desktop Windows, macOS or Linux; and
+Qlyphs Keys in a browser where it does not run them) and absent on wallets older than this feature; test it for
 truthiness. A mint session is bounded: one token, a lot count, a Qlyphs fee cap per lot, a cap on
 Qlyphs fees and native tickets, a signature count and at most five minutes inside one unlock. It is not persistent signing, which stays false.
 
@@ -136,13 +137,14 @@ for a bounded series of lot payments ([below](#mint-sessions)). Each signature s
 canonical-byte reconstruction, real fee/deposit estimates and live origin/account/network/epoch/
 runtime/nonce/sequence/ticket checks; a transaction request and an extension mint session also
 require the live requesting document, while a Keys mint session requires the live popup channel.
-Development purchases, progressive lot mints and mint sessions require compiled PQ trust pins and
-fail-closed attestation checks; mainnet and switchable builds reject witness policies and refuse all
-three. Where a [fee schedule](PROTOCOL-FEES.md) is active, `deploy`, `deployProgressive`,
-`deployProgressiveV2` and `inscribe` also require a verified tip attestation: their Qlyphs fee is a
-25 USD target converted at the attested on-chain rate, capped by the wallet's compiled ceiling (1 QTC),
-and a blocked symbol (`BTC ETH QLYPHS QTC USDC USDT`) is refused. On mainnet these four are refused
-until the reviewed fee schedule activation; `mint` keeps its fixed 0.01 QTC fee. No signRaw,
+Purchases, progressive lot mints and mint sessions require compiled PQ trust pins (a witness policy)
+and fail-closed attestation checks; a build without a policy, which includes every switchable build,
+refuses all three. Mainnet progressive tokens, lot mints and mint sessions start at block 188,500. Where the build has a [fee schedule](PROTOCOL-FEES.md), as every mainnet
+build does, `deploy`, `deployProgressive`, `deployProgressiveV2` and `inscribe` also require a
+verified tip attestation: their Qlyphs fee is a 25 USD target converted at the attested on-chain
+rate (on mainnet below block 188,500, the fixed legacy fee), capped by the wallet's compiled ceiling
+(1 QTC), and a blocked symbol (`BTC ETH QLYPHS QTC USDC USDT`) is refused. A mainnet build without
+the witness policy refuses these four; `mint` keeps its fixed 0.01 QTC fee. No signRaw,
 arbitrary bytes, caller RPC, permanent signing grant, Qlyphs fee other than the one the wallet
 computes itself, or mainnet activation is exposed. A payment is never retried automatically, with
 one bounded exception inside an approved mint session whose terms allow retries
@@ -153,7 +155,8 @@ re-signs or re-broadcasts a payment whose outcome is uncertain.
 
 ## Mint sessions
 
-Development and test builds only. A mint session lets a dapp ask for up to N lots of one
+Mainnet and development builds, with the same limits. The Qlyphs Keys adapter offers them on development
+builds only for now ([Keys](../../apps/keys/README.md)). A mint session lets a dapp ask for up to N lots of one
 progressive token in a single private review. After approval the wallet signs separate lot
 payments, one at a time, each built and checked like a single `mintProgressive` lot, until N lots are
 in a block, a limit is reached, the user stops it or its context ends.
@@ -312,7 +315,10 @@ it remain. History must have room for `maxLots + maxAttempts` entries. While a s
 the wallet: other requests get `BUSY`, and only one session runs at a time.
 
 **Availability.** `capabilities().mintSessions` is truthy only on builds that can run sessions:
-development and test builds with a compiled witness policy and a pinned runtime. Where it is `null`
+a compiled witness policy, a runtime whose ticket charge the wallet pins (the development runtime and
+Quantus mainnet runtime 153), on mainnet the reviewed progressive activation, and for the extension
+a desktop system (Windows, macOS or Linux, from `runtime.getPlatformInfo()`; Firefox for Android and
+ChromeOS are refused). Where it is `null`
 the methods and event are not listed and `requestMintSession` fails with `UNSUPPORTED_METHOD`,
 `outcome: 'not-submitted'`. Older wallets omit the field and refuse the unknown method before
 signing (`UNSUPPORTED_METHOD` or `INVALID_REQUEST`, also not submitted). The Keys adapter always
@@ -432,9 +438,9 @@ restrict ports. The allowlist only permits requesting connection; each origin mu
 own explicit account grant. RPC/API/PQ targets remain fixed separately.
 
 Qlyphs Keys has its own allowlist (`QLYPHS_KEYS_DAPP_ORIGINS`): production defaults to
-`https://otc.qlyphs.com`; development defaults to the API origin, `http://127.0.0.1:4400`, ports
+`https://app.qlyphs.com` and `https://otc.qlyphs.com`; development defaults to the API origin, `http://127.0.0.1:4400`, ports
 4401–4403 on `127.0.0.1`, `http://localhost:3001`, `http://127.0.0.1:3001`, and its demo at
 `http://localhost:4411`. Inspect `BUILD.json` for the exact origins of an installed build.
 
 Applications must check the returned network and genesis against their intended deployment before
-requesting a transaction. A dapp cannot switch networks, replace pins or enable mainnet purchases.
+requesting a transaction. A dapp cannot switch networks, replace pins or supply a witness policy.

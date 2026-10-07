@@ -45,9 +45,10 @@ Both run the same wallet code: the same vault, signing and UI. Only the browser 
 - **Locked-down page.** `default-src 'none'`, no inline or third-party scripts, and no `eval`. The build
   fails if any bundle uses `eval`, `new Function` or a dynamic `import()`. The RPC, indexer and dapp
   allowlist are fixed at build time. The server refuses to start if any file differs from the release.
-- **Checks purchase attestations in development.** With a compiled public witness policy, the wallet
-  checks two separately keyed ML-DSA-87 attestations of the finalized reservation. Mainnet purchases
-  remain disabled. The wallet recomputes Qlyphs fees and refuses inconsistent quotes; the fees of
+- **Checks purchase attestations.** With a compiled public witness policy, the wallet checks two
+  separately keyed ML-DSA-87 attestations of the finalized reservation; without one it refuses
+  purchases. Mainnet builds accept only the reviewed mainnet policy
+  ([`deploy/mainnet/witness-policy.json`](deploy/mainnet/witness-policy.json)). The wallet recomputes Qlyphs fees and refuses inconsistent quotes; the fees of
   token creation and inscriptions come from an attested, bounded, delayed on-chain rate, capped by a
   compiled ceiling ([fee schedule](docs/extension/PROTOCOL-FEES.md)).
 - **Mainnet is pinned.** Mainnet builds compile in the chain's genesis, runtime and activation pins
@@ -125,6 +126,7 @@ source modules. For mainnet build flags and pins, see the
 | `packages/chain`, `packages/native`, `packages/sdk`, `packages/shared`, `apps/native` | only the modules the wallet imports: Quantus codecs, QTC formatting, post-quantum checkpoint verification |
 | `deploy/keys.Dockerfile` | the exact build that serves keys.qlyphs.com |
 | `deploy/mainnet/pins.json` | the Quantus mainnet genesis, runtime and activation pins |
+| `deploy/mainnet/witness-policy.json` | the reviewed mainnet witness policy (public keys and rules hash) the mainnet builds compile in |
 | `docs/` | [mainnet notes](docs/MAINNET.md), [extension security model](docs/extension/SECURITY.md), [provider contract](docs/extension/PROVIDER.md), [store packaging](docs/extension/DISTRIBUTION.md) |
 
 This repository mirrors the wallet part of the private Qlyphs monorepo. The mirror is regenerated
@@ -135,10 +137,14 @@ message names the source commit it was exported from.
 
 These are stated plainly so you don't have to guess.
 
-- The extension is not in the Chrome Web Store or Firefox Add-ons yet. For now, load a build unpacked.
-- Token purchases stay refused on mainnet until the post-quantum witnesses are validated there, and
-  token creation and inscriptions until the reviewed fee schedule activation
-  ([MAINNET.md](docs/MAINNET.md), [fee schedule](docs/extension/PROTOCOL-FEES.md)). Sending QTC works.
+- The extension is in the Chrome Web Store, mainnet only. It is not listed on Firefox Add-ons yet; there,
+  load a build.
+- On mainnet, purchases, token creation and inscriptions need the witnesses' attestations, so a
+  build without the mainnet witness policy refuses them. The fee schedule and progressive tokens
+  start at block 188,500; below it creation and inscriptions keep the fixed legacy fees
+  ([MAINNET.md](docs/MAINNET.md), [fee schedule](docs/extension/PROTOCOL-FEES.md)). Mint sessions
+  run on mainnet from block 188,500 with the same limits as on development builds, on desktop
+  Windows, macOS or Linux only. Sending QTC works.
 - A web wallet downloads its code on every visit. A release check proves what the site served *to you,
   when you checked*. It cannot prove what another visitor received.
 - Keys live in your browser profile, so clearing site data deletes the wallet. Keep your recovery phrase

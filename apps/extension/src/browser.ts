@@ -17,6 +17,8 @@ export interface ExtensionAPI {
     onConnect: Event<(port: Port)=>void>;
     onMessage: Event<(message: unknown, sender: Sender, respond: (value: unknown)=>void)=>boolean|void>;
     onInstalled: Event<(details:{reason:string})=>void>;
+    /** The operating system the browser runs on; Qlyphs Keys has none. */
+    getPlatformInfo?(): Promise<{os:string}>;
     /** Listened to only while a mint session runs: while a listener exists, Firefox keeps the old
      * version until the extension reloads. Keys fires it when a page of another release connects. */
     onUpdateAvailable?: Event<(details:{version:string})=>void> & {removeListener(listener:(details:{version:string})=>void):void};

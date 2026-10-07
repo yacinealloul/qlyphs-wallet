@@ -1,14 +1,15 @@
 # Packaging and store distribution
 
-The extension is not published in the browser stores yet. Store packages use a mainnet build with
-reviewed pins; development and switchable builds are for local installation only. Mainnet purchases
-remain disabled. See [mainnet notes](../MAINNET.md).
+The extension is published in the Chrome Web Store; it is not listed on Firefox Add-ons yet. Store
+packages use a mainnet build with reviewed pins and the reviewed mainnet witness policy, and have no
+network switch; development and switchable builds are for local installation only. See
+[mainnet notes](../MAINNET.md).
 
 ## Build profiles
 
 | | Mainnet | Development (default) |
 | --- | --- | --- |
-| Command | `QLYPHS_EXTENSION_NETWORK=mainnet QLYPHS_EXTENSION_PINS="$PWD/deploy/mainnet/pins.json" pnpm --filter @qotc/wallet-extension build` | `pnpm --filter @qotc/wallet-extension build` |
+| Command | `QLYPHS_EXTENSION_NETWORK=mainnet QLYPHS_EXTENSION_PINS="$PWD/deploy/mainnet/pins.json" NATIVE_PQ_POLICY_FILE="$PWD/deploy/mainnet/witness-policy.json" pnpm --filter @qotc/wallet-extension build` | `pnpm --filter @qotc/wallet-extension build` |
 | Pins | required genesis, runtime and activation anchor | reviewed from the local network at first use |
 | API / RPC | `https://indexer.qlyphs.com` / `https://rpc1-mainnet.quantus.com` | `http://127.0.0.1:4400` / `http://127.0.0.1:9955` |
 | Explorer | `https://qlyphs.com/explorer` | `http://localhost:3000/explorer` |
@@ -36,12 +37,17 @@ python3 apps/extension/package.py
 ```
 
 ZIPs in `apps/extension/dist/packages` use fixed timestamps and sorted names; `SHA256SUMS` identifies
-their bytes. Never include browser profiles, dependency directories, debug traces, credentials or
+their bytes. A mainnet build gives the store packages `qlyphs-wallet-chrome-<version>.zip` and
+`qlyphs-wallet-firefox-<version>.zip`, a development build `qlyphs-wallet-<browser>-development.zip`;
+a switchable build is refused. Never include browser profiles, dependency directories, debug traces, credentials or
 mnemonic backups. Load the build directories unpacked when testing.
 
 ## Store submission
 
-1. Build mainnet twice with identical inventories. Check network, pins and HTTPS origins in `BUILD.json`.
+1. Build mainnet twice with identical inventories. Check network, pins and HTTPS origins in `BUILD.json`,
+   and that `pqPolicyVersion` is set and `pqPolicySHA256` equals the SHA-256 of
+   `deploy/mainnet/witness-policy.json` (`shasum -a 256 deploy/mainnet/witness-policy.json`).
+   Run `web-ext lint` on `dist/firefox`.
 2. Confirm the Chrome manifest has no development `key` and Firefox uses `wallet@qlyphs.com`.
 3. Verify the configured service accepts the installed extension's exact browser origin. Browser
    identities differ between local installations and store packages.
@@ -67,9 +73,13 @@ including packaged WASM and CSP. Recheck store policies when submitting:
 
 ## Purchase policy and dapp origins
 
-`NATIVE_PQ_POLICY_FILE` is accepted only by development builds. A compatible reviewed public policy
-is required to purchase there; without one the wallet refuses purchases. Mainnet and switchable
-builds reject this variable and keep purchases disabled until mainnet witnesses are validated.
+`NATIVE_PQ_POLICY_FILE` compiles a reviewed public witness policy; `BUILD.json` records its version,
+`rulesHash` and the SHA-256 of the file (`pqPolicySHA256`). Without one the wallet refuses
+purchases, lot mints and mint sessions, and, wherever the build has a fee schedule (every mainnet build), token
+creation and inscriptions. A mainnet build accepts only a policy that matches its pins and the
+reviewed mainnet rules (`rulesHash`): the committed `deploy/mainnet/witness-policy.json`. A
+development build accepts only one that matches its rules inputs and the development runtime.
+Switchable builds reject the variable.
 Private signing keys and passphrases must never enter the build context. Policy rotations require
 reviewed releases; `BUILD.json` records a policy, but does not independently audit it.
 

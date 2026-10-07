@@ -68,6 +68,7 @@ import {
   resolveFromJournal,
   sessionSnapshot,
   sessionsAvailable,
+  sessionPlatform,
   settledRecord,
   ticketCharge,
   validateMintSessions,
@@ -915,13 +916,28 @@ async function quoteFor(a: Account, command: Parameters<typeof quoteFees>[0]): P
   }
   return quoteFees(command, a.owner, a.genesis, rules, attested, pinned!.rulesHash);
 }
-// Qlyphs Keys reports false where its browser may not run sessions (mobile, WebKit, no shared
-// worker); browser extension runtimes have no such member.
-const browserRunsSessions =
-  (browser.runtime as { mintSessionsSupported?: boolean }).mintSessionsSupported !== false;
+// Qlyphs Keys reports whether its browser may run sessions (not mobile, WebKit or without a shared
+// worker). A browser extension asks the runtime for its system instead: sessions only on desktop
+// Windows, macOS or Linux. Until the answer arrives, and if it fails, sessions are off.
+let browserRunsSessions = false;
+const sessionBrowserKnown = (async () => {
+  const keys = (browser.runtime as { mintSessionsSupported?: unknown }).mintSessionsSupported;
+  if (keys !== undefined) {
+    browserRunsSessions = keys === true;
+    return;
+  }
+  try {
+    browserRunsSessions = sessionPlatform((await browser.runtime.getPlatformInfo?.())?.os);
+  } catch {
+    browserRunsSessions = false;
+  }
+})();
+// On mainnet a session pays progressive lots, so it needs the reviewed activation compiled in,
+// exactly as a single lot mint does.
 const mintSessionsAvailable = (): boolean =>
   browserRunsSessions &&
-  sessionsAvailable(PROFILE.network, pqConfigured, PROFILE.runtime.codeHash);
+  (PROFILE.network !== 'mainnet' || mainnetReviewed()) &&
+  sessionsAvailable(pqConfigured, PROFILE.runtime.codeHash);
 /** The lot terms `prepare` builds a payment from, all from both witnesses' attestation. */
 const attestedTerms = (view: AttestedAsset, lot: NonNullable<AttestedAsset['next']>) => ({
   lot,
@@ -1651,6 +1667,7 @@ async function handlePage(c: Connection, input: unknown): Promise<void> {
   let r: Request | undefined;
   try {
     await loaded;
+    await sessionBrowserKnown;
     requireThat(c.alive, 'Document is no longer active');
     if (!DAPPS.includes(c.origin))
       throw new QlyphsError('UNAUTHORIZED', 'This site is not allowed on the active network', 'not-submitted');
@@ -1679,7 +1696,8 @@ async function handlePage(c: Connection, input: unknown): Promise<void> {
     if (c.ids.size >= 8 && r.method !== 'cancelRequest')
       throw new QlyphsError('BUSY', 'Too many outstanding requests', 'not-submitted');
     c.ids.add(r.id);
-    // Mainnet builds and builds without witness pins neither advertise nor serve mint sessions.
+    // Builds without witness pins or a pinned ticket charge, mainnet builds without the reviewed
+    // activation, and unsupported browsers neither advertise nor serve mint sessions.
     if (
       (r.method === 'requestMintSession' ||
         r.method === 'mintSession' ||

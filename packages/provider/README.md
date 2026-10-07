@@ -7,8 +7,8 @@ application must check them against its own deployment. No keys, browser globals
 import time, React or RPC client.
 
 `window.qlyphs.version` remains `1` for existing callers; `protocolVersion: 2`
-feature-detects additive capabilities and events. Development wallets also advertise bounded mint
-sessions (`requestMintSession`, `mintSession`, `stopMintSession`, `mintSessionChanged`, `mintSessions`
+feature-detects additive capabilities and events. Wallets that can run them also advertise bounded mint
+sessions, on development builds and on mainnet builds whose own checks allow them (`requestMintSession`, `mintSession`, `stopMintSession`, `mintSessionChanged`, `mintSessions`
 in capabilities; absent on older wallets, `null` where unavailable); types and validators
 (`parseMintSessionTerms`, `parseMintSessionSnapshot`) are exported. The snapshot parser accepts exact
 keys and closed value lists only, so a dapp built with an older version rejects snapshots that carry

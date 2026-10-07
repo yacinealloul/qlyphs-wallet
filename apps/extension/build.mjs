@@ -49,8 +49,13 @@ const developmentRules = mainnet
       process.env.NATIVE_FEE_SCHEDULE,
     );
 const feeRules = developmentRules?.feeSchedule ?? null;
-const pqPolicy = process.env.NATIVE_PQ_POLICY_FILE
-  ? policy(JSON.parse(await readFile(process.env.NATIVE_PQ_POLICY_FILE, 'utf8')))
+const pqPolicyBytes = process.env.NATIVE_PQ_POLICY_FILE
+  ? await readFile(process.env.NATIVE_PQ_POLICY_FILE)
+  : null;
+const pqPolicy = pqPolicyBytes ? policy(JSON.parse(pqPolicyBytes.toString('utf8'))) : null;
+// Lets a reviewer match BUILD.json to the exact policy file, e.g. deploy/mainnet/witness-policy.json.
+const pqPolicySHA256 = pqPolicyBytes
+  ? createHash('sha256').update(pqPolicyBytes).digest('hex')
   : null;
 if (
   pqPolicy &&
@@ -341,6 +346,7 @@ for (const target of ['chrome', 'firefox']) {
         providerProtocolVersion: 2,
         pqPolicyVersion: pqPolicy?.version ?? null,
         pqRulesHash: pqPolicy?.rulesHash ?? null,
+        pqPolicySHA256,
         format: 'QLYP-v1',
         scheme: 'ml-dsa-87',
         derivation: "m/44'/189189'/0'/0'/0'",

@@ -7,8 +7,8 @@ how much notice, and what a wallet checks before it signs. It is implemented in
 [`packages/native/src/tickers.ts`](../../packages/native/src/tickers.ts), and read by every QLYP
 indexer and witness. The key words MUST, MUST NOT and SHOULD are normative.
 
-**Status.** Implemented in code. Inactive on mainnet until the activation release, which sets the
-reviewed mainnet schedule at the same height as the progressive-1000-v2 activation. Until then mainnet
+**Status.** Implemented in code. The activation release sets the mainnet schedule from block 188,500,
+the same height as the progressive-1000-v2 activation. Below that height mainnet
 reads deploys and inscriptions at the fixed legacy fees exactly as before (section 5.5), and Qlyphs
 wallets refuse to sign them.
 
@@ -174,17 +174,18 @@ least 4,608 because Quantus extrinsics accept mortal eras of up to 4,096 blocks 
 
 ### 4.3 Mainnet
 
-- The mainnet schedule is a constant of the code, `MAINNET_FEE_SCHEDULE`, `null` today. The
-  activation release sets it, with `from` equal to the progressive-1000-v2 activation height `H`,
-  `H` above the pinned activation anchor, and `legacyBefore = true`. Mainnet accepts no configured
-  value, only the reviewed one, and refuses a schedule without `legacyBefore`.
-- **The mainnet role account ids are not yet pinned.** They will be published in
-  `MAINNET_FEE_SCHEDULE` and in this section with the activation release.
+- The mainnet schedule is a constant of the code, `MAINNET_FEE_SCHEDULE`. The activation release
+  sets it with `from` = `H` = 188,500, the progressive-1000-v2 activation height, and
+  `legacyBefore = true`; genesis rate `12200000000` (about 82 USD per QTC), `delay` 7,200,
+  `grace` 4,608, `guardianDelay` 50,400. Mainnet accepts no configured value, only the reviewed
+  one, and refuses a schedule without `legacyBefore`.
+- **Mainnet role account ids:** operator `0x1581d983b4e5ea7cdc09e367934cb3ee26668a9812e93c0fb11c233108dae379`, sentinel `0xadadf0774413e40aa14f9b8474cfbb84e59c369cb5aaeb49cc328422b7560feb`, guardian `0x58cefd2c30b74c033a3cbb09dbb956aecc55c236df5d5a8d0fdb7be0ec7f41f8`.
 - **Before `H`, mainnet reads the fixed legacy fees exactly as before fees-1.** From `H` the legacy
   amount stays accepted for `grace` blocks, so an operation priced and signed before `H` within the
   bounds of section 6.3 and included after it is still read; the other checks of section 5.3,
-  `BLOCKED` included, apply to it from `H`. Qlyphs wallets refuse to sign a rate-derived operation
-  on mainnet until the reviewed activation release. MINT keeps its fixed rule at every height.
+  `BLOCKED` included, apply to it from `H`. Qlyphs wallets refused to sign a rate-derived operation
+  on mainnet until the activation release; from it they sign one at the basis of the state it is
+  priced at. MINT keeps its fixed rule at every height.
 
 ### 4.4 Development and test networks
 

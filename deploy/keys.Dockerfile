@@ -5,7 +5,10 @@ RUN npm install --global pnpm@10.23.0
 WORKDIR /workspace
 COPY . .
 # The build refuses to finish unless the mainnet API answers this origin's CORS preflight.
-ENV QLYPHS_KEYS_PROFILE=production QLYPHS_KEYS_PINS=/workspace/deploy/mainnet/pins.json
+# The witness policy is the reviewed mainnet one (deploy/mainnet/witness-policy.json); the build
+# refuses it unless it matches the pins and the mainnet protocol rules.
+ENV QLYPHS_KEYS_PROFILE=production QLYPHS_KEYS_PINS=/workspace/deploy/mainnet/pins.json \
+    NATIVE_PQ_POLICY_FILE=/workspace/deploy/mainnet/witness-policy.json
 RUN pnpm install --frozen-lockfile && cd apps/keys && node build.mjs
 
 # The served files alone, to rebuild and compare a release (apps/keys/README.md, Verify a release):

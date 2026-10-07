@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Create deterministic development archives. Never package profiles or backups."""
+"""Create deterministic archives of dist/: the store package of a mainnet build, or development
+archives. Never package profiles or backups."""
 from pathlib import Path
 import hashlib
 import json
@@ -14,9 +15,15 @@ for browser in ("chrome", "firefox"):
     if not folder.is_dir():
         raise SystemExit("Build both extensions before packaging")
     manifest = json.loads((folder / "manifest.json").read_text())
-    if "Development" not in manifest["name"]:
-        raise SystemExit("This packager is for development artifacts only")
-    path = output / f"qlyphs-wallet-{browser}-development.zip"
+    build = json.loads((folder / "BUILD.json").read_text())
+    # A store package is a mainnet build (BUILD.json network "mainnet"), named by its version.
+    # A switchable build is for local installation only.
+    if manifest["name"] == "Qlyphs Wallet" and build.get("network") == "mainnet":
+        path = output / f"qlyphs-wallet-{browser}-{manifest['version']}.zip"
+    elif manifest["name"] == "Qlyphs Wallet (Development)" and "network" not in build:
+        path = output / f"qlyphs-wallet-{browser}-development.zip"
+    else:
+        raise SystemExit("Package a mainnet or a development build, not a switchable one")
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for item in sorted(folder.rglob("*")):
             if item.is_symlink():

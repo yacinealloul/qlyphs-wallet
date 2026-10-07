@@ -26,10 +26,12 @@ export const ERA_PERIOD = 256;
 /**
  * Native charge of one ticket creation (`MultisigFee`), pinned per runtime code hash. Sessions are
  * offered only on a pinned runtime: the service reports this charge, but a strict spend cap cannot
- * rest on a service figure. Development runtime 152: 0.03 QTC.
+ * rest on a service figure. Development runtime 152: 0.03 QTC. Quantus mainnet runtime 153 (the
+ * code hash in deploy/mainnet/pins.json): 0.003 QTC, read from its metadata.
  */
 export const TICKET_CHARGE: Readonly<Record<string, bigint>> = Object.freeze({
   '0xe2e37391ee730603d0c66dfbff9dafe9badc5dbc2caa7e151231e590c04ee820': 30_000_000_000n,
+  '0x78389c85e3698b7e24cf292907f2eec0657297fd8a4d82669cf357974f15ec56': 3_000_000_000n,
 });
 /** Network fees are estimates: an unresolved payment holds twice the service's estimate. */
 export const NETWORK_FEE_MARGIN = 2;
@@ -438,10 +440,17 @@ export function ticketCharge(runtime: string): bigint | null {
   return Object.hasOwn(TICKET_CHARGE, runtime) ? TICKET_CHARGE[runtime]! : null;
 }
 
-/** Sessions run only off mainnet, with compiled witness pins and a pinned ticket charge. They do
- * not depend on the mainnet activation of progressive mints. */
-export const sessionsAvailable = (network: string, pq: boolean, codeHash: string): boolean =>
-  network !== 'mainnet' && pq && ticketCharge(codeHash) !== null;
+/** Sessions run only with compiled witness pins and a pinned ticket charge, on either network.
+ * The mainnet activation of progressive mints is the caller's check, as for a single lot. */
+export const sessionsAvailable = (pq: boolean, codeHash: string): boolean =>
+  pq && ticketCharge(codeHash) !== null;
+
+/** Systems `runtime.getPlatformInfo()` names where extension sessions were tested: desktop
+ * Windows, macOS and Linux. Android (Firefox for Android), ChromeOS and anything else are refused,
+ * as Qlyphs Keys refuses them. */
+const SESSION_SYSTEMS: readonly string[] = ['win', 'mac', 'linux'];
+export const sessionPlatform = (os: unknown): boolean =>
+  typeof os === 'string' && SESSION_SYSTEMS.includes(os);
 
 /** The public end value: never names the wallet window or which context changed. */
 export function toSnapshotEnd(reason: WalletEndReason): MintSessionEnd {

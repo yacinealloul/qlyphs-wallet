@@ -73,7 +73,9 @@ const SESSION_EVENTS = ['mintSessionChanged'] as const;
 /**
  * What a wallet build advertises; `network` is the one network that build signs for.
  * `mintSessions` is null where the build cannot run mint sessions, and then the session methods and
- * event are not listed. Older wallets omit the field.
+ * event are not listed. The limits are the same on every network, but the default fails closed on
+ * mainnet: a mainnet wallet passes them explicitly once its own checks allow sessions. Older wallets
+ * omit the field.
  */
 export const capabilities = (
   network: NetworkName,

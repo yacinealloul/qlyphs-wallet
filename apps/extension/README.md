@@ -2,12 +2,13 @@
 
 Non-custodial browser extension (Chrome MV3, Firefox) for Quantus: it holds ML-DSA-87 keys, sends QTC and
 signs Qlyphs operations (Quarks, fair-mint tokens, bilateral token sales) for the Qlyphs app. Version
-**0.5.1**. A Qlyphs product, not an official Quantus wallet. QLYP-v1 assets are an indexed token overlay,
+**0.6.0**. A Qlyphs product, not an official Quantus wallet. QLYP-v1 assets are an indexed token overlay,
 not runtime-native `pallet_assets` balances; the bilateral market is not an AMM or open-taker order book.
 
-Mainnet builds require reviewed network pins. Purchases and progressive lot mints stay refused on
-mainnet until the post-quantum witnesses are validated there, and token creation and inscriptions
-until the reviewed fee schedule activation ([MAINNET.md](../../docs/MAINNET.md)).
+Mainnet builds require reviewed network pins. Purchases, token creation, inscriptions, lot mints and
+mint sessions on mainnet also require the reviewed mainnet witness policy compiled in; progressive
+tokens and their lot mints start at block 188,500 ([MAINNET.md](../../docs/MAINNET.md)). The store
+release is mainnet only; it has no network switch.
 The development build is for local chains only; do not import an account holding real funds into it.
 
 **Fees.** QLYP-v1 charges a Qlyphs fee, paid to the Qlyphs fee account in the same signed extrinsic:
@@ -20,16 +21,17 @@ buyer) of the QTC price of any token sale. The wallet reads the rate from a tip 
 witnesses, signs at that attested block so a rate change cannot cost the fee, and refuses a fee
 above its compiled ceiling (1 QTC per creation or inscription) and the six blocked tickers
 `BTC ETH QLYPHS QTC USDC USDT`. Before a fee schedule is active, the protocol keeps the legacy fees
-(1 QTC per creation, 0.1 QTC per inscription); on mainnet the wallet signs neither until the reviewed
-fee schedule release. A progressive lot also burns the runtime's multisig fee
+(1 QTC per creation, 0.1 QTC per inscription). Mainnet keeps them below block 188,500, where the
+schedule starts; a mainnet build signs either only from a tip attestation of both witnesses, so a build
+without the witness policy refuses both. A progressive lot also burns the runtime's multisig fee
 (0.03 QTC on the pinned development runtime) for its one-shot mint right. Token transfers and plain QTC sends carry no Qlyphs fee. The
 wallet recomputes the expected fee itself and refuses to sign when the service asks for a different one.
 Network fees come on top.
 
 ## Install
 
-- **Mainnet:** from the Chrome Web Store and Firefox Add-ons once published (not yet). Until then,
-  load a mainnet build unpacked (see Build).
+- **Mainnet:** from the [Chrome Web Store](https://chromewebstore.google.com/detail/qlyphs-wallet/eoolpkpilfjhehiomelomiahllmgpgjd).
+  Firefox Add-ons does not list it yet; load a mainnet build (see Build).
 - **Development:** load the default build unpacked against a local node (see Development network).
 
 Chrome: open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select
@@ -57,6 +59,7 @@ for their meaning and limits. Without an explicit pins file the mainnet build fa
 
 ```sh
 QLYPHS_EXTENSION_NETWORK=mainnet QLYPHS_EXTENSION_PINS="$PWD/deploy/mainnet/pins.json" \
+NATIVE_PQ_POLICY_FILE="$PWD/deploy/mainnet/witness-policy.json" \
   pnpm --filter @qotc/wallet-extension build
 ```
 
@@ -64,7 +67,10 @@ The mainnet build accepts only https origins and defaults to indexer API `https:
 `https://rpc1-mainnet.quantus.com` and explorer `https://qlyphs.com/explorer`. Its manifest is named "Qlyphs
 Wallet", carries no development `key` (the store assigns the Chrome ID) and uses the Firefox ID
 `wallet@qlyphs.com`. The configured service must accept the installed extension’s exact origin.
-Mainnet and switchable builds reject `NATIVE_PQ_POLICY_FILE`; purchases and lot mints remain disabled.
+A mainnet build accepts `NATIVE_PQ_POLICY_FILE` only when the policy matches the pins and the reviewed
+mainnet rules (`rulesHash`), and refuses the rules inputs `NATIVE_PROGRESSIVE_FROM`,
+`NATIVE_PROGRESSIVE_V2_FROM` and `NATIVE_FEE_SCHEDULE`. Without a policy it refuses purchases, lot
+mints, token creation and inscriptions. Switchable builds reject `NATIVE_PQ_POLICY_FILE`.
 
 **Development** (no env): the default build, unchanged. It accepts only loopback HTTP origins, defaults
 to API `http://127.0.0.1:4400`, RPC `http://127.0.0.1:9955` and explorer `http://localhost:3000/explorer`,
@@ -121,7 +127,7 @@ is not available. Do not expose an unauthenticated development RPC publicly.
 
 ## Balances and transaction review
 
-Send checks exclude frozen QTC and reserve estimated fees and the minimum account balance before opening a review and again before signing. A token transfer also requires QTC for fees. Creating a token, minting, inscribing and buying also reserve the Qlyphs fee (and, for a purchase, the price), and the review shows it as a separate **Qlyphs fee** row included in the estimated total. Pending or uncertain submissions continue to block another send until finality or verified expiry; the wallet displays the reason rather than silently retrying. An approved mint session is the only exception, for its own lot payments (see [Mint sessions](#mint-sessions-development-and-test-builds)).
+Send checks exclude frozen QTC and reserve estimated fees and the minimum account balance before opening a review and again before signing. A token transfer also requires QTC for fees. Creating a token, minting, inscribing and buying also reserve the Qlyphs fee (and, for a purchase, the price), and the review shows it as a separate **Qlyphs fee** row included in the estimated total. Pending or uncertain submissions continue to block another send until finality or verified expiry; the wallet displays the reason rather than silently retrying. An approved mint session is the only exception, for its own lot payments (see [Mint sessions](#mint-sessions)).
 
 The headline QTC balance reflects the current on-chain balance, including receipts before finality.
 The send form separately reports spendable funds and those still waiting for finality. Visible wallets
@@ -140,7 +146,7 @@ A five-minute absolute unlock deadline is not extended by dapp messages. Browser
 
 ## Post-quantum purchase and lot-mint verification
 
-Development purchases and progressive lot mints require QPA1 attestations in the extension's
+Purchases and progressive lot mints require QPA1 attestations in the extension's
 privileged background, or in the wallet worker for Qlyphs Keys. The wallet creates its own
 challenge, verifies both configured ML-DSA-87 witnesses against compiled public pins, checks the
 finalized reservation against the exact purchase bytes, and persists its authenticated high-water
@@ -152,16 +158,19 @@ the attested right exists. A tip attestation never moves the high-water checkpoi
 endpoint, a policy or a `verified` flag. The signing session is checked again after asynchronous
 verification.
 
-**Purchases, lot mints and mint sessions are disabled on mainnet and in switchable builds.** These
-builds reject a witness policy because mainnet witnesses have not been validated. Development builds
-without a policy also refuse them. QTC sends, legacy mint and ordinary transfers do not require
-this policy. Token creation and inscriptions require it once a fee schedule is active, because their
-fee comes from the attested rate: the wallet then verifies a tip attestation of both witnesses, prices
-the operation with the attested `current` rate, and signs with an era born exactly at that block. A
-rejection whose fee was paid (for example a symbol claimed first by another deploy) shows "Qlyphs
-fee kept".
+**Without a compiled witness policy, purchases and lot mints are refused.** That is every switchable
+build, which rejects a policy because one policy cannot serve both networks, and any mainnet or
+development build made without one. A mainnet build takes only the reviewed mainnet policy, and its
+lot mints start at block 188,500; mint sessions run there too, within the same limits as on
+development builds (see [Mint sessions](#mint-sessions)). QTC sends, legacy
+mint and ordinary transfers do not require this policy. Token creation and inscriptions require it
+wherever the build has a fee schedule, as every mainnet build does: the wallet verifies a tip
+attestation of both witnesses, prices the operation from that attested state (the attested `current`
+rate, or on mainnet below block 188,500 the legacy fee), and signs with an era born exactly at that
+block. A rejection whose fee was paid (for example a symbol claimed first by
+another deploy) shows "Qlyphs fee kept".
 
-### Mint sessions (development and test builds)
+### Mint sessions
 
 A dapp can ask for up to N lots of one progressive-1000-v2 token (N at most 25) in one review. The
 review shows the lot count, the signature limit, the Qlyphs fee cap per lot, the maximum protocol
@@ -227,6 +236,25 @@ the session, or cancels its start if the wallet has not started it yet.
   session and reloads the extension so the update installs at once: Firefox would otherwise keep
   the old version of an extension that listens for updates until the browser restarts. No listener
   is registered when no session runs, so updates then install as usual.
+
+**Where sessions run.** The same limits apply on mainnet and development builds. A build offers
+sessions (`capabilities().mintSessions` not `null`) only when all of these hold, and otherwise
+refuses every session method with `UNSUPPORTED_METHOD` before reading or signing anything:
+
+- it carries a witness policy (on mainnet, the reviewed
+  [`deploy/mainnet/witness-policy.json`](../../deploy/mainnet/witness-policy.json));
+- the runtime's native ticket charge is pinned in the wallet: 0.03 QTC on the development runtime,
+  0.003 QTC on Quantus mainnet runtime 153 (the code hash in
+  [`deploy/mainnet/pins.json`](../../deploy/mainnet/pins.json)). A service quoting another charge is
+  refused at review;
+- on mainnet, the reviewed activation of progressive mints is compiled in, as a single lot mint
+  requires; before block 188,500 no token can take a session;
+- the browser runs on desktop Windows, macOS or Linux, as `runtime.getPlatformInfo()` reports it.
+  Firefox for Android, ChromeOS and any other system are refused, and sessions stay off until the
+  system is known.
+
+A session never signs a payment with a tip, pays only progressive-1000-v2 lots, never resumes after
+a restart or a reorganization, and never counts a token's final lot itself.
 
 For a development environment with compatible witness services, compile their reviewed public policy:
 

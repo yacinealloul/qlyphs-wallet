@@ -8,7 +8,13 @@ Qlyphs Keys is the extension wallet ([apps/extension](../extension/README.md)) b
 It uses the same background and UI sources, unchanged. Only the browser glue is swapped: storage,
 messaging, windows and passkeys. It is a Qlyphs product, not an official Quantus wallet.
 
-- Network: **Quantus mainnet** only in production. Purchases and progressive lot mints are disabled, and so are mint sessions, until mainnet witness verification is validated; production builds reject `NATIVE_PQ_POLICY_FILE`.
+- Network: **Quantus mainnet** only in production. The release carries the reviewed mainnet witness
+  policy ([`deploy/mainnet/witness-policy.json`](../../deploy/mainnet/witness-policy.json)), which
+  purchases, token creation and inscriptions require; progressive tokens and their lot mints start at
+  block 188,500. The dapp adapter (`createKeysProvider`, `openKeysProvider`) does not offer mint
+  sessions on mainnet: it answers `capabilities` with `mintSessions: null` there and refuses
+  `requestMintSession` with `not-submitted` without opening the popup. Offering them needs a Keys
+  release that runs them on mainnet first, and only then an adapter that advertises them.
 - Accounts: ML-DSA-87 (post-quantum), derivation `m/44'/189189'/0'/0'/0'`, official
   `@quantus-network/wasm@0.3.1` SDK, whose `.wasm` hash is recorded in `BUILD.json`.
 - Every release can be rebuilt from this repository and checked byte for byte against the live site
@@ -66,9 +72,9 @@ messaging, windows and passkeys. It is a Qlyphs product, not an official Quantus
   only a readiness signal, never wallet status or secrets. The original request resumes once after
   setup; the controller still checks the origin, account, network and existing permission or asks for
   consent. Closing or cancelling the connection discards it, including late setup responses.
-- **Mint sessions** (development and test builds): a dapp's `requestMintSession` opens its review in
+- **Mint sessions**: a dapp's `requestMintSession` opens its review in
   that dapp's own popup overlay; after approval the overlay shows progress and Stop, as the
-  extension's [wallet window](../extension/README.md#mint-sessions-development-and-test-builds) does,
+  extension's [wallet window](../extension/README.md#mint-sessions) does,
   lost races and reorganizations included. Closing or reloading the popup or the overlay, locking or
   switching accounts stops signing. Leaving or reloading the dapp page stops it too when the stop that
   page sends as it leaves reaches the popup, which browsers do not guarantee (see
@@ -111,8 +117,9 @@ a running mint session.
   [fee schedule](../../docs/extension/PROTOCOL-FEES.md). That rate is read from a tip attestation of
   both witnesses, the transaction is signed at that attested block so a rate change cannot cost the
   fee, and a fee above the compiled ceiling (1 QTC per creation or inscription) or a blocked ticker
-  (`BTC ETH QLYPHS QTC USDC USDT`) is refused. On mainnet, creation and inscriptions stay refused
-  until the reviewed fee schedule activation.
+  (`BTC ETH QLYPHS QTC USDC USDT`) is refused. On mainnet the fee schedule starts at block 188,500;
+  below it, the attested state prices creation and inscriptions at the fixed legacy fees (1 QTC and
+  0.1 QTC). A mainnet build without the witness policy refuses both.
 
 **What the server sends, and how the browser is locked down** (`serve.mjs`)
 
@@ -183,8 +190,9 @@ node apps/keys/verify.mjs https://keys.qlyphs.com --local keys-release
 ```
 
 `--local` compares your `SHA256SUMS.txt`, line by line, with the one the site serves. The build uses
-the locked dependency tree (`pnpm install --frozen-lockfile`) and the mainnet pins committed in
-`deploy/mainnet/pins.json`. During the build, the mainnet indexer and RPC must answer a CORS preflight
+the locked dependency tree (`pnpm install --frozen-lockfile`), the mainnet pins committed in
+`deploy/mainnet/pins.json` and the mainnet witness policy committed in
+`deploy/mainnet/witness-policy.json`. During the build, the mainnet indexer and RPC must answer a CORS preflight
 for `https://keys.qlyphs.com`, so the build needs network access.
 
 If a check fails, do not use the site, and report it (see [Publish a release](#publish-a-release)).
@@ -275,7 +283,7 @@ const provider = createKeysProvider({ origin: 'https://keys.testnet.example', ne
 ```
 
 `capabilities().mintSessions` gives the session limits where sessions are offered, `null` where they
-are not (every mainnet build, and browsers where Keys does not run sessions: see Mint sessions in
+are not (browsers where Keys does not run sessions: see Mint sessions in
 [How it works](#how-it-works)), and is absent on wallets older than mint sessions: test it for
 truthiness. Where it is `null`, `requestMintSession` rejects with `UNSUPPORTED_METHOD` without opening
 the popup. The adapter computes `capabilities` in the dapp from the network and from the dapp page's
@@ -330,7 +338,8 @@ Production build (what `deploy/keys.Dockerfile` runs):
 
 ```sh
 cd apps/keys
-QLYPHS_KEYS_PROFILE=production QLYPHS_KEYS_PINS=$PWD/../../deploy/mainnet/pins.json node build.mjs
+QLYPHS_KEYS_PROFILE=production QLYPHS_KEYS_PINS=$PWD/../../deploy/mainnet/pins.json \
+NATIVE_PQ_POLICY_FILE=$PWD/../../deploy/mainnet/witness-policy.json node build.mjs
 node serve.mjs
 ```
 
@@ -357,7 +366,7 @@ QLYPHS_KEYS_DAPP_ORIGINS='["https://app.testnet.example"]' node build.mjs
 | `QLYPHS_KEYS_PINS` | mainnet pins file (genesis, runtime, activation); required for mainnet |
 | `QLYPHS_KEYS_ORIGIN` | where keys is served; default `https://keys.qlyphs.com` in a mainnet production build, required for testnet |
 | `QLYPHS_KEYS_API`, `QLYPHS_KEYS_RPC`, `QLYPHS_KEYS_EXPLORER` | endpoint overrides; required for testnet |
-| `NATIVE_PQ_POLICY_FILE` | reviewed public witness policy for development purchases and progressive lot mints only; rejected with mainnet or switchable |
+| `NATIVE_PQ_POLICY_FILE` | reviewed public witness policy, required for purchases, progressive lot mints and, where a fee schedule is active (always on mainnet), token creation and inscriptions. A mainnet build accepts only one that matches the pins and the reviewed mainnet `rulesHash` (`deploy/mainnet/witness-policy.json`); a development or testnet build only one that matches its rules inputs; a switchable build rejects it |
 | `NATIVE_PROGRESSIVE_FROM`, `NATIVE_PROGRESSIVE_V2_FROM` | the witnesses' activation heights of progressive-1000-v1 (tag 11) and -v2 (tag 12), checked with `NATIVE_PQ_POLICY_FILE`; unset when they have none |
 | `NATIVE_FEE_SCHEDULE` | the witnesses' fee schedule, strict JSON of a `FeeRules` object ([fee schedule, section 4](../../docs/extension/PROTOCOL-FEES.md#4-activation-model)), or unset for none; refused for mainnet builds; part of `rulesHash`, so it is compared with `NATIVE_PQ_POLICY_FILE` |
 | `QLYPHS_KEYS_DAPP_ORIGINS` | JSON array of 1 to 16 exact dapp origins; required for testnet |
@@ -395,7 +404,8 @@ Report a mismatch or a vulnerability privately, through GitHub's **Report a vuln
 | `public/` | `connect.html`, web-only CSS, demo dapp |
 
 `dist/keys/BUILD.json` records the build: version, network, pins, SDK and its `.wasm` SHA-256,
-endpoints, the dapp allowlist, and the key scheme and derivation path.
+endpoints, the dapp allowlist, the witness policy's version and `rulesHash` (`null` without one),
+and the key scheme and derivation path.
 
 ## License
 

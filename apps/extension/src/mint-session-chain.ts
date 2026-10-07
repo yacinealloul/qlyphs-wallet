@@ -4,6 +4,8 @@ import { encodeEra } from '../../../packages/chain/src/codec/extrinsic.ts';
 import { blake2_128 } from '../../../packages/chain/src/codec/hash.ts';
 import { ScaleReader } from '../../../packages/chain/src/codec/scale.ts';
 import { rpc } from './network.ts';
+import { PROFILE } from './profile.ts';
+import { finalHeight, finalityDepth } from '../../native/src/network.ts';
 import {
   type Block,
   type BlockSource,
@@ -63,6 +65,8 @@ export type Fate = Search | { kind: 'dead' } | { kind: 'expired' };
 export interface ChainReads extends BlockSource {
   /** The node's best block. */
   tip(signal: AbortSignal): Promise<Block>;
+  /** The block that counts as final, by the rule the indexer follows (finalityDepth): the node's
+   * finalized block, or the block that many below the best one when that is newer. */
   finalizedHead(signal: AbortSignal): Promise<Block>;
   /** The node's canonical hash at `height`, null when it has no block there. */
   canonicalAt(height: number, signal: AbortSignal): Promise<string | null>;
@@ -109,8 +113,20 @@ export function chainReads(owner: string): ChainReads {
   const key = SYSTEM_ACCOUNT + hex(blake2_128(fromHex(owner, 32))).slice(2) + owner.slice(2);
   const reads: ChainReads = {
     tip: async (signal) => block(await rpc<unknown>('chain_getBlockHash', [], { signal }), signal),
-    finalizedHead: async (signal) =>
-      block(await rpc<unknown>('chain_getFinalizedHead', [], { signal }), signal),
+    async finalizedHead(signal) {
+      const node = await block(await rpc<unknown>('chain_getFinalizedHead', [], { signal }), signal);
+      const depth = finalityDepth(PROFILE.network);
+      if (depth === null) return node;
+      // Read after the node's finalized block, so the best block is never below it.
+      const best = await reads.tip(signal);
+      requireThat(best.height >= node.height, INVALID);
+      const height = finalHeight(best.height, node.height, depth);
+      if (height === node.height) return node;
+      // The final block is proven an ancestor of the best one, not taken from the node's word.
+      const hash = (await provenAncestry(reads, best, height, signal))?.get(height);
+      requireThat(hash !== undefined, INVALID);
+      return { height, hash: hash! };
+    },
     async canonicalAt(height, signal) {
       requireThat(isHeight(height), 'Invalid block range');
       const hash = await rpc<unknown>('chain_getBlockHash', [height], { signal });
@@ -242,7 +258,7 @@ export async function findInclusion(
 }
 
 /** `findInclusion` at `tip`; while the payment is pending there, also whether it can still ever be
- * included, judged on the node's finalized chain. */
+ * included, judged on the final chain (`finalizedHead`). */
 export async function locatePayment(
   reads: ChainReads,
   p: Payment,

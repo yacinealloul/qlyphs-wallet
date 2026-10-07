@@ -1530,7 +1530,7 @@ export class MintSessionController {
     return outcome === 'failed' || outcome === 'anomaly' ? outcome : null;
   }
 
-  /** Marks recorded inclusions final; when the node's final block at an inclusion's height is
+  /** Marks recorded inclusions final; when the final chain's block at an inclusion's height is
    * another one, that payment and every later one are in doubt. Throttled. Returns whether the
    * record is reorganized. */
   private async refreshFinality(read: Reader): Promise<boolean> {

@@ -134,6 +134,10 @@ The send form separately reports spendable funds and those still waiting for fin
 refresh automatically (about 16 seconds when idle, 4 seconds while settling) and when the page regains
 focus; slow refreshes are allowed to finish. Successful inclusion is displayed as **Confirmed** in the
 receipt and Activity. Actual finality remains in the background journal and governs send checks.
+On mainnet a block counts as final once it is 20 blocks below the node's best block, or finalized
+by the node itself if that comes first; development keeps the node's own finality. The indexer, the
+witnesses and the wallet share this rule (`finalityDepth` in `packages/native/src/network.ts`), and the
+wallet refuses an indexer whose final height differs from its own by more than 3 blocks.
 
 Recovery confirmation keeps the acknowledgement, file-storage advice and both actions visible in
 short popups and sidebars.

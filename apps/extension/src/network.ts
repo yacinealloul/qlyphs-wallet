@@ -6,7 +6,7 @@ import { API, RPC } from './config.ts';
 import { sameNetwork } from './pinned-network.ts';
 import { MAINNET } from '../../../packages/native/src/protocol.ts';
 import type { ProgressiveLot, Ticket } from '../../../packages/native/src/protocol.ts';
-import { checkManifest } from '../../native/src/network.ts';
+import { checkManifest, finalHeight, finalityDepth } from '../../native/src/network.ts';
 import { PROFILE, WRONG_NETWORK_ERROR } from './profile.ts';
 import { decode, fromHex, hex, parseCall, requireThat } from '../../../packages/native/src/codec.ts';
 import { isRateDerived } from '../../../packages/native/src/fee-schedule.ts';
@@ -83,9 +83,14 @@ export async function network(pinned?:Manifest):Promise<Status> {
   requireThat(s.ready===true && s.network===PROFILE.network && s.mainnetEnabled===mainnet
     && !!m && m.genesis===genesis && m.runtimeHash===code,'Incorrect network or protocol activation');
   try {checkManifest(m,PROFILE);} catch {throw Error('Incorrect network or protocol activation');}
+  const headHeight=parseInt(head.number,16), nodeFinal=parseInt(finalHead.number,16);
+  requireThat(Number.isSafeInteger(headHeight) && Number.isSafeInteger(nodeFinal) && 0<=nodeFinal && nodeFinal<=headHeight,
+    'RPC unavailable or invalid response');
+  // The indexer reports the shared final height (finalityDepth), not the node's own finalized block.
+  const finalAt=finalHeight(headHeight,nodeFinal,finalityDepth(PROFILE.network));
   requireThat(!health.isSyncing && Number.isSafeInteger(s.head) && Number.isSafeInteger(s.finalized)
-    && s.finalized>=0 && s.finalized<=s.head && Math.abs(parseInt(head.number,16)-s.head)<=3
-    && Math.abs(parseInt(finalHead.number,16)-s.finalized)<=3 && Date.now()-s.lastSync<15000
+    && s.finalized>=0 && s.finalized<=s.head && Math.abs(headHeight-s.head)<=3
+    && Math.abs(finalAt-s.finalized)<=3 && Date.now()-s.lastSync<15000
     && s.lastSync<=Date.now()+5000,'Indexer is stale');
   requireThat(await rpc<string>('chain_getBlockHash',[s.finalized])===s.checkpoint,'Finalized checkpoint mismatch');
   if(pinned)requireThat(sameNetwork(m,pinned),'Network configuration changed; reconnect explicitly');

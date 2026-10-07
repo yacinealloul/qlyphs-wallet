@@ -51,6 +51,23 @@ export const DEV_RUNTIME: RuntimePin = {
 };
 export const DEVELOPMENT: NetworkProfile = { network: 'development', runtime: DEV_RUNTIME };
 
+/** How many blocks below the best one a mainnet block counts as final. The node's own finality is
+ * 100 blocks deep; observed mainnet reorganizations never went past 2. The indexer, the witnesses
+ * and the wallets all use this depth, and stop rather than follow a deeper reorganization.
+ * Development keeps the node's finality. */
+export const MAINNET_FINALITY_DEPTH = 20;
+export const finalityDepth = (network: NetworkName): number | null =>
+  network === 'mainnet' ? MAINNET_FINALITY_DEPTH : null;
+/** The height that counts as final: the node's finalized block, or `depth` below the best one when
+ * that is newer. */
+export function finalHeight(best: number, nodeFinalized: number, depth: number | null): number {
+  requireThat(
+    Number.isSafeInteger(best) && Number.isSafeInteger(nodeFinalized) && 0 <= nodeFinalized && nodeFinalized <= best,
+    'invalid chain heads',
+  );
+  return depth === null ? nodeFinalized : Math.max(nodeFinalized, best - depth);
+}
+
 const hash32 = (value: unknown, what: string): string => {
   requireThat(typeof value === 'string' && /^0x[0-9a-f]{64}$/.test(value), `invalid ${what}`);
   fromHex(value as string, 32);

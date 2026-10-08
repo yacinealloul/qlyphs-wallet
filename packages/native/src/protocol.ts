@@ -130,12 +130,12 @@ export const decodeOptions = (rules: Rules, height: number) => ({
  * it on: setting this value, with the mainnet witness policy that binds it, is the activation. The
  * Python verifier mirrors it (apps/native/verifier/replay.py). progressive-1000-v1 never runs on
  * mainnet. */
-export const MAINNET_PROGRESSIVE_V2_FROM: number | null = 188_500;
+export const MAINNET_PROGRESSIVE_V2_FROM: number | null = 208_500;
 /** The reviewed mainnet fee schedule. null until the activation release, which sets it with the
  * same `from` as MAINNET_PROGRESSIVE_V2_FROM and `legacyBefore` true: mainnet reads the legacy fees
  * up to `from` exactly as before, and for `grace` blocks after it. The Python verifier mirrors it. */
 export const MAINNET_FEE_SCHEDULE: FeeRules | null = {
-  from: 188_500,
+  from: 208_500,
   operator: '0x1581d983b4e5ea7cdc09e367934cb3ee26668a9812e93c0fb11c233108dae379',
   guardian: '0x58cefd2c30b74c033a3cbb09dbb956aecc55c236df5d5a8d0fdb7be0ec7f41f8',
   sentinel: '0xadadf0774413e40aa14f9b8474cfbb84e59c369cb5aaeb49cc328422b7560feb',

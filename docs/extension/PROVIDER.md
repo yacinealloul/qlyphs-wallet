@@ -139,10 +139,10 @@ runtime/nonce/sequence/ticket checks; a transaction request and an extension min
 require the live requesting document, while a Keys mint session requires the live popup channel.
 Purchases, progressive lot mints and mint sessions require compiled PQ trust pins (a witness policy)
 and fail-closed attestation checks; a build without a policy, which includes every switchable build,
-refuses all three. Mainnet progressive tokens, lot mints and mint sessions start at block 188,500. Where the build has a [fee schedule](PROTOCOL-FEES.md), as every mainnet
+refuses all three. Mainnet progressive tokens, lot mints and mint sessions start at block 208,500. Where the build has a [fee schedule](PROTOCOL-FEES.md), as every mainnet
 build does, `deploy`, `deployProgressive`, `deployProgressiveV2` and `inscribe` also require a
 verified tip attestation: their Qlyphs fee is a 25 USD target converted at the attested on-chain
-rate (on mainnet below block 188,500, the fixed legacy fee), capped by the wallet's compiled ceiling
+rate (on mainnet below block 208,500, the fixed legacy fee), capped by the wallet's compiled ceiling
 (1 QTC), and a blocked symbol (`BTC ETH QLYPHS QTC USDC USDT`) is refused. A mainnet build without
 the witness policy refuses these four; `mint` keeps its fixed 0.01 QTC fee. No signRaw,
 arbitrary bytes, caller RPC, permanent signing grant, Qlyphs fee other than the one the wallet

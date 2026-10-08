@@ -7,7 +7,7 @@ not runtime-native `pallet_assets` balances; the bilateral market is not an AMM 
 
 Mainnet builds require reviewed network pins. Purchases, token creation, inscriptions, lot mints and
 mint sessions on mainnet also require the reviewed mainnet witness policy compiled in; progressive
-tokens and their lot mints start at block 188,500 ([MAINNET.md](../../docs/MAINNET.md)). The store
+tokens and their lot mints start at block 208,500 ([MAINNET.md](../../docs/MAINNET.md)). The store
 release is mainnet only; it has no network switch.
 The development build is for local chains only; do not import an account holding real funds into it.
 
@@ -21,7 +21,7 @@ buyer) of the QTC price of any token sale. The wallet reads the rate from a tip 
 witnesses, signs at that attested block so a rate change cannot cost the fee, and refuses a fee
 above its compiled ceiling (1 QTC per creation or inscription) and the six blocked tickers
 `BTC ETH QLYPHS QTC USDC USDT`. Before a fee schedule is active, the protocol keeps the legacy fees
-(1 QTC per creation, 0.1 QTC per inscription). Mainnet keeps them below block 188,500, where the
+(1 QTC per creation, 0.1 QTC per inscription). Mainnet keeps them below block 208,500, where the
 schedule starts; a mainnet build signs either only from a tip attestation of both witnesses, so a build
 without the witness policy refuses both. A progressive lot also burns the runtime's multisig fee
 (0.03 QTC on the pinned development runtime) for its one-shot mint right. Token transfers and plain QTC sends carry no Qlyphs fee. The
@@ -165,12 +165,12 @@ verification.
 **Without a compiled witness policy, purchases and lot mints are refused.** That is every switchable
 build, which rejects a policy because one policy cannot serve both networks, and any mainnet or
 development build made without one. A mainnet build takes only the reviewed mainnet policy, and its
-lot mints start at block 188,500; mint sessions run there too, within the same limits as on
+lot mints start at block 208,500; mint sessions run there too, within the same limits as on
 development builds (see [Mint sessions](#mint-sessions)). QTC sends, legacy
 mint and ordinary transfers do not require this policy. Token creation and inscriptions require it
 wherever the build has a fee schedule, as every mainnet build does: the wallet verifies a tip
 attestation of both witnesses, prices the operation from that attested state (the attested `current`
-rate, or on mainnet below block 188,500 the legacy fee), and signs with an era born exactly at that
+rate, or on mainnet below block 208,500 the legacy fee), and signs with an era born exactly at that
 block. A rejection whose fee was paid (for example a symbol claimed first by
 another deploy) shows "Qlyphs fee kept".
 
@@ -252,7 +252,7 @@ refuses every session method with `UNSUPPORTED_METHOD` before reading or signing
   [`deploy/mainnet/pins.json`](../../deploy/mainnet/pins.json)). A service quoting another charge is
   refused at review;
 - on mainnet, the reviewed activation of progressive mints is compiled in, as a single lot mint
-  requires; before block 188,500 no token can take a session;
+  requires; before block 208,500 no token can take a session;
 - the browser runs on desktop Windows, macOS or Linux, as `runtime.getPlatformInfo()` reports it.
   Firefox for Android, ChromeOS and any other system are refused, and sessions stay off until the
   system is known.

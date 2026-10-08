@@ -11,7 +11,7 @@ messaging, windows and passkeys. It is a Qlyphs product, not an official Quantus
 - Network: **Quantus mainnet** only in production. The release carries the reviewed mainnet witness
   policy ([`deploy/mainnet/witness-policy.json`](../../deploy/mainnet/witness-policy.json)), which
   purchases, token creation and inscriptions require; progressive tokens and their lot mints start at
-  block 188,500. The dapp adapter (`createKeysProvider`, `openKeysProvider`) does not offer mint
+  block 208,500. The dapp adapter (`createKeysProvider`, `openKeysProvider`) does not offer mint
   sessions on mainnet: it answers `capabilities` with `mintSessions: null` there and refuses
   `requestMintSession` with `not-submitted` without opening the popup. Offering them needs a Keys
   release that runs them on mainnet first, and only then an adapter that advertises them.
@@ -117,7 +117,7 @@ a running mint session.
   [fee schedule](../../docs/extension/PROTOCOL-FEES.md). That rate is read from a tip attestation of
   both witnesses, the transaction is signed at that attested block so a rate change cannot cost the
   fee, and a fee above the compiled ceiling (1 QTC per creation or inscription) or a blocked ticker
-  (`BTC ETH QLYPHS QTC USDC USDT`) is refused. On mainnet the fee schedule starts at block 188,500;
+  (`BTC ETH QLYPHS QTC USDC USDT`) is refused. On mainnet the fee schedule starts at block 208,500;
   below it, the attested state prices creation and inscriptions at the fixed legacy fees (1 QTC and
   0.1 QTC). A mainnet build without the witness policy refuses both.
 

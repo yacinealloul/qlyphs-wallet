@@ -64,6 +64,10 @@ export async function rpc<T>(method:string,params:unknown[]=[],options:ReadOptio
 export function decimal(value:unknown):string {
   requireThat(typeof value==='string' && /^(0|[1-9]\d{0,38})$/.test(value),'Invalid amount from service'); return value as string;
 }
+/** `ready` already means the indexer synced within 15 s by its own clock, and the heights above tie
+ * it to the live chain. This device's clock can be off by many seconds, so lastSync is only checked
+ * against it loosely, to refuse a status that is plainly old. */
+const CLOCK_SKEW_MS=120_000;
 export async function network(pinned?:Manifest):Promise<Status> {
   const [s,genesis,chain,best,final]=await Promise.all([api<Status>('/api/status'),rpc<string>('chain_getBlockHash',[0]),
     rpc<string>('system_chain'),rpc<string>('chain_getBlockHash'),rpc<string>('chain_getFinalizedHead')]);
@@ -90,8 +94,7 @@ export async function network(pinned?:Manifest):Promise<Status> {
   const finalAt=finalHeight(headHeight,nodeFinal,finalityDepth(PROFILE.network));
   requireThat(!health.isSyncing && Number.isSafeInteger(s.head) && Number.isSafeInteger(s.finalized)
     && s.finalized>=0 && s.finalized<=s.head && Math.abs(headHeight-s.head)<=3
-    && Math.abs(finalAt-s.finalized)<=3 && Date.now()-s.lastSync<15000
-    && s.lastSync<=Date.now()+5000,'Indexer is stale');
+    && Math.abs(finalAt-s.finalized)<=3 && Math.abs(Date.now()-s.lastSync)<CLOCK_SKEW_MS,'Indexer is stale');
   requireThat(await rpc<string>('chain_getBlockHash',[s.finalized])===s.checkpoint,'Finalized checkpoint mismatch');
   if(pinned)requireThat(sameNetwork(m,pinned),'Network configuration changed; reconnect explicitly');
   return s;

@@ -139,10 +139,15 @@ export async function prepare(pinned:Manifest,owner:string,input:unknown,atteste
   checkInscribe(command);
   // A lot mint, and a rate-derived fee, are prepared at the block both witnesses attested: the era
   // is born there, so the service prices the same state as the wallet.
+  const askedAt=Date.now();
   const intent=await api<Prepared>('/api/prepare',block?{owner,command,block}:{owner,command});
+  const life=intent.expiresAt-intent.createdAt;
   requireThat(intent.owner===owner && typeof intent.id==='string' && /^[0-9a-f-]{36}$/.test(intent.id)
     && Number.isSafeInteger(intent.createdAt) && Number.isSafeInteger(intent.expiresAt)
-    && intent.expiresAt>Date.now() && intent.expiresAt<=Date.now()+125000,'Invalid preparation');
+    && life>0 && life<=125000 && Math.abs(Date.now()-intent.createdAt)<CLOCK_SKEW_MS,'Invalid preparation');
+  // The service dates the intent by its own clock. Its lifetime is counted on this device's clock
+  // from before the request, so a skewed clock neither refuses a fresh intent nor outlives it.
+  intent.expiresAt=askedAt+life;
   decimal(intent.sequence);
   const bytes=buildCall(pinned.genesis,owner,BigInt(intent.sequence),command,t,lot,basis);
   requireThat(hex(bytes)===intent.callHex,'Prepared call differs from requested action');

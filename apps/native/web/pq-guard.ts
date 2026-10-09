@@ -23,6 +23,26 @@ import { boundedJson } from '../src/pq/transport.ts';
 declare const QLYPHS_PQ_POLICY: Policy | null;
 const pins: Policy | null = typeof QLYPHS_PQ_POLICY === 'undefined' ? null : QLYPHS_PQ_POLICY;
 export const pqConfigured = pins !== null;
+/** How far this device's clock may be from the witnesses' and still be corrected. */
+const CLOCK_SKEW_MS = 120_000;
+/** The witnesses' clock minus this device's, read from the latest `issuedAt` of a bundle just
+ * received. Every bundle here signs a challenge this wallet drew just before asking, which already
+ * proves it fresh, so a device clock a few seconds off must not make it look stale or from the
+ * future. The verifier still checks each signed lifetime, counted on this device's clock from the
+ * moment the bundle arrived. An offset beyond CLOCK_SKEW_MS is not corrected and stays refused. */
+function witnessOffset(bundle: unknown): number {
+  const now = Date.now();
+  let latest = -Infinity;
+  const list = (bundle as { attestations?: unknown } | null)?.attestations;
+  if (Array.isArray(list))
+    for (const a of list) {
+      const issued = (a as { statement?: { issuedAt?: unknown } } | null)?.statement?.issuedAt;
+      if (typeof issued === 'number' && Number.isSafeInteger(issued) && issued > latest) latest = issued;
+    }
+  const offset = latest - now;
+  return Math.abs(offset) <= CLOCK_SKEW_MS ? offset : 0;
+}
+
 const DB = 'qlyphs-qpa-highwater-v1';
 async function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -89,7 +109,8 @@ export async function attestedLot(
     url.searchParams.set('challenge', challenge);
     let s: State;
     try {
-      s = verifyTipBundle(await boundedJson(url.href), p, challenge, block);
+      const bundle = await boundedJson(url.href);
+      s = verifyTipBundle(bundle, p, challenge, block, Date.now() + witnessOffset(bundle));
     } catch (error) {
       if (attempt > 0) throw error;
       await new Promise((r) => setTimeout(r, RETRY_MS));
@@ -173,7 +194,7 @@ export async function attestedAsset(
     let s: State, parent: string;
     try {
       const bundle = await boundedJson(url.href, signal ? AbortSignal.any([signal, limit]) : limit);
-      s = verifyTipBundle(bundle, p, challenge, block);
+      s = verifyTipBundle(bundle, p, challenge, block, Date.now() + witnessOffset(bundle));
       parent = signedParent(bundle);
     } catch (error) {
       // A stop is not a witness failure: it ends the attestation instead of earning a new try.
@@ -243,7 +264,7 @@ export async function attestedFees(
     let state: State;
     try {
       const bundle = await boundedJson(url.href, signal ? AbortSignal.any([signal, limit]) : limit);
-      state = verifyTipBundle(bundle, p, challenge, block);
+      state = verifyTipBundle(bundle, p, challenge, block, Date.now() + witnessOffset(bundle));
     } catch (error) {
       signal?.throwIfAborted();
       if (attempt > 0) throw error;
@@ -313,8 +334,9 @@ async function attested(
   );
   url.searchParams.set('challenge', challenge);
   const proof = await boundedJson(url.href);
+  const offset = witnessOffset(proof);
   // Expensive verification happens before the IndexedDB transaction, whose lifetime is short.
-  const verified = verifyBundle(proof, p, challenge, null);
+  const verified = verifyBundle(proof, p, challenge, null, Date.now() + offset);
   check(verified.state);
   const db = await database();
   try {
@@ -355,6 +377,6 @@ async function attested(
     db.close();
   }
   // Persistence must not extend a signed claim beyond its original lifetime.
-  verifyBundle(proof, p, challenge, verified.cursor);
+  verifyBundle(proof, p, challenge, verified.cursor, Date.now() + offset);
   return verified.cursor;
 }

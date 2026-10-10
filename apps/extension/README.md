@@ -2,7 +2,7 @@
 
 Non-custodial browser extension (Chrome MV3, Firefox) for Quantus: it holds ML-DSA-87 keys, sends QTC and
 signs Qlyphs operations (Quarks, fair-mint tokens, bilateral token sales) for the Qlyphs app. Version
-**0.6.0**. A Qlyphs product, not an official Quantus wallet. QLYP-v1 assets are an indexed token overlay,
+**0.7.0**. A Qlyphs product, not an official Quantus wallet. QLYP-v1 assets are an indexed token overlay,
 not runtime-native `pallet_assets` balances; the bilateral market is not an AMM or open-taker order book.
 
 Mainnet builds require reviewed network pins. Purchases, token creation, inscriptions, lot mints and

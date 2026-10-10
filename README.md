@@ -141,9 +141,9 @@ These are stated plainly so you don't have to guess.
   load a build.
 - On mainnet, purchases, token creation and inscriptions need the witnesses' attestations, so a
   build without the mainnet witness policy refuses them. The fee schedule and progressive tokens
-  start at block 208,500; below it creation and inscriptions keep the fixed legacy fees
+  start at block 212,250; below it creation and inscriptions keep the fixed legacy fees
   ([MAINNET.md](docs/MAINNET.md), [fee schedule](docs/extension/PROTOCOL-FEES.md)). Mint sessions
-  run on mainnet from block 208,500 with the same limits as on development builds, on desktop
+  run on mainnet from block 212,250 with the same limits as on development builds, on desktop
   Windows, macOS or Linux only. Sending QTC works.
 - A web wallet downloads its code on every visit. A release check proves what the site served *to you,
   when you checked*. It cannot prove what another visitor received.

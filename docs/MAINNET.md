@@ -52,12 +52,12 @@ token creation and inscriptions. Mint sessions run on mainnet with the same limi
 development builds, only in builds with the witness policy and the reviewed activation.
 
 The [fee schedule](extension/PROTOCOL-FEES.md) and progressive-1000-v2 run on mainnet from block
-208,500: progressive tokens and their lot mints start there. Earlier wallet releases refuse every
+212,250: progressive tokens and their lot mints start there. Earlier wallet releases refuse every
 rate-derived operation (token creation, progressive token creation and inscriptions) on mainnet
 ("Qlyphs fees are not active on mainnet yet."). The current wallet signs token creation and
 inscriptions only from a verified tip attestation from both witnesses, at every height: below block
-208,500 at the fixed legacy fees (1 QTC per creation, 0.1 QTC per inscription), from it at the fee
-converted at the attested on-chain rate. Until block 208,500 the protocol reads such an operation
+212,250 at the fixed legacy fees (1 QTC per creation, 0.1 QTC per inscription), from it at the fee
+converted at the attested on-chain rate. Until block 212,250 the protocol reads such an operation
 from any client at those legacy fees, as before the fee schedule. For the schedule's grace window after that height it still
 reads one signed before it with a mortal era within the bounds of the fee schedule, section 6.3.
 After the grace window the legacy amount is no longer accepted as a transition amount: it remains

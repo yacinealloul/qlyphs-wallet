@@ -7,7 +7,7 @@ how much notice, and what a wallet checks before it signs. It is implemented in
 [`packages/native/src/tickers.ts`](../../packages/native/src/tickers.ts), and read by every QLYP
 indexer and witness. The key words MUST, MUST NOT and SHOULD are normative.
 
-**Status.** Implemented in code. The activation release sets the mainnet schedule from block 208,500,
+**Status.** Implemented in code. The activation release sets the mainnet schedule from block 212,250,
 the same height as the progressive-1000-v2 activation. Below that height mainnet
 reads deploys and inscriptions at the fixed legacy fees exactly as before (section 5.5), and Qlyphs
 wallets refuse to sign them.
@@ -175,7 +175,7 @@ least 4,608 because Quantus extrinsics accept mortal eras of up to 4,096 blocks 
 ### 4.3 Mainnet
 
 - The mainnet schedule is a constant of the code, `MAINNET_FEE_SCHEDULE`. The activation release
-  sets it with `from` = `H` = 208,500, the progressive-1000-v2 activation height, and
+  sets it with `from` = `H` = 212,250, the progressive-1000-v2 activation height, and
   `legacyBefore = true`; genesis rate `12200000000` (about 82 USD per QTC), `delay` 7,200,
   `grace` 4,608, `guardianDelay` 50,400. Mainnet accepts no configured value, only the reviewed
   one, and refuses a schedule without `legacyBefore`.

@@ -1,6 +1,7 @@
 /** Accounts share their wallet's encrypted root phrase. Legacy records are index 0. */
 import { fromHex, requireThat } from '../../../packages/native/src/codec.ts';
 import { validateVault } from './vault.ts';
+import { walletGenesis } from './profile.ts';
 import type { Vault, Identity } from './vault.ts';
 import { validatePasskey } from './passkey-vault.ts';
 import type { PasskeyVault } from './passkey-vault.ts';
@@ -126,6 +127,8 @@ export function selectAccount(book: AccountBook, owner: string): void {
   book.otherAccounts[index] = previous;
   activate(book, next);
 }
+/** `genesis` binds every vault and grant to one network; a switchable build's shared wallet passes
+ * none, and each vault is then checked against its own network (profile.ts `walletGenesis`). */
 export function validateAccounts(
   book: AccountBook,
   genesis: string | undefined,
@@ -140,8 +143,7 @@ export function validateAccounts(
     owners = new Set<string>(),
     indices = new Set<number>();
   for (const a of all) {
-    requireThat(genesis, 'Missing network configuration');
-    validateVault(a.vault, genesis!);
+    validateVault(a.vault, genesis ?? a.vault.genesis);
     accountName(a.name);
     if (a.derived) {
       const d = a.derived;
@@ -181,7 +183,12 @@ export function validateAccounts(
       'Invalid site permissions',
     );
     for (const grant of Object.values(a.grants))
-      requireThat(grant?.owner === owner && grant.genesis === genesis, 'Invalid site permissions');
+      requireThat(
+        grant?.owner === owner &&
+          typeof grant.genesis === 'string' &&
+          (genesis === undefined ? walletGenesis(grant.genesis) : grant.genesis === genesis),
+        'Invalid site permissions',
+      );
     if (a.passkey) validatePasskey(a.passkey, a.vault, origin);
   }
 }

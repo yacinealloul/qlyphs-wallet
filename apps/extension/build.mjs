@@ -17,6 +17,23 @@ if (!['development', 'mainnet', 'switchable'].includes(networkName))
 const switchable = networkName === 'switchable';
 const mainnet = networkName === 'mainnet';
 const withMainnet = mainnet || switchable;
+// A switchable build may replace the local development network with a public test network. It keeps
+// the development profile, so it never signs for the mainnet genesis, and it has no defaults: all
+// four endpoints are named, reached over public HTTPS, and none is a mainnet service or dapp.
+const TESTNET_ENV = [
+  'QLYPHS_EXTENSION_TESTNET_API',
+  'QLYPHS_EXTENSION_TESTNET_RPC',
+  'QLYPHS_EXTENSION_TESTNET_EXPLORER',
+  'QLYPHS_EXTENSION_TESTNET_DAPP_ORIGINS',
+];
+const testnetNamed = TESTNET_ENV.filter((name) => process.env[name] !== undefined);
+if (testnetNamed.length && !switchable)
+  throw Error('QLYPHS_EXTENSION_TESTNET_* is only read with QLYPHS_EXTENSION_NETWORK=switchable');
+if (testnetNamed.length && testnetNamed.length !== TESTNET_ENV.length)
+  throw Error(
+    `A testnet names all its endpoints; missing ${TESTNET_ENV.filter((name) => !testnetNamed.includes(name)).join(', ')}`,
+  );
+const testnet = testnetNamed.length > 0;
 // The mainnet lock: no pins file, no mainnet (or switchable) build.
 if (withMainnet && !process.env.QLYPHS_EXTENSION_PINS)
   throw Error('A mainnet build requires QLYPHS_EXTENSION_PINS (genesis, runtime and activation pins)');
@@ -26,8 +43,9 @@ const pins = withMainnet ? JSON.parse(await readFile(process.env.QLYPHS_EXTENSIO
 const mainnetPins = withMainnet ? mainnetProfile(pins) : null;
 const profile = withMainnet ? mainnetPins : DEVELOPMENT;
 // A mainnet wallet carries a witness policy only once the progressive and fee activation is
-// reviewed, and only in a mainnet build: one policy cannot serve both networks of a switchable build.
-if (withMainnet && process.env.NATIVE_PQ_POLICY_FILE && (switchable || !mainnetReviewed()))
+// reviewed. A switchable build's policy is a development one: the wallet uses it on that network
+// only, and the policy's genesis binds it there too.
+if (mainnet && process.env.NATIVE_PQ_POLICY_FILE && !mainnetReviewed())
   throw Error('PQ witnesses are not validated on mainnet yet; build without NATIVE_PQ_POLICY_FILE');
 if (
   switchable &&
@@ -59,7 +77,7 @@ const pqPolicySHA256 = pqPolicyBytes
   : null;
 if (
   pqPolicy &&
-  withMainnet &&
+  mainnet &&
   // The mainnet policy binds the pinned network and the reviewed progressive activation.
   (pqPolicy.genesis !== mainnetPins.genesis ||
     pqPolicy.activation.height !== mainnetPins.activation.height ||
@@ -73,7 +91,7 @@ if (
   throw Error('PQ policy does not match the mainnet pins and the reviewed protocol');
 if (
   pqPolicy &&
-  !withMainnet &&
+  !mainnet &&
   // The policy binds the witnesses' progressive activations and fee schedule too.
   (pqPolicy.rulesHash !== rulesHash(undefined, developmentRules) ||
     pqPolicy.runtimeHash !== DEV_RUNTIME_HASH ||
@@ -114,14 +132,17 @@ const dapps = process.env.QLYPHS_EXTENSION_DAPP_ORIGINS
         'http://localhost:3001',
         'http://localhost:3101',
       ];
-if (
-  !Array.isArray(dapps) ||
-  dapps.length < 1 ||
-  dapps.length > 16 ||
-  dapps.some((origin) => typeof origin !== 'string') ||
-  new Set(dapps).size !== dapps.length
-)
-  throw Error(`Dapp origins must be a unique list of 1 to 16 exact ${networkName} origins`);
+const checkList = (list, name) => {
+  if (
+    !Array.isArray(list) ||
+    list.length < 1 ||
+    list.length > 16 ||
+    list.some((origin) => typeof origin !== 'string') ||
+    new Set(list).size !== list.length
+  )
+    throw Error(`Dapp origins must be a unique list of 1 to 16 exact ${name} origins`);
+};
+checkList(dapps, networkName);
 function checkOrigins(mainnet, values) {
  for (const value of values) {
   const u = new URL(value);
@@ -164,19 +185,40 @@ const DEV_DAPPS = [
   'http://localhost:3001',
   'http://localhost:3101',
 ];
-const networks = switchable
+// With a testnet, the development side of a switchable build is that public network instead.
+const development = testnet
   ? {
-      development: {
-        api: 'http://127.0.0.1:4400',
-        rpc: 'http://127.0.0.1:9955',
-        dapps: DEV_DAPPS,
-        explorer: 'http://localhost:3000/explorer',
-        profile: DEVELOPMENT,
-      },
-      mainnet: { api, rpc, dapps, explorer, profile: mainnetPins },
+      api: process.env.QLYPHS_EXTENSION_TESTNET_API,
+      rpc: process.env.QLYPHS_EXTENSION_TESTNET_RPC,
+      dapps: JSON.parse(process.env.QLYPHS_EXTENSION_TESTNET_DAPP_ORIGINS),
+      explorer: process.env.QLYPHS_EXTENSION_TESTNET_EXPLORER,
+      profile: DEVELOPMENT,
+      testnet: true,
     }
+  : {
+      api: 'http://127.0.0.1:4400',
+      rpc: 'http://127.0.0.1:9955',
+      dapps: DEV_DAPPS,
+      explorer: 'http://localhost:3000/explorer',
+      profile: DEVELOPMENT,
+      testnet: false,
+    };
+const networks = switchable
+  ? { development, mainnet: { api, rpc, dapps, explorer, profile: mainnetPins, testnet: false } }
   : null;
-if (networks) checkOrigins(false, [networks.development.api, networks.development.rpc, ...networks.development.dapps]);
+if (networks) {
+  checkList(development.dapps, testnet ? 'testnet' : 'development');
+  checkOrigins(testnet, [development.api, development.rpc, ...development.dapps]);
+}
+if (testnet) {
+  const u = new URL(development.explorer);
+  if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash)
+    throw Error('A testnet explorer must be an HTTPS URL without credentials, query or fragment');
+  // A testnet wallet stays apart from mainnet: none of its services or dapps.
+  const mainnetOrigins = [api, rpc, ...dapps];
+  for (const value of [development.api, development.rpc, ...development.dapps])
+    if (mainnetOrigins.includes(value)) throw Error(`A testnet cannot use the mainnet origin ${value}`);
+}
 const everyApi = networks ? [networks.mainnet.api, networks.development.api] : [api];
 const everyRpc = networks ? [networks.mainnet.rpc, networks.development.rpc] : [rpc];
 const everyDapp = networks ? [...new Set([...networks.mainnet.dapps, ...networks.development.dapps])] : dapps;
@@ -268,12 +310,16 @@ for (const target of ['chrome', 'firefox']) {
   await writeFile(`${outdir}/quantus_wasm_bg.wasm`, binary);
   const manifest = {
     manifest_version: 3,
-    name: mainnet ? 'Qlyphs Wallet' : switchable ? 'Qlyphs Wallet (Mainnet + Development)' : 'Qlyphs Wallet (Development)',
+    name: mainnet
+      ? 'Qlyphs Wallet'
+      : switchable
+        ? `Qlyphs Wallet (Mainnet + ${testnet ? 'Testnet' : 'Development'})`
+        : 'Qlyphs Wallet (Development)',
     version,
     description: mainnet
       ? STORE_SUMMARY
       : switchable
-        ? 'Quantus wallet for mainnet and the development network, switched in Settings.'
+        ? `Quantus wallet for mainnet and the ${testnet ? 'test' : 'development'} network, switched in Settings.`
         : 'Non-custodial development wallet for Quantus and Qlyphs assets. Mainnet disabled.',
     permissions: ['storage', 'alarms', ...(target === 'chrome' ? ['sidePanel'] : [])],
     optional_permissions: ['notifications'],

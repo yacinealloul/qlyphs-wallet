@@ -25,3 +25,13 @@ export function useProfile(profile: NetworkProfile): void {
 export const buildGenesis = (genesis: string, profile: NetworkProfile = PROFILE): boolean =>
   profile.network === 'mainnet' ? genesis === profile.genesis : genesis !== MAINNET;
 export const requireBuildGenesis = (genesis: string): void => requireThat(buildGenesis(genesis), WRONG_NETWORK_ERROR);
+let walletProfiles: readonly NetworkProfile[] | null = null;
+/** Switchable builds only: one wallet serves every compiled network, so a vault (or passkey) made on
+ * any of them opens on the active one. Signing still binds the active network's genesis. */
+export function shareWallet(profiles: readonly NetworkProfile[] | null): void {
+  walletProfiles = profiles;
+}
+/** Whether a stored vault's genesis belongs to this wallet: the active network, or any compiled
+ * network of a switchable build. */
+export const walletGenesis = (genesis: string): boolean =>
+  (walletProfiles ?? [PROFILE]).some((profile) => buildGenesis(genesis, profile));

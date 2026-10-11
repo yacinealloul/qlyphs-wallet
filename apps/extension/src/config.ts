@@ -1,9 +1,10 @@
 /** Endpoints are fixed at build time and cannot be supplied by a dapp. A switchable build carries
  * both networks' endpoints and pins; which one is active is the user's choice, stored by the
- * extension itself (Settings), never something a page can set. */
+ * extension itself (Settings), never something a page can set. Its wallet is the same on both:
+ * switching changes where the wallet reads and submits, not which keys it holds. */
 import type { NetworkName, NetworkProfile } from '../../native/src/network.ts';
 import { browser } from './browser.ts';
-import { useProfile } from './profile.ts';
+import { shareWallet, useProfile } from './profile.ts';
 
 export interface NetworkEndpoints {
   api: string;
@@ -11,6 +12,8 @@ export interface NetworkEndpoints {
   dapps: readonly string[];
   explorer: string;
   profile: NetworkProfile;
+  /** The development side is a public test network rather than a local one. */
+  testnet?: boolean;
 }
 
 declare const QLYPHS_API: string;
@@ -23,6 +26,10 @@ declare const QLYPHS_NETWORKS: Readonly<Record<NetworkName, NetworkEndpoints>> |
 const NETWORKS = typeof QLYPHS_NETWORKS === 'undefined' ? null : QLYPHS_NETWORKS;
 /** Both networks are compiled in: the user can switch between them in Settings. */
 export const SWITCHABLE = NETWORKS !== null;
+if (SWITCHABLE) shareWallet([NETWORKS!.mainnet.profile, NETWORKS!.development.profile]);
+/** A switchable build whose development network is a public test network: same profile and wallet
+ * storage as development, named "Testnet" to the user. */
+export const TESTNET = SWITCHABLE && NETWORKS!.development.testnet === true;
 /** The network used until the user picks one: mainnet. */
 export const DEFAULT_NETWORK: NetworkName = 'mainnet';
 
@@ -71,19 +78,20 @@ export function loadNetwork(): Promise<void> {
   return loading;
 }
 
-/** Where the wallet state lives. Development keeps the historical key, so an existing development
- * wallet is untouched; mainnet has its own, so the two never mix. */
-export const walletKey = (): string =>
-  SWITCHABLE && NETWORK === 'mainnet' ? 'wallet:mainnet' : 'wallet';
-
 /** A compiled network's profile (switchable builds only). */
 export const profileOf = (name: NetworkName): NetworkProfile => NETWORKS![name].profile;
 
-/** Store the user's choice and make it active in this context. The background then reloads the
- * wallet state for it; extension pages reload to pick it up. */
+/** Store the user's choice and make it active in this context. The background then moves the
+ * wallet to that network's pinned manifest; extension pages reload to pick it up. */
 export async function switchNetwork(name: NetworkName): Promise<void> {
   if (!SWITCHABLE) throw Error('This build has a single network');
   await browser.storage.local.set({ [CHOICE_KEY]: name });
+  useNetwork(name);
+}
+/** Make `name` active in this context only: an extension page follows the background's switch
+ * without storing anything or reloading. */
+export function useNetwork(name: NetworkName): void {
+  if (!SWITCHABLE) throw Error('This build has a single network');
   apply(name);
   loading = Promise.resolve();
 }

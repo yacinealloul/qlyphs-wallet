@@ -138,8 +138,8 @@ canonical-byte reconstruction, real fee/deposit estimates and live origin/accoun
 runtime/nonce/sequence/ticket checks; a transaction request and an extension mint session also
 require the live requesting document, while a Keys mint session requires the live popup channel.
 Purchases, progressive lot mints and mint sessions require compiled PQ trust pins (a witness policy)
-and fail-closed attestation checks; a build without a policy, which includes every switchable build,
-refuses all three. Mainnet progressive tokens, lot mints and mint sessions start at block 212,250. Where the build has a [fee schedule](PROTOCOL-FEES.md), as every mainnet
+and fail-closed attestation checks; a build without a policy, and the mainnet side of every
+switchable build, refuses all three. Mainnet progressive tokens, lot mints and mint sessions start at block 212,250. Where the build has a [fee schedule](PROTOCOL-FEES.md), as every mainnet
 build does, `deploy`, `deployProgressive`, `deployProgressiveV2` and `inscribe` also require a
 verified tip attestation: their Qlyphs fee is a 25 USD target converted at the attested on-chain
 rate (on mainnet below block 212,250, the fixed legacy fee), capped by the wallet's compiled ceiling
@@ -432,7 +432,9 @@ The extension's default provider origins are:
 | Switchable | both sets; only the selected network's origins may connect |
 
 `QLYPHS_EXTENSION_DAPP_ORIGINS` accepts 1–16 distinct exact origins at build time: loopback HTTP in
-development, public HTTPS on mainnet. A switchable build refuses endpoint and origin overrides.
+development, public HTTPS on mainnet. A switchable build refuses endpoint and origin overrides; its
+optional public testnet names its own with `QLYPHS_EXTENSION_TESTNET_*` (public HTTPS, no mainnet
+origin).
 Content and controller both enforce exact origin/port checks because browser match patterns cannot
 restrict ports. The allowlist only permits requesting connection; each origin must still receive its
 own explicit account grant. RPC/API/PQ targets remain fixed separately.

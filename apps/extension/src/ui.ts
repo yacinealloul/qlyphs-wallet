@@ -16,7 +16,7 @@ import { mountSculptures } from './sculpture.ts';
 import { browser } from './browser.ts';
 import { explorerURL } from './explorer-link.ts';
 import { incomingBalance, spendableBalance } from './send-balance.ts';
-import { VERSION, EXPLORER, loadNetwork } from './config.ts';
+import { VERSION, EXPLORER, TESTNET, loadNetwork, useNetwork } from './config.ts';
 import { MAINNET_BUILD } from './profile.ts';
 import { applyNetworkCopy, networkName } from './network-copy.ts';
 import { formatUnits, parseUnits, json } from '../../native/src/commands.ts';
@@ -153,8 +153,12 @@ if (surface === 'popup' && document.documentElement.dataset.extension === 'true'
 // A switchable build resolves its network before anything below reads it.
 await loadNetwork();
 $('build-version').textContent = 'v' + VERSION;
-$('about-version').textContent = (MAINNET_BUILD ? 'Mainnet · v' : 'Development · v') + VERSION;
-applyNetworkCopy();
+/** Network wording, at startup and again after a switch. */
+function paintNetwork() {
+  $('about-version').textContent = (MAINNET_BUILD ? 'Mainnet · v' : TESTNET ? 'Testnet · v' : 'Development · v') + VERSION;
+  applyNetworkCopy();
+}
+paintNetwork();
 $('menu-version').textContent = 'v' + VERSION;
 let passkeyAbort: AbortController | undefined;
 
@@ -183,7 +187,7 @@ interface UIState {
   transactions: Tx[];
   pqConfigured: boolean;
   /** Which network this wallet is on, and whether Settings may switch it. */
-  network?: { active: 'development' | 'mainnet'; switchable: boolean; carry?: boolean };
+  network?: { active: 'development' | 'mainnet'; switchable: boolean };
   /** The selected account's running mint session, or its last one whose payments are not settled. */
   mintSession?: MintSessionStatus | null;
   api: string;
@@ -618,8 +622,7 @@ type OnboardingScreen =
   | 'phrase'
   | 'import-password'
   | 'backup'
-  | 'restore-password'
-  | 'carry';
+  | 'restore-password';
 let onboardingScreen: OnboardingScreen = 'choice';
 let recoveryPage = 0;
 let recoveryPages = 0;
@@ -705,7 +708,6 @@ function onboarding(screen: OnboardingScreen, focus = true) {
     'import-password': 'Recovery phrase · 2 of 2',
     backup: 'Encrypted backup · 1 of 2',
     'restore-password': 'Encrypted backup · 2 of 2',
-    carry: 'Development wallet',
   }[screen];
   const view = document.querySelector<HTMLElement>(`[data-onboarding-screen="${screen}"]`)!;
   view.querySelector('.wizard-content')?.scrollTo(0, 0);
@@ -787,7 +789,6 @@ function clearSecrets() {
     'import-password',
     'import-phrase',
     'restore-password',
-    'carry-password',
     'password',
     'reveal-password',
     'passkey-password',
@@ -1904,6 +1905,28 @@ function resetAccountView() {
   $('phrase').textContent = '';
   $('recovery').hidden = true;
 }
+/** Same wallet, other network: this page follows in place, on the same tab. Only what the old
+ * network showed (balances, assets, activity) is cleared, then read again. */
+async function followNetwork(name: 'mainnet' | 'development') {
+  useNetwork(name);
+  paintNetwork();
+  resetNetworkView();
+  await render();
+  if (state?.unlocked || watchOnly) await balances(true);
+}
+/** After a network switch: forget everything the old chain showed, keep how the wallet is viewed. */
+function resetNetworkView() {
+  const watching = watchOnly,
+    scroll = $('wallet').scrollTop;
+  resetAccountView();
+  watchOnly = watching;
+  // The user switched from Settings: stay where they were.
+  $('wallet').scrollTop = scroll;
+  syncWalletScroll();
+  chainSamples.length = 0;
+  awaitingSince = awaitingRequest = trackedHash = undefined;
+  paintTracker([]);
+}
 function positionAccountMenu(menu: HTMLElement, options: HTMLElement) {
   const rect = options.getBoundingClientRect();
   menu.style.left =
@@ -2201,14 +2224,6 @@ $('add-wallet').addEventListener('click', () => {
   syncViews();
   onboarding('choice');
 });
-click('carry-accounts', async () => {
-  if (!state?.unlocked) return;
-  clearSecrets();
-  addingWallet = true;
-  message('');
-  syncViews();
-  onboarding('carry');
-});
 form('account-name-form', async () => {
   if (!state?.unlocked) return;
   try {
@@ -2230,7 +2245,6 @@ for (const [id, screen] of [
   ['choose-import', 'import-choice'],
   ['choose-phrase', 'phrase'],
   ['choose-backup', 'backup'],
-  ['choose-carry', 'carry'],
 ] as const)
   $(id).addEventListener('click', () => {
     if (!busy) {
@@ -2257,7 +2271,6 @@ $('onboarding-back').addEventListener('click', () => {
     'import-password': 'phrase',
     backup: 'import-choice',
     'restore-password': 'backup',
-    carry: 'choice',
   };
   const target = previous[onboardingScreen];
   // Leaving a method discards its secrets; going back within it preserves the draft.
@@ -2337,28 +2350,6 @@ form('import-form', async () => {
     await balances();
   } catch (error) {
     $<HTMLInputElement>('import-password').value = '';
-    throw error;
-  }
-});
-form('carry-form', async () => {
-  if (onboardingScreen !== 'carry') return;
-  message('');
-  try {
-    const r = await call<{ carried: number; skipped: number }>('carry', {
-      password: value('carry-password'),
-    });
-    addingWallet = false;
-    clearSecrets();
-    await render();
-    message(
-      `${r.carried === 1 ? '1 account' : `${r.carried} accounts`} ready on mainnet.` +
-        (r.skipped ? ` ${r.skipped} use another password: import them separately.` : ''),
-      false,
-      true,
-    );
-    await balances();
-  } catch (error) {
-    $<HTMLInputElement>('carry-password').value = '';
     throw error;
   }
 });
@@ -2487,12 +2478,14 @@ async function inspectConnection(recover = false) {
       ? 'The network now matches. Use Retry connection to reload your balances.'
       : differentChain
         ? MAINNET_BUILD ? 'The services report a different chain. Sending stays paused until they serve Quantus mainnet again.'
-          : 'This is a different development chain. Restart the original local chain to use this wallet’s balances.'
+          : TESTNET
+            ? 'The services report a different test chain. Sending stays paused until they serve the saved one again.'
+            : 'This is a different development chain. Restart the original local chain to use this wallet’s balances.'
         : 'The chain matches, but its runtime, activation or network format differs. Restore the saved configuration before sending.';
     $('message').textContent = matches
       ? 'The saved network is available again.'
       : differentChain
-        ? MAINNET_BUILD ? 'A different network is connected. Sending is paused.' : 'A different development network is running. Sending is paused.'
+        ? MAINNET_BUILD || TESTNET ? 'A different network is connected. Sending is paused.' : 'A different development network is running. Sending is paused.'
         : 'The network configuration has changed. Sending is paused.';
     pairs('connection-values', [
       ['Saved genesis', saved?.genesis ?? 'Not configured'],
@@ -3080,9 +3073,8 @@ function syncNetworkSwitch() {
   const switchable = !!state?.network?.switchable;
   $('network-settings').hidden = !switchable;
   for (const label of document.querySelectorAll<HTMLElement>('[data-network-name]'))
-    label.textContent = state?.network?.active === 'mainnet' ? 'Quantus Mainnet' : 'Quantus Devnet';
-  $('choose-carry').hidden = !state?.network?.carry;
-  $('carry-accounts').hidden = !state?.network?.carry || !state?.account;
+    label.textContent =
+      state?.network?.active === 'mainnet' ? 'Quantus Mainnet' : TESTNET ? 'Quantus Testnet' : 'Quantus Devnet';
   for (const group of document.querySelectorAll<HTMLElement>('[data-network-switch]'))
     group.hidden = !switchable;
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-switch-network]')) {
@@ -3091,21 +3083,26 @@ function syncNetworkSwitch() {
   }
 }
 for (const button of document.querySelectorAll<HTMLButtonElement>('[data-switch-network]'))
-  button.addEventListener('click', async () => {
+  button.addEventListener('click', () => {
     const name = button.dataset.switchNetwork as 'mainnet' | 'development';
     if (state?.network?.active === name) return;
-    message(
-      `Switching to ${name === 'mainnet' ? 'Quantus mainnet' : 'the development network'}… The wallet locks and reopens.`,
-      false,
-      true,
-    );
-    try {
-      // The wallet locks and moves to the other network; this page reopens on it.
-      await call('switch-network', { network: name });
-      location.reload();
-    } catch (error) {
-      message(uiError(error), true);
-    }
+    // Busy for the whole switch: the status polls pause, so the page never paints the wallet
+    // half-way (no account while the background moves to the other network's pin).
+    void task(async () => {
+      message(
+        `Switching to ${name === 'mainnet' ? 'Quantus mainnet' : TESTNET ? 'the test network' : 'the development network'}…`,
+        false,
+        true,
+      );
+      try {
+        await call('switch-network', { network: name });
+      } catch (error) {
+        message(uiError(error), true);
+        return;
+      }
+      await followNetwork(name);
+      message(`Now on ${name === 'mainnet' ? 'Quantus mainnet' : TESTNET ? 'the test network' : 'the development network'}.`, false, true);
+    }, button);
   });
 const walletMenu = $<HTMLDialogElement>('wallet-menu');
 let menuExit: Animation | undefined;
@@ -3335,6 +3332,9 @@ setInterval(() => {
   void call<UIState>('status')
     .then(async (next) => {
       if (busy || request !== renderRequest) return;
+      // Another view (popup or side panel) switched the network: follow it.
+      if (next.network?.switchable && state?.network && next.network.active !== state.network.active)
+        return void task(() => followNetwork(next.network!.active));
       const switched = next.account?.owner !== state?.account?.owner;
       const renamed =
         next.name !== state?.name ||

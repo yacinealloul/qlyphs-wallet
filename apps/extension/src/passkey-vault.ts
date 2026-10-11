@@ -3,7 +3,7 @@
  */
 import { fromHex, hex, requireThat } from '../../../packages/native/src/codec.ts';
 import type { Vault, Derive } from './vault.ts';
-import { buildGenesis } from './profile.ts';
+import { walletGenesis } from './profile.ts';
 export interface PasskeyVault {
   version: 1;
   credentialId: string;
@@ -55,7 +55,7 @@ export function validatePasskey(input: unknown, vault: Vault, origin: string): P
       v.owner === vault.owner &&
       v.address === vault.address &&
       v.genesis === vault.genesis &&
-      buildGenesis(v.genesis) &&
+      walletGenesis(v.genesis) &&
       v.origin === origin,
     'Passkey belongs to a different wallet or extension',
   );

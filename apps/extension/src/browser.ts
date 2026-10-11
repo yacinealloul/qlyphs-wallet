@@ -36,7 +36,8 @@ export interface ExtensionAPI {
   };
   windows: {
     getCurrent?():Promise<{id?:number}>;
-    create(options:{url:string;type:'popup';width:number;height:number}): Promise<{id?:number}>;
+    create(options:{url:string;type:'popup';width:number;height:number;left?:number;top?:number}): Promise<{id?:number}>;
+    get?(id:number): Promise<{left?:number;top?:number;width?:number;state?:string}>;
     /** Keys only: opens a confirmation in the popup of the dapp page whose tab id is `opener`, never
      * in another dapp's popup. Browsers have no such member and keep using `create`. */
     openFor?(opener:number,url:string): Promise<{id?:number}>;

@@ -58,7 +58,7 @@ and IndexedDB high-water cursor. It verifies signatures, network/activation/rule
 lifetime, same finalized snapshot, rollback/equivocation rules and exact purchase bytes before
 using the signing key. After waiting it repeats cancellation, account, permission, session epoch
 and deadline checks. Trust pins are not accepted from page messages, storage or API responses.
-A development package without a compiled policy refuses purchases, lot mints, and creation and inscriptions priced by a fee schedule. A mainnet build accepts only a policy that matches its pins and the reviewed mainnet rules (`deploy/mainnet/witness-policy.json`); switchable builds reject a policy. Missing/divergent/invalid attestations never
+A development package without a compiled policy refuses purchases, lot mints, and creation and inscriptions priced by a fee schedule. A mainnet build accepts only a policy that matches its pins and the reviewed mainnet rules (`deploy/mainnet/witness-policy.json`); a switchable build accepts only a development policy and never uses it on mainnet. Missing/divergent/invalid attestations never
 fall back to the unsigned view or an ordinary QTC payment.
 
 Witnesses are attestations by configured operators, not a proof of honest computation. Witness operators remain dependent on their full nodes, metadata and rules; collusion or
@@ -103,10 +103,11 @@ Documentation can evolve; runtime behavior is ultimately checked against the exa
 
 ## Derived accounts and network separation
 
-A switchable build keeps separate network manifests, grants and histories. Its explicit carry action
-can reuse development phrases and addresses on mainnet, re-encrypting vault metadata for that genesis.
-Network separation does not imply independent private keys; phrase compromise affects every network
-where that phrase is reused.
+A switchable build keeps one wallet for both networks: a vault made on either opens on the other,
+while new vaults, grants checks and signatures bind the active network's genesis. Each network keeps
+its own pinned manifest; switching cancels pending approvals, ends mint sessions and disconnects
+every site, but does not lock. A mainnet-only build still refuses development vaults. The same
+private keys serve both networks: phrase compromise affects every network where that phrase is used.
 
 An independent wallet owns a v1/v2 authenticated root vault at index 0. Derived account records share that encrypted vault and carry a public index and identity; they never store raw private keys. The background verifies the derived identity against the decrypted phrase on password/passkey unlock and same-wallet account switching. It signs with the selected account index and checks the parsed signer against the reviewed owner before broadcast. All account selections invalidate pending approvals and rotate the session epoch without extending the common unlock deadline. Both same-wallet and cross-wallet selections retain installation access, and both are blocked during signing. Dapps cannot derive accounts or extend an unlock session.
 

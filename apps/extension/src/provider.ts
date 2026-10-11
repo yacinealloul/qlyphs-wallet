@@ -1,5 +1,5 @@
 /** Page-side provider bridge with origin-bound requests and cancellation. */
-import { DAPPS } from './config.ts';
+import { ALL_DAPPS } from './config.ts';
 import {
   CAPABILITIES,
   QlyphsError,
@@ -16,8 +16,10 @@ import type {
   WalletEventMap,
 } from '../../../packages/provider/src/index.ts';
 /** Untrusted MAIN world. This bridge cannot authenticate itself to same-page scripts.
- * Only the browser-owned controller can grant access or approve a signature. */
-if (window.top === window && DAPPS.includes(location.origin) && !Object.hasOwn(window, 'qlyphs')) {
+ * Only the browser-owned controller can grant access or approve a signature. The page cannot read
+ * which network a switchable build has active, so the bridge appears on any compiled network's
+ * origin; the background answers only the active network's origins. */
+if (window.top === window && ALL_DAPPS.includes(location.origin) && !Object.hasOwn(window, 'qlyphs')) {
   type Pending = {
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;

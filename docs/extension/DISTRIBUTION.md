@@ -79,7 +79,8 @@ purchases, lot mints and mint sessions, and, wherever the build has a fee schedu
 creation and inscriptions. A mainnet build accepts only a policy that matches its pins and the
 reviewed mainnet rules (`rulesHash`): the committed `deploy/mainnet/witness-policy.json`. A
 development build accepts only one that matches its rules inputs and the development runtime.
-Switchable builds reject the variable.
+A switchable build accepts only such a development policy and uses it on its development or test
+network only; its mainnet side has none.
 Private signing keys and passphrases must never enter the build context. Policy rotations require
 reviewed releases; `BUILD.json` records a policy, but does not independently audit it.
 

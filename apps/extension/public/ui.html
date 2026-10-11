@@ -136,7 +136,7 @@
         >
         <svg class="account-chevron" aria-hidden="true"><use href="#i-back" /></svg>
       </button>
-      <span class="badge"><i></i>DEVNET</span
+      <span class="badge" data-testnet="TESTNET"><i></i>DEVNET</span
       ><button
         id="refresh"
         class="icon"
@@ -177,7 +177,7 @@
         <svg><use href="#i-expand" /></svg>
       </button>
     </header>
-    <div class="dev-notice" data-dev-only>Development network <span>·</span> Test assets only</div>
+    <div class="dev-notice" data-dev-only data-testnet="Testnet ">Development network <span>·</span> Test assets only</div>
     <main id="main">
       <div id="feedback">
         <p id="message" role="status" aria-live="polite">Opening your wallet…</p>
@@ -196,7 +196,7 @@
           </div>
           <div class="network-switch" role="group" aria-label="Network" data-network-switch hidden>
               <button type="button" class="secondary" data-switch-network="mainnet" aria-pressed="false">Mainnet</button>
-              <button type="button" class="secondary" data-switch-network="development" aria-pressed="false">Development</button>
+              <button type="button" class="secondary" data-switch-network="development" aria-pressed="false" data-testnet="Testnet">Development</button>
             </div>
           <p id="network-reload-hint" class="field-hint" hidden></p>
           <div id="connection-details" hidden>
@@ -222,12 +222,12 @@
               Get started <svg><use href="#i-up" /></svg>
             </button>
             <button id="retry-network" class="secondary wide" hidden>Retry connection</button>
-            <button id="show-setup-network" class="text-button wide" type="button" data-mainnet="Network details">
+            <button id="show-setup-network" class="text-button wide" type="button" data-mainnet="Network details" data-testnet="Testnet details">
               Development network details
             </button>
             <div class="network-switch" role="group" aria-label="Network" data-network-switch hidden>
               <button type="button" class="secondary" data-switch-network="mainnet" aria-pressed="false">Mainnet</button>
-              <button type="button" class="secondary" data-switch-network="development" aria-pressed="false">Development</button>
+              <button type="button" class="secondary" data-switch-network="development" aria-pressed="false" data-testnet="Testnet">Development</button>
             </div>
             <p class="legal" data-mainnet="Independent, unaudited wallet.">Independent, unaudited wallet. Test funds only.</p>
           </div>
@@ -265,9 +265,6 @@
               Create a wallet <svg><use href="#i-up" /></svg>
             </button>
             <button id="choose-import" class="secondary wide" type="button">Import a wallet</button>
-            <button id="choose-carry" class="secondary wide" type="button" hidden>
-              Use my development wallet
-            </button>
           </div>
         </div>
         <form id="create-form" data-onboarding-screen="create" class="wizard-screen" hidden>
@@ -464,38 +461,6 @@
                 Restore wallet <svg><use href="#i-up" /></svg>
               </button>
             </div>
-          </div>
-        </form>
-        <form id="carry-form" data-onboarding-screen="carry" class="wizard-screen" hidden>
-          <div class="wizard-content">
-            <h1 tabindex="-1">Use your development wallet</h1>
-            <p class="intro">All your accounts, same addresses, now on Quantus mainnet.</p>
-            <label
-              >Wallet password<span class="input-wrap"
-                ><input
-                  id="carry-password"
-                  aria-describedby="carry-password-hint"
-                  type="password"
-                  minlength="6"
-                  maxlength="256"
-                  required
-                  autocomplete="current-password" /><button
-                  type="button"
-                  class="input-icon"
-                  data-password="carry-password"
-                  aria-label="Show password"
-                  aria-pressed="false"
-                >
-                  <svg><use href="#i-eye" /></svg></button></span
-            ></label>
-            <p id="carry-password-hint" class="field-hint" aria-live="polite">
-              The password that unlocks it on the development network. It becomes the mainnet password.
-            </p>
-          </div>
-          <div class="wizard-actions">
-            <button type="submit" class="wide">
-              Use this wallet <svg><use href="#i-up" /></svg>
-            </button>
           </div>
         </form>
       </section>
@@ -770,7 +735,7 @@
                 <span class="field-label">Your wallet address</span
                 ><span id="receive-address" class="address-box mono"></span>
               </div>
-              <p class="transfer-note" data-mainnet="Only send assets on Quantus mainnet.">Only send assets on this Quantus development network.</p>
+              <p class="transfer-note" data-mainnet="Only send assets on Quantus mainnet." data-testnet="Only send assets on the Quantus test network.">Only send assets on this Quantus development network.</p>
             </div>
             <div class="flow-actions">
               <button id="copy-receive" class="wide">
@@ -924,16 +889,13 @@
               <h2 class="display-title">Network</h2>
               <div class="display-options" role="group" aria-label="Network">
                 <button class="secondary" data-switch-network="mainnet" aria-pressed="false">Mainnet</button>
-                <button class="secondary" data-switch-network="development" aria-pressed="false">
+                <button class="secondary" data-switch-network="development" aria-pressed="false" data-testnet="Testnet">
                   Development
                 </button>
               </div>
               <p class="field-hint">
-                Each network keeps its own wallet. Switching locks the wallet and restarts it.
+                Same wallet and accounts on every network. Switching changes where it reads and sends.
               </p>
-              <button id="carry-accounts" class="secondary wide" type="button" hidden>
-                Bring my development accounts
-              </button>
             </div>
             <details id="passkey-panel" class="card security-card">
               <summary>
@@ -1026,7 +988,7 @@
             </details>
             <details class="card">
               <summary>
-                <span>Account & network<small data-mainnet="Quantus mainnet · Account 1">Quantus development · Account 1</small></span>
+                <span>Account & network<small data-mainnet="Quantus mainnet · Account 1" data-testnet="Quantus testnet · Account 1">Quantus development · Account 1</small></span>
               </summary>
               <pre id="account-details"></pre>
             </details>

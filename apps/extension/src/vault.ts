@@ -3,7 +3,7 @@
  * same legacy ML-DSA-87 derivation. JS strings cannot be reliably zeroized. */
 import { fromHex, hex, requireThat } from '../../../packages/native/src/codec.ts';
 import type { NetworkProfile } from '../../native/src/network.ts';
-import { buildGenesis, requireBuildGenesis } from './profile.ts';
+import { buildGenesis, requireBuildGenesis, walletGenesis } from './profile.ts';
 export const PATH = "m/44'/189189'/0'/0'/0'";
 export const VAULT_PASSWORD_ERROR = 'Cannot unlock: incorrect password or damaged backup';
 export const VAULT_MODULE_ERROR = 'Password accepted, but the wallet signing module failed. Reload the extension and try again.';
@@ -22,13 +22,13 @@ function aad(v: Vault): Uint8Array {
   return new TextEncoder().encode(JSON.stringify({version:v.version,genesis:v.genesis,
     scheme:v.scheme,path:v.path,owner:v.owner,address:v.address}));
 }
-/** `profile` defaults to the active network; carrying a wallet across networks names its source. */
+/** Without `profile`, any network this wallet serves (see profile.ts `walletGenesis`). */
 export function validateVault(input: unknown, genesis: string, profile?: NetworkProfile): Vault {
   requireThat(input && typeof input === 'object' && !Array.isArray(input), 'Invalid backup');
   const v = input as Vault;
   const fields = ['version','genesis','scheme','path','owner','address','salt','iv','iterations','cipher'];
   requireThat(Object.keys(v).length === fields.length && fields.every(k => Object.hasOwn(v,k)), 'Invalid backup fields');
-  requireThat((v.version === 1 || v.version === 2) && v.genesis === genesis && buildGenesis(genesis, profile)
+  requireThat((v.version === 1 || v.version === 2) && v.genesis === genesis && (profile ? buildGenesis(genesis, profile) : walletGenesis(genesis))
     && v.scheme === 'ml-dsa-87' && v.path === PATH && v.iterations === work(v.version), 'Unsupported backup or network');
   fromHex(genesis,32); fromHex(v.owner,32); fromHex(v.salt,16); fromHex(v.iv,12);
   requireThat(typeof v.address === 'string' && v.address.length > 0 && v.address.length < 80, 'Invalid address');

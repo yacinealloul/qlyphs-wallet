@@ -37,12 +37,10 @@ import {
   loadNetwork,
   NETWORK,
   PROFILE,
-  profileOf,
   RPC,
   SWITCHABLE,
   switchNetwork,
   VERSION,
-  walletKey,
 } from './config.ts';
 import { api, digestOf, network, prepare, recheck, tipBlock } from './network.ts';
 import { qlyphNumbers } from './qlyphs.ts';
@@ -107,7 +105,7 @@ import {
   attestedFees,
   attestedLot,
   authorizePurchase,
-  pqConfigured,
+  pqConfigured as policyBundled,
 } from '../../native/web/pq-guard.ts';
 import type { AttestedAsset } from '../../native/web/pq-guard.ts';
 import {
@@ -158,6 +156,8 @@ interface Stored extends AccountBook {
   version: 2 | 3;
   notifications?: boolean;
   manifest?: Manifest;
+  /** Switchable builds: the other network's pinned manifest, kept while this one is active. */
+  parked?: Manifest;
   transactions: Transaction[];
   /** Mint session ledger: bookkeeping and display; every liability is also in `transactions`. */
   mintSessions?: MintSessionRecord[];
@@ -266,16 +266,23 @@ let writes: Promise<void> = Promise.resolve(),
   resetting = false;
 const pendingGrants = new Set<string>();
 const root = browser.runtime.getURL('');
-const emptyState = (): Stored => ({
-  version: 2,
-  backed: false,
-  grants: {},
-  transactions: [],
-  otherAccounts: [],
-});
-/** Read the active network's wallet state (a switchable build keeps one per network). */
+/** A network switch in progress: UI requests wait for it (see the privileged handler). */
+let switching: Promise<void> | null = null;
+/** Where the wallet lives: one state for every network of a switchable build. */
+const WALLET_KEY = 'wallet';
+/** Switchable builds: `manifest` holds the active network's pin and `parked` the other one's, so
+ * the same wallet keeps a pin per network. */
+function placeManifests(s: Stored): void {
+  const pins = [s.manifest, s.parked].filter((m): m is Manifest => m !== undefined);
+  const active = pins.find((m) => m.network === PROFILE.network),
+    other = pins.find((m) => m.network !== PROFILE.network);
+  if (active) s.manifest = active;
+  else delete s.manifest;
+  if (other) s.parked = other;
+  else delete s.parked;
+}
 async function readState(): Promise<void> {
-  const stored = (await browser.storage.local.get(walletKey()))[walletKey()];
+  const stored = (await browser.storage.local.get(WALLET_KEY))[WALLET_KEY];
   if (stored !== undefined) {
     const s = stored as Stored;
     const legacy = (stored as { version: number }).version === 1;
@@ -287,7 +294,9 @@ async function readState(): Promise<void> {
         typeof s.grants === 'object',
       'Unsupported wallet data; preserve your backup',
     );
-    if (s.vault) {
+    if (SWITCHABLE) placeManifests(s);
+    if (s.vault && SWITCHABLE) validateVault(s.vault, s.vault.genesis);
+    else if (s.vault) {
       requireThat(s.manifest, 'Missing network configuration');
       validateVault(s.vault, s.manifest!.genesis);
     }
@@ -311,7 +320,7 @@ async function readState(): Promise<void> {
         s.accountIndex = 1;
       }
     }
-    validateAccounts(s, s.manifest?.genesis, root.replace(/\/$/, ''));
+    validateAccounts(s, SWITCHABLE ? undefined : s.manifest?.genesis, root.replace(/\/$/, ''));
     if (s.access) {
       const roots = records(s).filter((a) => !a.derived);
       requireThat(
@@ -351,7 +360,7 @@ async function readState(): Promise<void> {
     }
     state = s;
     if (legacy || Object.keys(archive).length)
-      await browser.storage.local.set({ ...archive, [walletKey()]: structuredClone(state) });
+      await browser.storage.local.set({ ...archive, [WALLET_KEY]: structuredClone(state) });
     for (const tx of state.transactions)
       if (tx.status === 'signed-not-submitted') tx.status = 'cancelled-before-broadcast';
     // A session never resumes after a restart: no window, page or channel bound it here.
@@ -360,41 +369,29 @@ async function readState(): Promise<void> {
     resolveFromJournal(ledger, state.transactions);
   }
 }
-/** Mainnet (switchable build): the development wallet, which the user can carry over with all its
- * accounts. Same recovery phrases, so the same addresses; each wallet is re-encrypted for mainnet
- * with the password that unlocks the development one. A mainnet wallet may already exist only if
- * all its accounts come from development (an earlier, partial carry): nothing of its own is lost. */
-async function developmentWallet(): Promise<Stored | null> {
-  if (!SWITCHABLE || NETWORK !== 'mainnet') return null;
-  const dev = (await browser.storage.local.get('wallet')).wallet as Stored | undefined;
-  if (!dev?.vault) return null;
-  try {
-    const book = { ...dev, otherAccounts: dev.otherAccounts ?? [] };
-    const devRecords = records(book);
-    for (const a of devRecords) validateVault(a.vault, a.vault.genesis, profileOf('development'));
-    if (state.vault) {
-      const owners = new Set(devRecords.map((a) => recordIdentity(a).owner)),
-        mine = records(state);
-      if (mine.length >= devRecords.length) return null;
-      if (!mine.every((a) => owners.has(recordIdentity(a).owner))) return null;
-    }
-    return book;
-  } catch {
-    return null;
-  }
+/** Switchable builds: a wallet reaching a network for the first time pins it, as setup does. On
+ * mainnet the pin must match the build's; elsewhere it is the network the services report. */
+async function pinNetwork(): Promise<void> {
+  if (!SWITCHABLE || !state.vault || state.manifest) return;
+  const s = await network();
+  if (state.manifest) return;
+  state.manifest = s.manifest;
+  await save();
 }
 const loaded = (async () => {
-  // A switchable build learns its network first: the wallet state is stored per network.
+  // A switchable build learns its network first: it picks that network's pin.
   await loadNetwork();
   await browser.storage.local.setAccessLevel?.({
     accessLevel: 'TRUSTED_CONTEXTS',
   });
   await readState();
 })();
+// A wallet opened on a network it never reached pins it once that network answers; nothing waits.
+void loaded.then(pinNetwork).catch(() => undefined);
 function save(): Promise<void> {
   requireThat(!resetting, 'Wallet reset in progress. Try again.');
   const snapshot = structuredClone(state);
-  const next = writes.then(() => browser.storage.local.set({ [walletKey()]: snapshot }));
+  const next = writes.then(() => browser.storage.local.set({ [WALLET_KEY]: snapshot }));
   writes = next.catch(() => undefined);
   return next;
 }
@@ -501,7 +498,7 @@ function transferDisplay(review: Review): Partial<Transaction> {
   if (c.kind === 'inscribe') return { symbol: 'Quark' };
   return {};
 }
-function accountTransactions(owner = state.vault ? account().owner : undefined): Transaction[] {
+function accountTransactions(owner = state.vault && state.manifest ? account().owner : undefined): Transaction[] {
   return state.transactions.filter(
     (tx) => tx.owner === owner && tx.genesis === state.manifest?.genesis,
   );
@@ -705,7 +702,8 @@ async function syncHistory(): Promise<Transaction[]> {
   // bytes leave. Every await is therefore followed by a fresh check.
   const final = (tx: Transaction) => FINAL_STATUSES.includes(tx.status);
   for (const tx of state.transactions) {
-    if (final(tx)) continue;
+    // Another network's entries wait until the wallet is back on it: only its indexer knows them.
+    if (final(tx) || tx.genesis !== state.manifest?.genesis) continue;
     try {
       const s = await api<{
         status: string;
@@ -832,7 +830,7 @@ async function createJob(
       requireSettledAccount(a);
       const command = parseCommand(input);
       if (command.kind === 'buy')
-        requireThat(pqConfigured, 'Purchases disabled: no bundled PQ witness policy');
+        requireThat(pqConfigured(), 'Purchases disabled: no bundled PQ witness policy');
       // Mainnet runs progressive-1000-v2 and the fee schedule only from their reviewed activation,
       // and never v1: before it, a progressive deploy or lot, and any rate-derived fee, is refused
       // there.
@@ -846,7 +844,7 @@ async function createJob(
         requireThat(PROFILE.network !== 'mainnet' || mainnetReviewed(), MAINNET_FEES_OFF);
       // A progressive mint is priced and built only from terms both witnesses attest.
       if (command.kind === 'mintProgressive')
-        requireThat(pqConfigured, 'Progressive mint disabled: no bundled PQ witness policy');
+        requireThat(pqConfigured(), 'Progressive mint disabled: no bundled PQ witness policy');
       // The terms come from both witnesses' attestation of a recent best block, which the mint's
       // signature will then commit to.
       const attested =
@@ -882,7 +880,7 @@ async function createJob(
     job.windowReady = (
       connection && browser.windows.openFor
         ? browser.windows.openFor(connection.tabId, url)
-        : browser.windows.create({ url, type: 'popup', width: 480, height: 740 })
+        : openReview(url, connection?.tabId)
     ).then((w) => {
       requireThat(w.id !== undefined, 'Confirmation window could not be opened');
       bound.windowId = w.id;
@@ -901,13 +899,45 @@ async function createJob(
     throw e;
   }
 }
+/** A review opens like the toolbar wallet: a small window in the top-right corner of the asking
+ * page's browser window, under the extension icons. Without that window, the browser places it. */
+const REVIEW_WIDTH = 360,
+  REVIEW_HEIGHT = 640;
+/** Chrome refuses bounds that are mostly off-screen (a window across two monitors): then the
+ * browser places it. */
+async function openReview(url: string, tabId?: number): Promise<{ id?: number }> {
+  const placement = await reviewPlacement(tabId);
+  try {
+    return await browser.windows.create({ url, type: 'popup', ...placement });
+  } catch (error) {
+    if (placement.left === undefined) throw error;
+    return browser.windows.create({ url, type: 'popup', width: REVIEW_WIDTH, height: REVIEW_HEIGHT });
+  }
+}
+async function reviewPlacement(tabId?: number): Promise<{ width: number; height: number; left?: number; top?: number }> {
+  const size = { width: REVIEW_WIDTH, height: REVIEW_HEIGHT };
+  try {
+    if (tabId === undefined || !browser.windows.get) return size;
+    const tab = await browser.tabs.get(tabId);
+    if (tab.windowId === undefined) return size;
+    const w = await browser.windows.get(tab.windowId);
+    if (w.state === 'fullscreen' || w.left === undefined || w.top === undefined || w.width === undefined)
+      return size;
+    return { ...size, left: Math.max(0, w.left + w.width - REVIEW_WIDTH), top: Math.max(0, w.top) };
+  } catch {
+    return size;
+  }
+}
+/** Whether the active network has trusted witnesses. A switchable build only bundles a development
+ * policy (build.mjs), so its mainnet side has none. */
+const pqConfigured = (): boolean => policyBundled && !(SWITCHABLE && NETWORK === 'mainnet');
 /** The wallet's own price of a create or inscribe. With a fee schedule, only from both witnesses'
  * attestation of the best block, which the signature's era is then born at. */
 async function quoteFor(a: Account, command: Parameters<typeof quoteFees>[0]): Promise<FeeQuote> {
   const rules = feeRulesFor(PROFILE.network);
   if (rules === null) return quoteFees(command, a.owner, a.genesis, null);
   const pinned = attestationPolicy();
-  requireThat(pqConfigured && pinned, FEES_UNVERIFIED_ERROR);
+  requireThat(pqConfigured() && pinned, FEES_UNVERIFIED_ERROR);
   let attested;
   try {
     attested = await attestedFees(a.owner, a.genesis, tipBlock, API + '/api/attestations/tip');
@@ -937,7 +967,7 @@ const sessionBrowserKnown = (async () => {
 const mintSessionsAvailable = (): boolean =>
   browserRunsSessions &&
   (PROFILE.network !== 'mainnet' || mainnetReviewed()) &&
-  sessionsAvailable(pqConfigured, PROFILE.runtime.codeHash);
+  sessionsAvailable(pqConfigured(), PROFILE.runtime.codeHash);
 /** The lot terms `prepare` builds a payment from, all from both witnesses' attestation. */
 const attestedTerms = (view: AttestedAsset, lot: NonNullable<AttestedAsset['next']>) => ({
   lot,
@@ -1962,6 +1992,8 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
   );
   const m = { ...(message as Record<string, unknown>) };
   await loaded;
+  // A view never reads the wallet half-way through a network switch (no pin yet on the new one).
+  while (switching && m.action !== 'switch-network') await switching.catch(() => undefined);
   requireThat(!resetting || m.action === 'status', 'Wallet reset in progress. Try again.');
   if (ACCOUNT_SCOPED_ACTIONS.has(String(m.action))) {
     requireThat(!keyBusy, 'Finish the current operation before changing accounts');
@@ -1977,7 +2009,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       await displayReady;
       return {
         backgroundVersion: VERSION,
-        account: state.vault ? account() : null,
+        account: state.vault && state.manifest ? account() : null,
         unlocked: isUnlocked(),
         backed: state.backed,
         manifest: state.manifest ?? null,
@@ -2010,13 +2042,12 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
           permitted: await notificationPermission(),
           available: !!browser.permissions,
         },
-        pqConfigured,
+        pqConfigured: pqConfigured(),
         api: API,
         rpc: RPC,
         network: {
           active: PROFILE.network,
           switchable: SWITCHABLE,
-          carry: (await developmentWallet()) !== null,
         },
         extensionOrigin: root.replace(/\/$/, ''),
       };
@@ -2126,7 +2157,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
             isUnlocked() && state.backed && !auth.passkey,
             'Unlock and back up your wallet before adding a passkey',
           );
-          clear = await decryptVault(auth.vault, m.password, state.manifest.genesis, identity);
+          clear = await decryptVault(auth.vault, m.password, auth.vault.genesis, identity);
           const wrapped = await wrapPasskey(
             clear,
             prf,
@@ -2184,7 +2215,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
         clear = await decryptVault(
           accessRecord().vault,
           m.password,
-          state.manifest.genesis,
+          accessRecord().vault.genesis,
           identity,
         );
         requireThat(isUnlocked() && session.epoch === epoch, 'Passkey request expired. Try again.');
@@ -2204,6 +2235,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
     }
     case 'network':
       exact(m, ['action']);
+      await pinNetwork();
       return network(state.manifest);
     case 'network-diagnostics': {
       exact(m, ['action']);
@@ -2378,7 +2410,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
                   (clear = await decryptVault(
                     backup!.vault,
                     m.password,
-                    state.manifest!.genesis,
+                    backup!.vault.genesis,
                     identity,
                   )),
                 );
@@ -2450,118 +2482,6 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
         keyBusy = false;
       }
     }
-    case 'carry': {
-      // Switchable builds: the development wallet, every account included, becomes the mainnet
-      // one. Its password opens the installation wallet; the other wallets open through their
-      // installation links (or the same password). A wallet that opens with neither stays behind.
-      exact(m, ['action', 'password']);
-      changingAccountAllowed();
-      requireThat(state.manifest && !walletBusy && !keyBusy, 'Finish the current operation first');
-      requireThat(typeof m.password === 'string', 'Password required');
-      const dev = await developmentWallet();
-      requireThat(dev, 'No development wallet to use here');
-      requireThat(!state.vault || isUnlocked(), 'Unlock wallet first');
-      keyBusy = true;
-      const origin = root.replace(/\/$/, ''),
-        devProfile = profileOf('development'),
-        phrases = new Map<string, Uint8Array>();
-      try {
-        await network(state.manifest);
-        const devRecords = records(dev!),
-          roots = devRecords.filter((a) => !a.derived),
-          anchor =
-            (dev!.access && roots.find((a) => a.vault.owner === dev!.access!.owner)) || roots[0]!,
-          anchorClear = await decryptVault(
-            anchor.vault,
-            m.password,
-            anchor.vault.genesis,
-            identity,
-            devProfile,
-          );
-        phrases.set(anchor.vault.owner, anchorClear);
-        for (const r of roots) {
-          if (phrases.has(r.vault.owner)) continue;
-          const linked = dev!.access?.wallets[r.vault.owner];
-          try {
-            phrases.set(
-              r.vault.owner,
-              linked
-                ? await openLinkedWallet(linked, anchorClear, anchor.vault, r.vault, origin, identity)
-                : await decryptVault(r.vault, m.password, r.vault.genesis, identity, devProfile),
-            );
-          } catch (error) {
-            if (!(error instanceof Error && error.message === VAULT_PASSWORD_ERROR)) throw error;
-          }
-        }
-        const vaults = new Map<string, Vault>();
-        for (const [owner, clear] of phrases)
-          vaults.set(
-            owner,
-            await encryptVault(
-              new TextDecoder().decode(clear),
-              m.password,
-              state.manifest!.genesis,
-              identity,
-            ),
-          );
-        const mainAnchor = vaults.get(anchor.vault.owner)!,
-          access: WalletAccess = { owner: mainAnchor.owner, wallets: {} };
-        for (const [owner, clear] of phrases)
-          if (owner !== mainAnchor.owner)
-            access.wallets[owner] = await linkWallet(
-              anchorClear,
-              clear,
-              mainAnchor,
-              vaults.get(owner)!,
-              origin,
-            );
-        // Grants, passkeys and history belong to their network: development ones stay there, and
-        // an account already on mainnet keeps its site connections and history.
-        const kept = new Map(records(state).map((a) => [recordIdentity(a).owner, a.grants]));
-        const carried = devRecords
-          .filter((a) => vaults.has(a.vault.owner))
-          .map((a) => ({
-            vault: vaults.get(a.vault.owner)!,
-            ...(a.derived ? { derived: a.derived } : {}),
-            name: a.name,
-            accountIndex: a.accountIndex,
-            backed: a.backed,
-            grants: kept.get(recordIdentity(a).owner) ?? {},
-          }));
-        const selectedOwner = recordIdentity(activeRecord(dev!)).owner,
-          selected = carried.find((a) => recordIdentity(a).owner === selectedOwner) ?? carried[0]!;
-        const before = state;
-        lock();
-        const epoch = session.epoch;
-        state = {
-          ...emptyState(),
-          manifest: state.manifest,
-          transactions: state.transactions,
-          ...(state.notifications !== undefined ? { notifications: state.notifications } : {}),
-          version: carried.some((a) => a.derived) ? 3 : 2,
-          access,
-          otherAccounts: carried.filter((a) => a !== selected),
-        };
-        activate(state, selected);
-        try {
-          await verifyInstallation(anchorClear);
-          await save();
-        } catch (error) {
-          state = before;
-          throw error;
-        }
-        session.install(anchorClear, epoch);
-        accessReady = true;
-        return {
-          account: account(),
-          carried: carried.length,
-          skipped: devRecords.length - carried.length,
-        };
-      } finally {
-        for (const clear of phrases.values()) clear.fill(0);
-        keyBusy = false;
-      }
-    }
     case 'unlock': {
       exact(m, ['action', 'password']);
       requireThat(
@@ -2577,7 +2497,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
         if (session.unlocked && missing.length) {
           // One-time migration: prove each old password before granting common access.
           const target = missing[0]!;
-          clear = await decryptVault(target.vault, m.password, state.manifest.genesis, identity);
+          clear = await decryptVault(target.vault, m.password, target.vault.genesis, identity);
           const access = await addWalletLink(target.vault, clear, epoch),
             previous = state.access;
           state.access = access;
@@ -2604,7 +2524,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
           return true;
         }
         const auth = accessRecord();
-        clear = await decryptVault(auth.vault, m.password, state.manifest.genesis, identity);
+        clear = await decryptVault(auth.vault, m.password, auth.vault.genesis, identity);
         // Wallets that already use the installation password migrate together.
         const previous = state.access;
         const access: WalletAccess = {
@@ -2614,7 +2534,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
         for (const target of missing) {
           let words: Uint8Array | undefined;
           try {
-            words = await decryptVault(target.vault, m.password, state.manifest.genesis, identity);
+            words = await decryptVault(target.vault, m.password, target.vault.genesis, identity);
             access.wallets[target.vault.owner] = await linkWallet(
               clear,
               words,
@@ -2668,8 +2588,10 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       return true;
     case 'switch-network': {
       // Switchable builds: the user picks the network here, and only here (a page cannot reach
-      // this handler). The wallet is locked and the extension restarts on the other network, with
-      // that network's own wallet state; nothing signed for one network can reach the other.
+      // this handler). The wallet, its accounts and its unlocked session stay as they are; only
+      // where it reads and submits changes. Everything bound to the old network ends: pending
+      // requests, site connections and mint sessions. Signing binds the active genesis, so
+      // nothing signed for one network can reach the other.
       exact(m, ['action', 'network']);
       requireThat(SWITCHABLE, 'This wallet has a single network');
       requireThat(m.network === 'development' || m.network === 'mainnet', 'Unknown network');
@@ -2680,15 +2602,31 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       }
       requireThat(!walletBusy && !keyBusy, 'Finish the current operation before switching network');
       if (m.network === NETWORK) return true;
-      lock();
-      await writes;
-      await switchNetwork(m.network as 'development' | 'mainnet');
-      // The other network's wallet, from its own storage; nothing of this one carries over.
-      state = emptyState();
-      accessReady = false;
-      historyPending = undefined;
-      mintWindows.clear();
-      await readState();
+      requireThat(!switching, 'Finish the current operation before switching network');
+      const from = NETWORK!;
+      invalidate(() => true);
+      const move = (async () => {
+        await writes;
+        await switchNetwork(m.network as 'development' | 'mainnet');
+        placeManifests(state);
+        // The first visit pins the network, which needs it to answer; otherwise stay where we were.
+        try {
+          await pinNetwork();
+        } catch (error) {
+          await switchNetwork(from);
+          placeManifests(state);
+          throw error;
+        }
+        historyPending = undefined;
+        mintWindows.clear();
+        await save();
+      })();
+      switching = move;
+      try {
+        await move;
+      } finally {
+        switching = null;
+      }
       // Pages reconnect on the new network, where each origin is checked against its list again.
       for (const c of [...connections]) {
         c.alive = false;
@@ -2738,6 +2676,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
         const fresh: Stored = {
           version: 2,
           manifest: state.manifest,
+          ...(state.parked ? { parked: state.parked } : {}),
           backed: false,
           grants: {},
           transactions: [],
@@ -2748,7 +2687,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
         // operation as the reset. A failed write leaves the active wallet intact.
         await browser.storage.local.set({
           ['wallet-archive-' + crypto.randomUUID()]: archive,
-          [walletKey()]: fresh,
+          [WALLET_KEY]: fresh,
         });
         state = fresh;
         return true;
@@ -2772,7 +2711,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       const clear = await decryptVault(
         accessRecord().vault,
         m.password,
-        state.manifest.genesis,
+        accessRecord().vault.genesis,
         identity,
       );
       let words: Uint8Array | undefined;

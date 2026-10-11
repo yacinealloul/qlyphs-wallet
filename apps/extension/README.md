@@ -103,15 +103,41 @@ QLYPHS_EXTENSION_NETWORK=switchable QLYPHS_EXTENSION_PINS=/path/to/pins.json \
 ```
 
 It opens on mainnet. The user switches in Settings, on the welcome screen, or next to a connection
-error; no page can switch it. Switching locks the wallet, disconnects every site and loads the
-other network's stored wallet (`wallet` for development, `wallet:mainnet` for mainnet). Network
-pins, site grants and transaction history remain separate.
+error; no page can switch it. Both networks share one wallet: the same accounts, password, passkey
+and unlocked session. Switching changes only where the wallet reads and submits. It cancels pending
+requests, ends mint sessions and disconnects every site, which reconnect against the new network's
+dapp list; the wallet does not lock.
 
-The explicit **Use development wallet** action on mainnet can reuse development recovery phrases
-and derived addresses. It re-encrypts available wallets for the mainnet genesis; development grants,
-passkeys and history are not copied. Linked wallets, or wallets opened by the supplied password, can
-be carried; inaccessible wallets stay on development. This separates network state, not key identity.
-A recovery phrase exposed during development is equally exposed if reused for mainnet funds.
+The first switch to a network pins its manifest (on mainnet it must match the build's pins), so that
+network must answer; otherwise the switch is refused and the wallet stays where it was. Each network
+keeps its own pin, and the history and site connections shown are the active network's. Every
+signature binds the active network's genesis, so nothing signed on one network is valid on the
+other. The same recovery phrase controls the same addresses on both: a phrase exposed while testing
+is equally exposed for mainnet funds.
+
+### Mainnet and a public testnet
+
+A switchable build can carry a public test network in place of the local development network. Name
+all four of its endpoints; there are no defaults:
+
+```sh
+QLYPHS_EXTENSION_NETWORK=switchable QLYPHS_EXTENSION_PINS=/path/to/pins.json \
+QLYPHS_EXTENSION_TESTNET_API=https://indexer.testnet.example \
+QLYPHS_EXTENSION_TESTNET_RPC=https://rpc.testnet.example \
+QLYPHS_EXTENSION_TESTNET_EXPLORER=https://testnet.example/explorer \
+QLYPHS_EXTENSION_TESTNET_DAPP_ORIGINS='["https://app.testnet.example"]' \
+  pnpm --filter @qotc/wallet-extension build
+```
+
+The testnet signs with the development profile, so it never signs for the mainnet genesis. Its
+endpoints must be exact public HTTPS origins, and none may be a mainnet service or dapp. It takes the
+place of development in the wallet (same wallet, same switch), shown as **Testnet**, and
+no loopback service is reachable from the build. Its services must accept the development
+extension origin.
+
+Such a build may carry the test network's witness policy (`NATIVE_PQ_POLICY_FILE`, with the
+witnesses' `NATIVE_PROGRESSIVE_FROM` / `NATIVE_PROGRESSIVE_V2_FROM`). It is checked against the
+development rules and used on the testnet only: on mainnet, purchases and lot mints stay disabled.
 
 ## Development network
 
@@ -162,9 +188,10 @@ the attested right exists. A tip attestation never moves the high-water checkpoi
 endpoint, a policy or a `verified` flag. The signing session is checked again after asynchronous
 verification.
 
-**Without a compiled witness policy, purchases and lot mints are refused.** That is every switchable
-build, which rejects a policy because one policy cannot serve both networks, and any mainnet or
-development build made without one. A mainnet build takes only the reviewed mainnet policy, and its
+**Without a compiled witness policy, purchases and lot mints are refused.** That is any mainnet or
+development build made without one, and the mainnet side of every switchable build: a switchable
+build accepts only a development policy and uses it on its development or test network only. A
+mainnet build takes only the reviewed mainnet policy, and its
 lot mints start at block 212,250; mint sessions run there too, within the same limits as on
 development builds (see [Mint sessions](#mint-sessions)). QTC sends, legacy
 mint and ordinary transfers do not require this policy. Token creation and inscriptions require it

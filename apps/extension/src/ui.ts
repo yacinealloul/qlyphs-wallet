@@ -1299,6 +1299,8 @@ function paintSteps(element: HTMLElement, stage: TxStage | 'idle') {
   element.dataset.stage = stage;
   element.dataset.step = String(stage === 'idle' ? 0 : stageStep(stage));
 }
+/** How long Keys keeps a sent result on screen before handing back to the site. */
+const SENT_CLOSE_MS = 900;
 function paintResult(first = false) {
   if (!sent) return;
   const text = stageText(sent.stage, sent.tx, finalityOf(sent.tx));
@@ -2816,6 +2818,9 @@ click('approve', async () => {
   }
   message('');
   paintResult();
+  // In Qlyphs Keys the review is a frame over the site's popup: once the network has the
+  // transaction, the site shows its progress, so the window steps aside after a beat.
+  if (window.top !== window && sent.stage === 'sent') setTimeout(() => window.close(), SENT_CLOSE_MS);
 });
 click('tx-result-done', async () => window.close());
 click('tx-result-explorer', async () => {

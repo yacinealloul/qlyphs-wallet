@@ -218,7 +218,9 @@ transaction popup rejects with `UNAVAILABLE`. These requests are sent once the p
 itself. A dapp page that reuses a popup it has not seen announce itself, such as a page reloaded while
 the popup stayed open, asks the popup page to announce itself again. If no popup page announces itself
 within 30 seconds (for example the page that asks you to close other Keys tabs after an update), the
-provider closes the popup. Closing a popup rejects pending requests with `DISCONNECTED`. Reloading it
+provider closes the popup. Once a transaction is sent, Keys shows the result for under a second, then
+closes its popup when nothing else is open in it, so the site's own progress is visible. A failed
+transaction stays on screen. Closing a popup rejects pending requests with `DISCONNECTED`. Reloading it
 rejects the requests its old page held with `CONTEXT_CHANGED` once the new page announces itself, and
 the other requests wait for that page. It never retries a payment. Branch on `outcome`, never on
 `CONTEXT_CHANGED` or `DISCONNECTED` alone: a `requestTransaction` or `requestMintSession` whose reply

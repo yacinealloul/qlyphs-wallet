@@ -1,6 +1,6 @@
 {
   "name": "@qotc/wallet-extension",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@noble/post-quantum": "0.7.1",
     "@qotc/chain": "workspace:*",
     "@qotc/native": "workspace:*",
     "@quantus-network/wasm": "^0.3.1",

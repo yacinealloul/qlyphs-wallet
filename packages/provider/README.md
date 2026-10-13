@@ -13,7 +13,10 @@ in capabilities; absent on older wallets, `null` where unavailable); types and v
 (`parseMintSessionTerms`, `parseMintSessionSnapshot`) are exported. The snapshot parser accepts exact
 keys and closed value lists only, so a dapp built with an older version rejects snapshots that carry
 newer ones; the current version knows the end value `race-lost`, the payment status `unresolved`
-and `attempts.unresolved`. Build with `pnpm --filter @qlyphs/provider build`. The package emits ESM JavaScript and declarations.
+and `attempts.unresolved`. `signSessionChallenge` asks the wallet to sign a site sign-in challenge; its
+canonical encoding, parser and signing context are exported from `site-session.ts`
+(`encodeSiteSessionChallenge`, `parseSiteSessionChallenge`, `parseSiteSessionProof`,
+`SITE_SESSION_CONTEXT`), see [Site sign-in](../../docs/extension/PROVIDER.md#site-sign-in). Build with `pnpm --filter @qlyphs/provider build`. The package emits ESM JavaScript and declarations.
 For the web wallet, use [`createKeysProvider` or `openKeysProvider`](../../apps/keys/README.md#for-dapps).
 Keys read methods expose a cached public snapshot; unlike live extension state, it may remain connected
 after the wallet locks or its popup closes. This cache never grants signing authority. See

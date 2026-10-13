@@ -13,6 +13,11 @@ export {
   MAX_FEE_PER_LOT,
   parseMintSessionTerms,
   parseMintSessionSnapshot,
+  SITE_SESSION_CONTEXT,
+  MAX_SITE_SESSION_MS,
+  encodeSiteSessionChallenge,
+  parseSiteSessionChallenge,
+  parseSiteSessionProof,
 } from '../../provider/src/index.ts';
 export type {
   MintSessionLimits,
@@ -23,6 +28,8 @@ export type {
   MintAttemptStatus,
   MintAttemptView,
   MintSessionSnapshot,
+  SiteSessionChallenge,
+  SiteSessionProof,
   QlyphsProvider,
   ProviderState,
   WalletAccount,

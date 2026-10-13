@@ -88,6 +88,12 @@ messaging, windows and passkeys. It is a Qlyphs product, not an official Quantus
   agent string, `navigator.platform` and, in Chromium, `navigator.userAgentData` must name the same
   desktop system. ChromeOS is refused for now because Chrome on desktop Android reports the same
   signals, and only asynchronous client hints could tell them apart.
+- **Site sign-in**: a dapp's `signSessionChallenge` opens its review in that dapp's own popup overlay,
+  like a transaction. The worker checks the challenge against the dapp's verified origin, the
+  connected account and the network, then signs it with the account's key under the sign-in context,
+  never the transaction one ([Site sign-in](../../docs/extension/PROVIDER.md#site-sign-in)). A Keys
+  release older than this method refuses it; the adapter lists it in `capabilities` either way, so
+  a dapp should tell its users to reload the wallet when the popup refuses it.
 - **Storage**: IndexedDB database `qlyphs-keys`. It holds the encrypted vault, account metadata and site
   grants, in the same formats as the extension. Every write uses strict durability, so a completed
   write, such as a payment recorded before it is sent, survives an operating system crash.
@@ -211,8 +217,8 @@ button.onclick = () => {
 };
 ```
 
-Creating this provider does not open a window. `connect`, `requestTransaction`, `requestMintSession` and
-`disconnect` open or reuse the Keys popup, reopening it after closure. Call these methods directly from
+Creating this provider does not open a window. `connect`, `requestTransaction`, `requestMintSession`,
+`signSessionChallenge` and `disconnect` open or reuse the Keys popup, reopening it after closure. Call these methods directly from
 a user gesture, before an `await`, so the browser can permit the popup. A blocked connection or
 transaction popup rejects with `UNAVAILABLE`. These requests are sent once the popup page announces
 itself. A dapp page that reuses a popup it has not seen announce itself, such as a page reloaded while

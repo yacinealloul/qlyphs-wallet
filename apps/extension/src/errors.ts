@@ -30,6 +30,7 @@ import {
   VAULT_DATA_ERROR,
 } from './vault.ts';
 import { MAINNET_BUILD } from './profile.ts';
+import { SIGN_IN_ERRORS } from './sign-in-copy.ts';
 // Mainnet talks to hosted services, not a local node. Both wordings are known-safe messages; the
 // active network (fixed, or chosen in a switchable build) picks which one is shown.
 const TIMEOUT_MAINNET = 'The Quantus network did not respond in time. Retry the connection.';
@@ -86,6 +87,7 @@ const safe = new Set([
   'No mint session for this window',
   'This window was reloaded before minting started, so nothing was signed. Start again from the site.',
   'Too many mint sessions are still settling; try again once their payments are final',
+  ...SIGN_IN_ERRORS,
 
   'Wallet reset in progress. Try again.',
   'Reset requires one locked wallet and explicit confirmation',

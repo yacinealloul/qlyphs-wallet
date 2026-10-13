@@ -25,7 +25,9 @@ The web wallet exposes the same interface through [`createKeysProvider` and `ope
 The original `connect`, `accounts`, `network`, `disconnect`, `requestTransaction`
 names/envelopes remain supported. `capabilities` and `state` are additive. `requestMintSession`,
 `mintSession`, `stopMintSession` and the `mintSessionChanged` event are additive too, on builds
-that can run sessions (see [Mint sessions](#mint-sessions)), mainnet included. Old providers
+that can run sessions (see [Mint sessions](#mint-sessions)), mainnet included. `signSessionChallenge`
+is additive on every network (see [Site sign-in](#site-sign-in)); wallets older than it do not list
+it in `capabilities`. Old providers
 without protocolVersion/events work with explicit SDK `refresh` calls; they are not
 claimed to provide events or reliable cancellation. Do not branch on error text.
 
@@ -69,7 +71,7 @@ unlock, and may be stale after revocation or a network change. Empty locked-wall
 clear a previously connected snapshot. These are display values, not authentication or signing authority.
 
 `createKeysProvider` opens or reuses a popup on `connect`, `requestTransaction`,
-`requestMintSession` or `disconnect` and can reopen after closure. `openKeysProvider` opens
+`requestMintSession`, `signSessionChallenge` or `disconnect` and can reopen after closure. `openKeysProvider` opens
 immediately; closure ends its interactive session and clears its in-memory accounts, but preserves
 the saved cache for a later provider. Both require user gestures for opening popups. These requests
 are sent once the popup page announces itself. A dapp page that reuses a popup it has not seen
@@ -146,7 +148,9 @@ rate (on mainnet below block 218,350, the fixed legacy fee), capped by the walle
 (1 QTC), and a blocked symbol (`BTC ETH QLYPHS QTC USDC USDT`) is refused. A mainnet build without
 the witness policy refuses these four; `mint` keeps its fixed 0.01 QTC fee. No signRaw,
 arbitrary bytes, caller RPC, permanent signing grant, Qlyphs fee other than the one the wallet
-computes itself, or mainnet activation is exposed. A payment is never retried automatically, with
+computes itself, or mainnet activation is exposed. The one signature that is not a transaction is a
+[site sign-in](#site-sign-in): a fixed, versioned format under its own signing context, which no
+transaction signature can match. A payment is never retried automatically, with
 one bounded exception inside an approved mint session whose terms allow retries
 (`maxAttempts > maxLots`): when a lot payment failed on chain because that lot's right was used
 first (a lost race), the wallet may sign one new payment for the lot that attested state then
@@ -350,6 +354,62 @@ payments before it stopped. Check the wallet window and Activity, and do not sta
 automatically. Once sent, `mintSession` and `stopMintSession` fail with no outcome, whatever the
 reply says; the provider's own refusals before sending say `not-submitted`, as for every method (see
 [Stable errors](#stable-errors)).
+
+## Site sign-in
+
+A site can ask the wallet to prove that the connected account is yours, for a short session with a
+service it names, without signing any transaction: "this site asks you to sign in for 15 minutes".
+The service then knows that requests made with that session come from the account's owner.
+
+```ts
+const proof = await window.qlyphs.request({
+  method: 'signSessionChallenge',
+  params: { challenge }, // 0x hex, issued by the service the session is for
+});
+// proof: { signature, publicKey }, both 0x hex
+```
+
+**Challenge.** The service issues the challenge; the site passes it on unchanged. Its bytes have one
+canonical encoding (version 1), defined with its parser in
+[`packages/provider/src/site-session.ts`](../../packages/provider/src/site-session.ts):
+
+| Field | Encoding |
+| --- | --- |
+| magic | 6 bytes, ASCII `QLYPHS` |
+| version | 1 byte, `1` |
+| purpose | 1 length byte, then ASCII `site-session` |
+| genesis | 32 bytes: the network's genesis hash |
+| service | 32 bytes: the account id of the service the session is for |
+| account | 32 bytes: the account id that signs |
+| audience | 1 length byte, then 1 to 64 of `a-z 0-9 . -`: the service's name for itself |
+| origin | 1 length byte, then the exact web origin of the site (https, or http on a loopback host) |
+| nonce | 32 random bytes chosen by the service |
+| issuedAt | 8 bytes, little-endian Unix milliseconds |
+| expiresAt | 8 bytes, little-endian Unix milliseconds, at most 15 minutes after `issuedAt` |
+| actions | 1 count byte (1 to 8), then each action as 1 length byte and 1 to 32 of `a-z 0-9 -`, starting with a letter, in strictly increasing byte order |
+
+Nothing may follow the last action. A parser accepts only bytes that encode back to themselves, so a
+challenge has exactly one spelling.
+
+**What the wallet checks.** Before any window opens, the wallet refuses (`INVALID_REQUEST`) a
+challenge that is not in this exact format, whose origin is not the origin of the connected document
+as the browser reported it (never a value from the page), whose genesis is not the wallet's network,
+whose account is not the connected account, whose session has already ended, or whose session ends
+more than 15 minutes from now on the wallet's own clock. The site must be connected, as for a
+transaction. The review shows the site's origin, how long the sign-in lasts and until when, what the
+site says the session allows (the actions, as written), the account and the network. On approval
+the wallet checks the challenge again and signs its bytes with the account's ML-DSA-87 key, the one
+it signs transactions with, under the FIPS 204 context `QLYPHS_SITE_SESSION_V1`. Transactions use
+`QUANTUS_EXTRINSIC`, so a sign-in can never be replayed as a transaction, nor the reverse. The result
+is `{ signature, publicKey }`: 4,627 and 2,592 bytes as 0x hex.
+
+**What the service checks.** The service verifies the signature under `QLYPHS_SITE_SESSION_V1`, and
+that the public key belongs to the account: the account id is the Poseidon2 hash of the key, as the
+chain computes it (`hash_to_bytes` over the key's injective encoding into field elements, the
+`accountId` of `@quantus-network/wasm`). It should accept each nonce once, only shortly after issuing
+it, and end the session at `expiresAt`. The sign-in moves no funds and has no write outcome: when a
+reply is lost, the site may ask again with a fresh challenge. `requestTransaction` and mint sessions do not
+depend on it.
 
 ## Lifecycle, limits and cancellation
 

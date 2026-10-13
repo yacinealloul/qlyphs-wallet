@@ -2,7 +2,7 @@
 
 Non-custodial browser extension (Chrome MV3, Firefox) for Quantus: it holds ML-DSA-87 keys, sends QTC and
 signs Qlyphs operations (Quarks, fair-mint tokens, bilateral token sales) for the Qlyphs app. Version
-**0.7.0**. A Qlyphs product, not an official Quantus wallet. QLYP-v1 assets are an indexed token overlay,
+**0.8.0**. A Qlyphs product, not an official Quantus wallet. QLYP-v1 assets are an indexed token overlay,
 not runtime-native `pallet_assets` balances; the bilateral market is not an AMM or open-taker order book.
 
 Mainnet builds require reviewed network pins. Purchases, token creation, inscriptions, lot mints and
@@ -171,6 +171,8 @@ short popups and sidebars.
 ## Connection and use
 
 Open an allowed dapp and click **Connect wallet**. If Qlyphs is locked, the extension first shows only the unlock screen; the site review appears after unlocking. Unlocking never approves a connection. **Cancel request** dismisses a locked request without granting access. Approve the site in the extension-owned window. Create/mint tokens, inscribe Quarks and arrange bilateral sales in the web app; inspect and approve each operation in the extension. The popup also sends QTC and transfers displayed tokens. The site receives an account and submitted transaction hash, never a phrase or password. Qlyphs Keys provides a separate web-wallet connection using the same provider contract. A dapp can also request a mint session: up to N lot payments for one token after one review, with progress and Stop in the same window.
+
+A connected site can ask you to sign in, so that a service it works with knows requests come from your account, for at most 15 minutes. The review names the site (as the browser reports it), how long the sign-in lasts, what the site says it allows, the account and the network. Signing in moves no funds and signs no transaction: the wallet signs only a fixed challenge format, under a signing context of its own, and refuses a challenge for another site, account or network, or one that lasts longer than 15 minutes ([Site sign-in](../../docs/extension/PROVIDER.md#site-sign-in)).
 
 A five-minute absolute unlock deadline is not extended by dapp messages. Browser suspension or a background restart locks the wallet sooner. After a restart, reopen the wallet, unlock explicitly, reload/reconnect the dapp if necessary, and inspect saved history. Unknown submission outcomes must not be treated as failures or retried with a new nonce. A mint session stops signing when this deadline passes.
 

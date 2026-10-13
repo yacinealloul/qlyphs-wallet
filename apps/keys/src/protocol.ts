@@ -41,6 +41,7 @@ export type WireRequest =
   | { id: string; method: string }
   | { id: string; method: 'requestTransaction'; params: unknown }
   | { id: string; method: 'requestMintSession' | 'stopMintSession'; params: unknown }
+  | { id: string; method: 'signSessionChallenge'; params: unknown }
   | { id: string; method: 'cancelRequest'; target: string };
 export type DappRequest = { channel: typeof REQUEST_CHANNEL; request: WireRequest };
 export type DappMessage = DappHello | DappRequest;

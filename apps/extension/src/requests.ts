@@ -3,6 +3,7 @@ import { parseCommand, json } from '../../native/src/commands.ts';
 import { fromHex, requireThat } from '../../../packages/native/src/codec.ts';
 import { parseMintSessionTerms } from '../../../packages/provider/src/mint-session.ts';
 import type { MintSessionParams } from '../../../packages/provider/src/mint-session.ts';
+import { parseSiteSessionChallenge } from '../../../packages/provider/src/site-session.ts';
 export const VERSION = 1;
 export const MAX_PENDING = 8;
 export interface TransactionParams {
@@ -25,6 +26,7 @@ export type Request = { id: string } & (
   | { method: 'requestTransaction'; params: TransactionParams }
   | { method: 'requestMintSession'; params: MintSessionParams }
   | { method: 'stopMintSession'; params: { session: string } }
+  | { method: 'signSessionChallenge'; params: { challenge: string } }
 );
 const METHODS = [
   'connect',
@@ -38,8 +40,14 @@ const METHODS = [
   'requestMintSession',
   'mintSession',
   'stopMintSession',
+  'signSessionChallenge',
 ];
-const WITH_PARAMS = ['requestTransaction', 'requestMintSession', 'stopMintSession'];
+const WITH_PARAMS = [
+  'requestTransaction',
+  'requestMintSession',
+  'stopMintSession',
+  'signSessionChallenge',
+];
 /** A mint session id: the UUID the wallet generated for its review. */
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export function exact(value: unknown, names: string[]): asserts value is Record<string, unknown> {
@@ -101,6 +109,11 @@ export function parseRequest(input: unknown): Request {
       typeof r.params.session === 'string' && SESSION_ID.test(r.params.session),
       'Invalid session identifier',
     );
+  }
+  if (r.method === 'signSessionChallenge') {
+    exact(r.params, ['challenge']);
+    // Only the one fixed format, in its one canonical spelling; the wallet checks its fields later.
+    parseSiteSessionChallenge(r.params.challenge as string);
   }
   return structuredClone(r) as Request;
 }

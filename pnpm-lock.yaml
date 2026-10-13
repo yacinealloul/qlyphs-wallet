@@ -10,6 +10,9 @@ importers:
 
   apps/extension:
     dependencies:
+      '@noble/post-quantum':
+        specifier: 0.7.1
+        version: 0.7.1
       '@qotc/chain':
         specifier: workspace:*
         version: link:../../packages/chain

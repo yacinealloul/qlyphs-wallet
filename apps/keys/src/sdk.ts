@@ -54,7 +54,13 @@ const browserRunsSessions = () => (sessionBrowser ??= sessionsSupported(pageFact
 
 const READY_MS = 30_000,
   POLL_MS = 500;
-const POPUPS = new Set(['connect', 'requestTransaction', 'requestMintSession', 'disconnect']);
+const POPUPS = new Set([
+  'connect',
+  'requestTransaction',
+  'requestMintSession',
+  'signSessionChallenge',
+  'disconnect',
+]);
 const WRITES = new Set(['requestTransaction', 'requestMintSession']);
 // Bound to the popup page's channel, so they answer null without asking the wallet until that page
 // has announced itself to this provider; a session may still run there.
@@ -193,8 +199,8 @@ type Pending = {
 };
 
 /** `eager`: the popup is opened now and the provider ends with it (openKeysProvider).
- * Otherwise it opens on the first connect, requestTransaction, requestMintSession or disconnect and
- * may reopen. A mint session is bound to the popup's channel: closing or reloading the popup stops
+ * Otherwise it opens on the first connect, requestTransaction, requestMintSession,
+ * signSessionChallenge or disconnect and may reopen. A mint session is bound to the popup's channel: closing or reloading the popup stops
  * it. `declared`: the network the dapp says this keys origin signs for, used until the wallet
  * reports its own. */
 function make(keys: string, eager: boolean, declared?: KeysNetwork): QlyphsProvider {
@@ -640,8 +646,8 @@ export function openKeysProvider(options: KeysProviderOptions & { origin: string
   return make(origin(options?.origin), true, network(options?.network));
 }
 
-/** Opens Qlyphs Keys on the first connect, requestTransaction, requestMintSession or disconnect;
- * reopens when needed. Closing the popup stops a running mint session.
+/** Opens Qlyphs Keys on the first connect, requestTransaction, requestMintSession,
+ * signSessionChallenge or disconnect; reopens when needed. Closing the popup stops a running mint session.
  * Between popups the provider has no channel to the wallet: its state is the last one it saw and
  * may be out of date (another tab disconnected it, the wallet switched network). It is corrected
  * on the next popup: an UNAUTHORIZED answer or a state for another network ends the session with

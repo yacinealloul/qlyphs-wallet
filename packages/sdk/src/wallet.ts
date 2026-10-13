@@ -3,10 +3,14 @@ import {
   CAPABILITIES,
   QlyphsError,
   isProvider,
+  parseSiteSessionChallenge,
+  parseSiteSessionProof,
   publicError,
   validTimeout,
 } from '../../provider/src/index.ts';
 import type {
+  SiteSessionChallenge,
+  SiteSessionProof,
   MintSessionSnapshot,
   MintSessionTerms,
   QlyphsProvider,
@@ -445,6 +449,52 @@ export class WalletConnector {
       throw publicError(error, 'INVALID_RESPONSE', 'unknown');
     } finally {
       this.writing = false;
+    }
+  }
+  /**
+   * Asks the wallet to sign a site session challenge for the connected account, after its own
+   * review. Resolves with the proof once the user approves; it moves no funds, so a failure has no
+   * write outcome. Fails with UNSUPPORTED_METHOD, before asking, when the wallet does not list the
+   * method (older wallets), and with INVALID_REQUEST when the challenge is not canonical.
+   */
+  async signSessionChallenge(
+    challenge: string,
+    options: RequestOptions = {},
+  ): Promise<SiteSessionProof> {
+    this.assertOpen();
+    let fields: SiteSessionChallenge;
+    try {
+      fields = parseSiteSessionChallenge(challenge);
+    } catch {
+      throw new QlyphsError('INVALID_REQUEST', 'Invalid site session challenge');
+    }
+    if (
+      !this.snapshot.connected ||
+      !this.snapshot.accounts.some(
+        (a) => a.owner === fields.account && a.genesis === fields.genesis,
+      )
+    )
+      throw new QlyphsError('UNAUTHORIZED', 'Connect the account the challenge names first');
+    const total = validTimeout(options.timeoutMs, 135_000);
+    const started = Date.now();
+    try {
+      const caps = await this.capabilities({ signal: options.signal, timeoutMs: total });
+      if (caps.protocolVersion !== 2 || !caps.methods.includes('signSessionChallenge'))
+        throw new QlyphsError('UNSUPPORTED_METHOD', 'This wallet cannot sign site sessions');
+      // The capability read spends part of the caller's budget, never extends it.
+      const left = total - (Date.now() - started);
+      if (left < 1) throw new QlyphsError('TIMEOUT', 'Operation stopped before dispatch');
+      const value = await this.invoke(
+        { method: 'signSessionChallenge', params: { challenge } },
+        { signal: options.signal, timeoutMs: left },
+      );
+      try {
+        return parseSiteSessionProof(value);
+      } catch {
+        throw new QlyphsError('INVALID_RESPONSE', 'Invalid site session proof');
+      }
+    } catch (error) {
+      throw readError(error);
     }
   }
   /**

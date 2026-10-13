@@ -49,6 +49,8 @@ import type { Manifest, Review, View } from './network.ts';
 import { SecretSession, encryptVault, decryptVault, validateVault } from './vault.ts';
 import type { Vault } from './vault.ts';
 import { identity, wasm } from './signer.ts';
+import { reviewSignIn, signSignIn } from './site-session.ts';
+import type { SiteSessionChallenge } from '../../../packages/provider/src/site-session.ts';
 import { parseRequest, exact, pageOrigin, sameExtensionPage, Requests } from './requests.ts';
 import type { BoundDocument, Request } from './requests.ts';
 import {
@@ -176,7 +178,7 @@ interface Connection extends BoundDocument {
   mintSnapshot?: string;
 }
 interface Job {
-  kind: 'connect' | 'transaction' | 'session';
+  kind: 'connect' | 'transaction' | 'session' | 'signin';
   owner: string;
   genesis: string;
   epoch: number;
@@ -185,6 +187,8 @@ interface Job {
   connectionRevision?: number;
   review?: Review;
   mintReview?: MintSessionReview;
+  /** A site sign-in: the challenge as the site sent it, its decoded fields and the review digest. */
+  signIn?: { challenge: string; fields: SiteSessionChallenge; digest: string };
   windowId?: number;
   windowReady?: Promise<void>;
   expires?: number;
@@ -820,7 +824,22 @@ async function createJob(
       tabId: -1,
       document: crypto.randomUUID(),
     };
-    if (kind === 'session') {
+    if (kind === 'signin') {
+      requireThat(connection, 'Sign-in starts from a connected site');
+      const challenge = input as string;
+      // The origin is the connected document's, as the browser reported it; never the page's word.
+      const fields = reviewSignIn(challenge, {
+        origin: connection.origin,
+        owner: a.owner,
+        genesis: a.genesis,
+        now: Date.now(),
+      });
+      job.signIn = {
+        challenge,
+        fields,
+        digest: await digestOf({ origin: connection.origin, owner: a.owner, challenge }),
+      };
+    } else if (kind === 'session') {
       requireThat(connection, 'Mint sessions start from a connected site');
       await history();
       requireSettledAccount(a);
@@ -1138,6 +1157,7 @@ async function approve(
   // A session keeps the wallet mutex after its approval: it never reaches the finally below.
   if (job.kind === 'session') return approveSession(job, id, digest, page, sender);
   requireThat(page === undefined, 'Invalid approval');
+  if (job.kind === 'signin') return approveSignIn(job, id, digest);
   if (job.kind === 'connect') {
     requireThat(isUnlocked() && session.epoch === job.epoch, 'Unlock wallet first');
     requireThat(digest === 'connect', 'Invalid connection approval');
@@ -1284,6 +1304,50 @@ async function approve(
         tx && tx.status !== 'cancelled-before-broadcast' ? 'unknown' : 'not-submitted',
       ),
     });
+    throw Error(uiError(error), { cause: error });
+  } finally {
+    walletBusy = false;
+  }
+}
+/**
+ * Signs an approved site sign-in and answers its site with the proof. Nothing is broadcast and no
+ * funds move, so a failure has no outcome to report beyond the refusal itself.
+ */
+async function approveSignIn(job: Job, id: string, digest: string): Promise<unknown> {
+  try {
+    const review = job.signIn!;
+    requireThat(review.digest === digest, 'Review changed; approve the new request');
+    requireThat(
+      isUnlocked() && session.epoch === job.epoch,
+      'Wallet locked; unlock and request a new review',
+    );
+    requests.consume(id);
+    job.phase = 'signing';
+    current(job);
+    const signer = await wasm();
+    current(job);
+    const selectedClear = await walletClear(state.vault!, job.epoch);
+    let phrase: string;
+    try {
+      phrase = new TextDecoder().decode(selectedClear);
+    } finally {
+      selectedClear.fill(0);
+    }
+    session.phrase(job.epoch);
+    current(job);
+    // Checked again at signing time: the review may have stayed open while the session ran out.
+    const fields = reviewSignIn(review.challenge, {
+      origin: job.connection!.origin,
+      owner: job.owner,
+      genesis: job.genesis,
+      now: Date.now(),
+    });
+    const key = signer.accountFromMnemonic(requireMnemonic(phrase), state.derived?.index ?? 0, 0, 0);
+    const proof = signSignIn(key, job.owner, fields);
+    finish(id, { result: proof });
+    return { signedIn: true };
+  } catch (error) {
+    finish(id, { error: publicError(null, 'VERIFICATION_FAILED') });
     throw Error(uiError(error), { cause: error });
   } finally {
     walletBusy = false;
@@ -1801,6 +1865,26 @@ async function handlePage(c: Connection, input: unknown): Promise<void> {
         if (walletBusy)
           throw new QlyphsError('BUSY', 'Another operation is pending', 'not-submitted');
         await createJob('session', c, r.id, r.params.terms);
+        break;
+      }
+      case 'signSessionChallenge': {
+        const a = state.vault && state.manifest ? account() : null;
+        if (!a || !permitted(c))
+          throw new QlyphsError('UNAUTHORIZED', 'Wrong account, network or permission');
+        if (walletBusy) throw new QlyphsError('BUSY', 'Another operation is pending');
+        // Refused before any window opens: a request for another site, account, network or time
+        // never reaches the person.
+        try {
+          reviewSignIn(r.params.challenge, {
+            origin: c.origin,
+            owner: a.owner,
+            genesis: a.genesis,
+            now: Date.now(),
+          });
+        } catch {
+          throw new QlyphsError('INVALID_REQUEST', 'Invalid sign-in request');
+        }
+        await createJob('signin', c, r.id, r.params.challenge);
         break;
       }
       case 'mintSession':
@@ -2787,6 +2871,21 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       exact(m, ['action', 'id']);
       requireThat(typeof m.id === 'string', 'Invalid request');
       const j = await reviewSender(sender, m.id);
+      if (j.kind === 'signin')
+        return {
+          id: m.id,
+          kind: j.kind,
+          origin: j.connection!.origin,
+          account: account(),
+          expires: requests.get(m.id).expires,
+          review: null,
+          signIn: {
+            actions: j.signIn!.fields.actions,
+            expiresAt: j.signIn!.fields.expiresAt,
+          },
+          digest: j.signIn!.digest,
+          unlocked: isUnlocked(),
+        };
       if (j.kind === 'session')
         return {
           id: m.id,

@@ -3,8 +3,10 @@ import type { Manifest, NetworkName } from '../../native/src/network.ts';
 import type { SubmittedTransaction, TransactionCommand } from '../../native/src/public.ts';
 import { MINT_SESSION_LIMITS } from './mint-session.ts';
 import type { MintSessionLimits, MintSessionParams, MintSessionSnapshot } from './mint-session.ts';
+import type { SiteSessionProof } from './site-session.ts';
 export type { Manifest, SubmittedTransaction, TransactionCommand };
 export * from './mint-session.ts';
+export * from './site-session.ts';
 export interface WalletAccount {
   readonly owner: string;
   readonly address: string;
@@ -66,6 +68,7 @@ const BASE_METHODS = [
   'network',
   'disconnect',
   'requestTransaction',
+  'signSessionChallenge',
 ] as const;
 const BASE_EVENTS = ['stateChanged', 'accountsChanged', 'networkChanged', 'disconnect'] as const;
 const SESSION_METHODS = ['requestMintSession', 'mintSession', 'stopMintSession'] as const;
@@ -126,6 +129,9 @@ export interface WalletRequestMap {
   mintSession: { params: never; result: MintSessionSnapshot | null };
   /** Only reduces authority, so it is safe to retry. */
   stopMintSession: { params: { session: string }; result: MintSessionSnapshot | null };
+  /** Signs a site session challenge (site-session.ts) after a private review; moves no funds.
+   * Wallets older than this method do not list it in `capabilities`. */
+  signSessionChallenge: { params: { challenge: string }; result: SiteSessionProof };
 }
 export type WalletMethod = keyof WalletRequestMap;
 export type RequestInput<M extends WalletMethod> = {

@@ -223,6 +223,8 @@ interface Confirmation {
   /** A mint session's review, and when the unlock ends (it bounds the session's signing time). */
   session?: MintSessionReview;
   unlockDeadline?: number;
+  /** A site sign-in: what the session lets the site do, and when it ends. */
+  signIn?: { actions: string[]; expiresAt: number };
 }
 let state: UIState | undefined,
   pending: Confirmation | undefined,
@@ -474,6 +476,7 @@ function pairs(id: string, items: readonly Row[]) {
   // Keep exact identifiers and charges available without making every review a stack of cards.
   // Only a session review has limits of its own: other reviews may reuse a label such as `Lots`.
   const session = pending?.kind === 'session';
+  const details = pending?.kind === 'signin' ? 'Sign-in' : 'Transaction details';
   const groups = new Map<string, Row[]>();
   for (const item of items) {
     const title =
@@ -485,7 +488,7 @@ function pairs(id: string, items: readonly Row[]) {
             ? 'Account & network'
             : /^(Network fee|Native |Qlyphs fee$|Qlyphs fee change$|Estimated total)/.test(item[0])
               ? 'Estimated fees'
-              : 'Transaction details';
+              : details;
     if (!groups.has(title)) groups.set(title, []);
     groups.get(title)!.push(item);
   }
@@ -511,7 +514,10 @@ function pairs(id: string, items: readonly Row[]) {
         const summary = node('summary', '');
         const account = node('span', state?.name ?? 'Your account', 'review-account-name');
         if (pending) account.append(node('small', short(pending.account.address)));
-        summary.append(node('span', 'Sending from'), account);
+        summary.append(
+          node('span', pending?.kind === 'signin' ? 'Signing in as' : 'Sending from'),
+          account,
+        );
         group.append(summary, rows(values));
         return group;
       }
@@ -608,7 +614,8 @@ function guardApproval() {
     !state?.unlocked ||
     !pending.unlocked ||
     now >= pending.expires ||
-    (pending.kind === 'transaction' && (!state?.unlocked || !state.backed)) ||
+    ((pending.kind === 'transaction' || pending.kind === 'signin') &&
+      (!state?.unlocked || !state.backed)) ||
     (pending.kind === 'session' && (!pending.session || !state?.backed || blocked !== null));
   $<HTMLButtonElement>('reject').disabled = busy || !pending;
   // Say once why a session cannot start; the guard runs every second.
@@ -904,6 +911,14 @@ async function render() {
       syncViews();
       return;
     }
+    if (pending.kind === 'signin') {
+      if (!pending.signIn) throw Error('Invalid sign-in review');
+      renderSignInReview(pending, pending.signIn);
+      message('');
+      approvalNote = '';
+      syncViews();
+      return;
+    }
     $('review-title').textContent =
       pending.kind === 'connect'
         ? 'Connect to this site?'
@@ -1097,6 +1112,34 @@ async function render() {
   message('');
   approvalNote = '';
   syncViews();
+}
+/** A site asks the wallet to prove account control for a short session; nothing is paid. */
+function renderSignInReview(review: Confirmation, signIn: NonNullable<Confirmation['signIn']>) {
+  const minutes = Math.max(1, Math.round((signIn.expiresAt - Date.now()) / 60_000));
+  const until = new Date(signIn.expiresAt).toLocaleTimeString();
+  $('review-title').textContent = 'Sign in to this site?';
+  $('review-origin').textContent = review.origin;
+  $('approve').textContent = 'Sign in';
+  $('review-amount').hidden = true;
+  $('review-qlyph').hidden = true;
+  $('review-qlyph').replaceChildren();
+  $('review-warning').textContent =
+    `This site asks you to sign in for ${minutes} minute${minutes === 1 ? '' : 's'}, until ${until}. ` +
+    'Signing proves that you control this account. It signs no transaction and moves no funds.';
+  $('review-full').textContent = JSON.stringify(
+    { site: review.origin, account: review.account, ...signIn },
+    null,
+    2,
+  );
+  pairs('review-summary', [
+    ['Signed in until', until],
+    ['Lets the site', signIn.actions.join(', ')],
+    ['Network', networkName() + ' only'],
+    ['Signing account', review.account.address],
+    ['Genesis', review.account.genesis],
+  ]);
+  $('expires').textContent = 'Review expires at ' + new Date(review.expires).toLocaleTimeString();
+  guardApproval();
 }
 function renderSessionReview(review: Confirmation, session: MintSessionReview) {
   const now = Date.now(),

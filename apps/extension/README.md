@@ -203,6 +203,21 @@ rate, or on mainnet below block 218,350 the legacy fee), and signs with an era b
 block. A rejection whose fee was paid (for example a symbol claimed first by
 another deploy) shows "Qlyphs fee kept".
 
+### Priority tip
+
+The review of a single lot mint offers a priority tip: Normal (none), Fast 0.01 QTC, Turbo 0.1 QTC,
+Max 1 QTC, or a custom amount up to 10 QTC (`packages/native/src/tip.ts`). Nodes order pending
+transactions by tip, so a tipped mint is included before untipped ones racing for the same lot. The
+tip is paid even when the mint fails because someone took the lot first; the review says so.
+
+Choosing a tip prepares the lot again: the wallet attests the next lot once more and gets a new
+review, whose digest binds the tip. The service still prepares the intent with tip 0 and the wallet
+refuses any other; the wallet adds the tip only to the context it signs, counts it in the balance
+check, and checks after signing that the extrinsic carries exactly that tip. The service relays only
+untipped transactions, so a tipped lot mint is broadcast through the wallet's own node
+(`author_submitExtrinsic`), which must answer the extrinsic's hash; the indexer then follows it like
+any other transaction. Every other operation, and every mint session, still signs with tip 0.
+
 ### Mint sessions
 
 A dapp can ask for up to N lots of one progressive-1000-v2 token (N at most 25) in one review. The

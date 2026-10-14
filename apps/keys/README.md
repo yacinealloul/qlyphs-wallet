@@ -115,8 +115,15 @@ a running mint session.
   public data only: accounts, network, signed transaction results, mint session snapshots and errors.
   Messages are capped at 8 KiB. There is no `signMessage`.
 - Every signature is shown and approved in the wallet's own confirmation UI. A dapp only makes requests.
-- The endpoints are fixed at build time and recorded in `BUILD.json`: the RPC (`rpc`), the indexer
-  (`api`), the explorer and the dapp allowlist. A website cannot change them.
+- The endpoints are fixed at build time and recorded in `BUILD.json`: the RPC (`rpc`), the fallback
+  RPC (`rpcFallback`), the indexer (`api`), the explorer and the dapp allowlist. A website cannot
+  change them.
+- On mainnet the wallet reads the chain from the Qlyphs node `https://rpc.qlyphs.com`. When that
+  node cannot be reached at all (offline, blocked by a network filter, no answer within 15 s), it
+  switches to the public Quantus node `https://rpc1-mainnet.quantus.com` for a minute, then tries the
+  first node again. A node
+  that answers, even with an error, is never skipped. Reads through either node pass the same genesis,
+  runtime and finalized checkpoint checks, so the fallback cannot move the wallet to another chain.
 - Qlyphs fees are computed by the wallet, never taken from the service: a fixed 0.01 QTC per mint,
   the lot fee of a progressive lot, 1% of a purchase price, and for creating a token or inscribing a
   Quark a 25 USD target converted at the on-chain rate of the
@@ -133,8 +140,8 @@ a running mint session.
   `SHA256SUMS.txt` and refuses to start if anything differs, is missing or was added.
 - Content-Security-Policy on the pages: `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'`.
   No inline scripts, no third-party scripts, no `eval`. The build also fails on `eval`,
-  `new Function` or dynamic `import()` in any bundle. `connect-src` lists only this origin, the RPC
-  and the indexer. So the files in `SHA256SUMS.txt` are all the code the page can run.
+  `new Function` or dynamic `import()` in any bundle. `connect-src` lists only this origin, the two
+  RPC nodes and the indexer. So the files in `SHA256SUMS.txt` are all the code the page can run.
 - `frame-ancestors 'none'` on `/connect` and `'self'` on `/` (wallet setup and confirmation overlays), plus
   `nosniff`, `no-referrer`, `no-store`, HSTS, and a `Permissions-Policy` that turns off camera,
   microphone and geolocation.
@@ -198,7 +205,7 @@ node apps/keys/verify.mjs https://keys.qlyphs.com --local keys-release
 `--local` compares your `SHA256SUMS.txt`, line by line, with the one the site serves. The build uses
 the locked dependency tree (`pnpm install --frozen-lockfile`), the mainnet pins committed in
 `deploy/mainnet/pins.json` and the mainnet witness policy committed in
-`deploy/mainnet/witness-policy.json`. During the build, the mainnet indexer and RPC must answer a CORS preflight
+`deploy/mainnet/witness-policy.json`. During the build, the mainnet indexer and both RPC nodes must answer a CORS preflight
 for `https://keys.qlyphs.com`, so the build needs network access.
 
 If a check fails, do not use the site, and report it (see [Publish a release](#publish-a-release)).
@@ -374,6 +381,7 @@ QLYPHS_KEYS_DAPP_ORIGINS='["https://app.testnet.example"]' node build.mjs
 | `QLYPHS_KEYS_PINS` | mainnet pins file (genesis, runtime, activation); required for mainnet |
 | `QLYPHS_KEYS_ORIGIN` | where keys is served; default `https://keys.qlyphs.com` in a mainnet production build, required for testnet |
 | `QLYPHS_KEYS_API`, `QLYPHS_KEYS_RPC`, `QLYPHS_KEYS_EXPLORER` | endpoint overrides; required for testnet |
+| `QLYPHS_KEYS_RPC_FALLBACK` | second RPC node, used only when `QLYPHS_KEYS_RPC` is unreachable; default `https://rpc1-mainnet.quantus.com` on mainnet, none on testnet and development; empty turns it off |
 | `NATIVE_PQ_POLICY_FILE` | reviewed public witness policy, required for purchases, progressive lot mints and, where a fee schedule is active (always on mainnet), token creation and inscriptions. A mainnet build accepts only one that matches the pins and the reviewed mainnet `rulesHash` (`deploy/mainnet/witness-policy.json`); a development or testnet build only one that matches its rules inputs; a switchable build rejects it |
 | `NATIVE_PROGRESSIVE_FROM`, `NATIVE_PROGRESSIVE_V2_FROM` | the witnesses' activation heights of progressive-1000-v1 (tag 11) and -v2 (tag 12), checked with `NATIVE_PQ_POLICY_FILE`; unset when they have none |
 | `NATIVE_FEE_SCHEDULE` | the witnesses' fee schedule, strict JSON of a `FeeRules` object ([fee schedule, section 4](../../docs/extension/PROTOCOL-FEES.md#4-activation-model)), or unset for none; refused for mainnet builds; part of `rulesHash`, so it is compared with `NATIVE_PQ_POLICY_FILE` |

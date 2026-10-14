@@ -42,7 +42,7 @@ import {
   switchNetwork,
   VERSION,
 } from './config.ts';
-import { api, digestOf, network, prepare, recheck, tipBlock } from './network.ts';
+import { api, digestOf, network, prepare, recheck, signingContext, submitToNode, tipBlock } from './network.ts';
 import { qlyphNumbers } from './qlyphs.ts';
 import { submitOnce } from './submission.ts';
 import type { Manifest, Review, View } from './network.ts';
@@ -101,6 +101,8 @@ import {
   parseSignedExtrinsic,
 } from '../../../packages/chain/src/codec/extrinsic.ts';
 import { parseCommand, json } from '../../native/src/commands.ts';
+import type { Command } from '../../native/src/commands.ts';
+import { parseTip } from '../../../packages/native/src/tip.ts';
 import {
   attestationPolicy,
   attestedAsset,
@@ -194,6 +196,8 @@ interface Job {
   expires?: number;
   cancelled: boolean;
   phase: 'review' | 'signing';
+  /** Priority tip changes asked in the review window; only the latest one is kept. */
+  retips: number;
   /** The page and document that approved this mint session, while the approval is being saved. */
   approval?: { page: string; documentId?: string };
   reply: (value: unknown) => void;
@@ -817,6 +821,7 @@ async function createJob(
       connectionRevision: connection?.revision,
       cancelled: false,
       phase: 'review',
+      retips: 0,
       reply: connection && requestId ? (v) => send(connection, requestId, v) : () => undefined,
     };
     const doc: BoundDocument = connection ?? {
@@ -867,16 +872,7 @@ async function createJob(
       // The terms come from both witnesses' attestation of a recent best block, which the mint's
       // signature will then commit to.
       const attested =
-        command.kind === 'mintProgressive'
-          ? await attestedLot(
-              a.owner,
-              a.genesis,
-              command.asset,
-              command.lot,
-              tipBlock,
-              API + '/api/attestations/tip',
-            )
-          : undefined;
+        command.kind === 'mintProgressive' ? await attestLot(a, command) : undefined;
       const quote =
         command.kind === 'deploy' ||
         command.kind === 'inscribe' ||
@@ -1147,6 +1143,27 @@ async function reviewSender(sender: Sender, id: string): Promise<Job> {
     requireThat(j.windowId === sender.tab.windowId, 'Wrong confirmation window');
   return j;
 }
+/** Both witnesses' terms for the next lot, at a recent best block the mint will then be signed on. */
+function attestLot(a: Account, command: Extract<Command, { kind: 'mintProgressive' }>) {
+  return attestedLot(a.owner, a.genesis, command.asset, command.lot, tipBlock, API + '/api/attestations/tip');
+}
+/** Prepare a lot mint again with the priority tip the user picked in its review window. The lot is
+ * attested again, so the new review has a new digest: an approval of the old one is refused. */
+async function retip(id: string, tip: string, sender: Sender): Promise<Review> {
+  const job = await reviewSender(sender, id);
+  requireThat(job.kind === 'transaction' && job.phase === 'review' && job.review, 'Invalid request');
+  const command = parseCommand(job.review!.command);
+  requireThat(command.kind === 'mintProgressive', 'A priority tip is offered on lot mints only');
+  parseTip(tip);
+  const a = account();
+  const turn = ++job.retips;
+  const review = await prepare(state.manifest!, a.owner, command, await attestLot(a, command), undefined, tip);
+  current(job);
+  // A newer choice, or an approval that started meanwhile, wins over this one.
+  requireThat(job.phase === 'review' && turn === job.retips, 'Review changed; approve the new request');
+  job.review = review;
+  return review;
+}
 async function approve(
   id: string,
   digest: string,
@@ -1231,7 +1248,7 @@ async function approve(
       signed = signer.signCallFromMnemonic(
         phrase,
         fromHex(review.intent.callHex),
-        review.intent.context,
+        signingContext(review),
         state.derived?.index ?? 0,
         0,
         0,
@@ -1244,7 +1261,8 @@ async function approve(
       parsed.scheme === 'ml-dsa-87' &&
         hex(parsed.accountId) === job.owner &&
         hex(parsed.call) === review.intent.callHex &&
-        parsed.nonce === review.intent.context.nonce,
+        parsed.nonce === review.intent.context.nonce &&
+        parsed.tip === BigInt(review.tip ?? '0'),
       'SDK signature output failed validation',
     );
     const hash = extrinsicHash(signed);
@@ -1273,8 +1291,11 @@ async function approve(
     await save();
     current(job);
     session.phrase(job.epoch);
+    // A tipped lot mint goes to the node itself: the service relays only tip 0.
     const submitted = await submitOnce(hash, () =>
-      api('/api/submit', { id: review.intent.id, raw: hex(signed) }),
+      review.tip
+        ? submitToNode(hex(signed), hash)
+        : api('/api/submit', { id: review.intent.id, raw: hex(signed) }),
     );
     tx.status = submitted.status;
     await save();
@@ -2919,6 +2940,10 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       );
       requireThat(typeof m.id === 'string' && typeof m.digest === 'string', 'Invalid approval');
       return approve(m.id, m.digest, sender, m.page);
+    case 'review-tip':
+      exact(m, ['action', 'id', 'tip']);
+      requireThat(typeof m.id === 'string' && typeof m.tip === 'string', 'Invalid request');
+      return retip(m.id, m.tip, sender);
     case 'session-state': {
       // Answers from memory only: a slow node can never starve the window's lease.
       exact(m, ['action', 'request', 'page']);

@@ -46,6 +46,8 @@ const REWORDED: Readonly<Record<string, string>> = {
   'lot is no longer the next lot in attested state': 'This lot was just taken. Review the next lot.',
   'mint differs from the attested right': 'This lot was just taken. Review the next lot.',
   'mint right is not finalized': 'The next lot is not final yet; try again shortly',
+  'invalid tip': 'Enter a tip from 0 to 10 QTC.',
+  'tip above the 10 QTC limit': 'Enter a tip from 0 to 10 QTC.',
   'this token has another progressive profile': 'This token uses another price schedule. Review it again.',
   // The protocol package's own refusals of rate-derived fees; the wallet never names the protocol.
   [MAINNET_FEES_OFF]: 'Qlyphs fees are not active on mainnet yet.',
@@ -154,6 +156,7 @@ const safe = new Set([
   'Progressive mint disabled: no bundled PQ witness policy',
   'Progressive tokens are not enabled on mainnet',
   'Progressive mint requires attested terms for this lot',
+  'A priority tip is offered on lot mints only',
   'This token mints one lot at a time; use its lot mint',
   'The next lot is not final yet; try again shortly',
   'The lot must be signed on its attested block',

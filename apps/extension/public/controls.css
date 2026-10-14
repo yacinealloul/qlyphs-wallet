@@ -309,3 +309,20 @@
     background-color: transparent;
   }
 }
+
+@layer controls {
+  /* Tip levels sit on the track: the sliding thumb, not the button, marks the choice. */
+  .tip-options button {
+    --rest: transparent;
+    --hover: var(--control-ghost-hover);
+    --press: var(--control-ghost-press);
+    --ink: var(--muted);
+    --edge: transparent;
+  }
+  .tip-options button[aria-pressed='true'] {
+    --rest: transparent;
+    --hover: transparent;
+    --press: transparent;
+    --ink: var(--text);
+  }
+}

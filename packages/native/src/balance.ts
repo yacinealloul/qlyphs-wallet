@@ -30,6 +30,8 @@ export interface PayerCosts {
   deposit: string;
   /** The QLYP-v1 Qlyphs fee the signer pays in the same extrinsic. */
   platformFee?: string;
+  /** The priority tip the signer adds (tip.ts); charged with the network fee. */
+  tip?: string;
   existentialDeposit: string;
 }
 /** Only funds present at the last final block are spendable: newer ones can still be reorganized away. */
@@ -65,7 +67,8 @@ export function checkSendBalance(
     BigInt(costs.networkFee) +
     BigInt(costs.nativeFee) +
     BigInt(costs.deposit) +
-    BigInt(costs.platformFee ?? '0');
+    BigInt(costs.platformFee ?? '0') +
+    BigInt(costs.tip ?? '0');
   const minimum = BigInt(costs.existentialDeposit);
   if (nativeAmount + fee <= spendableBalance(balance, minimum)) return;
   const unconfirmed = { free: balance.free, frozen: balance.frozen };

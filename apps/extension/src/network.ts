@@ -2,7 +2,7 @@ import { checkPayerBalance, checkQlyphsFee, FEES_UNVERIFIED_ERROR, nativeOutlay,
 import type { FeeQuote } from './fees.ts';
 import type { NativeBalance } from './send-balance.ts';
 import { checkInscribe, checkQlyphCommand, checkSymbol, parseInscription, QLYPH_READ_ERROR } from './qlyphs.ts';
-import { API, RPC } from './config.ts';
+import { API, RPC, RPC_FALLBACK } from './config.ts';
 import { sameNetwork } from './pinned-network.ts';
 import { MAINNET } from '../../../packages/native/src/protocol.ts';
 import type { ProgressiveLot, Ticket } from '../../../packages/native/src/protocol.ts';
@@ -10,6 +10,7 @@ import { checkManifest, finalHeight, finalityDepth } from '../../native/src/netw
 import { PROFILE, WRONG_NETWORK_ERROR } from './profile.ts';
 import { decode, fromHex, hex, parseCall, requireThat } from '../../../packages/native/src/codec.ts';
 import { isRateDerived } from '../../../packages/native/src/fee-schedule.ts';
+import { parseTip } from '../../../packages/native/src/tip.ts';
 import { parseSignedExtrinsic } from '../../../packages/chain/src/codec/extrinsic.ts';
 import { buildCall, parseCommand, json } from '../../native/src/commands.ts';
 import type { Command } from '../../native/src/commands.ts';
@@ -30,9 +31,10 @@ export interface ProgressiveReview {lot:string;lots:'1000';amount:string;fee:str
 /** Warnings a review shows, never refusals: `pooled`, a deploy of the same symbol is waiting in the
  * node's pool; `lowSupply`, a mint near the cap. */
 export interface ReviewNotice {pooled?:true;lowSupply?:true}
-/** `fees` prices a rate-derived operation (create or inscribe) and is bound by the digest. */
+/** `fees` prices a rate-derived operation (create or inscribe) and is bound by the digest. `tip` is
+ * the priority tip the user chose, in planck, present only when above zero. */
 export interface Review {intent:Prepared;command:Record<string,unknown>;ticket?:Ticket;asset?:Asset;progressive?:ProgressiveReview;
-  fees?:FeeQuote;notice?:ReviewNotice;digest:string}
+  fees?:FeeQuote;tip?:string;notice?:ReviewNotice;digest:string}
 /** Attested terms of the next lot (pq-guard's attestedLot), passed in by the background. `block` is
  * the best block both witnesses attested; the mint is signed with an era born exactly there. */
 export interface AttestedTerms {lot:ProgressiveLot;symbol:string;decimals:number;cap:bigint;minted:bigint;creator:string;block:{height:number;hash:string}}
@@ -56,9 +58,26 @@ export async function getJSON<T>(url:string, body?:unknown, options:ReadOptions=
   return data as T;
 }
 export const api=<T>(path:string,body?:unknown)=>getJSON<T>(API+path,body);
+/** How long reads stay on the fallback node once the main one could not be reached. */
+const FALLBACK_HOLD_MS=60_000;
+let rpcDownUntil=0;
+/** A request that never got a readable answer: offline, refused, blocked, or a response without CORS
+ * headers (browsers report all of them as a TypeError), or the 15 s timeout. A node that answered,
+ * even with an error, is not unreachable and is never skipped. */
+const unreachable=(e:unknown)=>e instanceof TypeError || (e instanceof DOMException && e.name==='TimeoutError');
 export async function rpc<T>(method:string,params:unknown[]=[],options:ReadOptions={}):Promise<T> {
-  const id=crypto.randomUUID();
-  const r=await getJSON<{id:string;result:T;error?:unknown}>(RPC,{jsonrpc:'2.0',id,method,params},options);
+  const id=crypto.randomUUID(), body={jsonrpc:'2.0',id,method,params};
+  const nodes=!RPC_FALLBACK?[RPC]:Date.now()<rpcDownUntil?[RPC_FALLBACK,RPC]:[RPC,RPC_FALLBACK];
+  let r:{id:string;result:T;error?:unknown}|undefined, first:unknown;
+  for(const node of nodes){
+    try {r=await getJSON<{id:string;result:T;error?:unknown}>(node,body,options);if(node===RPC)rpcDownUntil=0;break;}
+    catch(e){
+      if(!unreachable(e) || options.signal?.aborted)throw e;
+      first??=e;
+      if(node===RPC)rpcDownUntil=Date.now()+FALLBACK_HOLD_MS;
+    }
+  }
+  if(!r)throw first;
   requireThat(r.id===id && !r.error && Object.hasOwn(r,'result'),'RPC unavailable or invalid response'); return r.result;
 }
 export function decimal(value:unknown):string {
@@ -121,9 +140,12 @@ export async function ticket(key:string,owner:string,buy:boolean,head:number):Pr
 export async function digestOf(value:unknown):Promise<string> {
   return hex(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(json(value)))));
 }
-/** `quote` is required for a rate-derived operation: the wallet's own price (fees.ts quoteFees). */
-export async function prepare(pinned:Manifest,owner:string,input:unknown,attested?:AttestedTerms,quote?:FeeQuote):Promise<Review> {
+/** `quote` is required for a rate-derived operation: the wallet's own price (fees.ts quoteFees).
+ * `tip` is a priority tip in planck, offered on lot mints only, where signers race for one lot. */
+export async function prepare(pinned:Manifest,owner:string,input:unknown,attested?:AttestedTerms,quote?:FeeQuote,tip='0'):Promise<Review> {
   const s=await network(pinned), command=parseCommand(input);
+  parseTip(tip);
+  requireThat(tip==='0'||command.kind==='mintProgressive','A priority tip is offered on lot mints only');
   const rated=isRateDerived(command.kind);
   requireThat(!rated||quote,FEES_UNVERIFIED_ERROR);
   const basis=rated?quoteBasis(quote!):undefined;
@@ -160,7 +182,7 @@ export async function prepare(pinned:Manifest,owner:string,input:unknown,atteste
   // 0.01 QTC, sale 1%) and refuses any other.
   checkQlyphsFee(command,t,intent.costs.platformFee,basis);
   if (nativeOutlay(command,t)!==undefined)
-    checkPayerBalance(await api<NativeBalance>('/api/balance?owner='+owner),intent.costs,command,t,basis);
+    checkPayerBalance(await api<NativeBalance>('/api/balance?owner='+owner),{...intent.costs,tip},command,t,basis);
   const assetId=command.kind==='mint'||command.kind==='transfer'||command.kind==='mintProgressive'?command.asset:command.kind==='sell'?command.offer.asset:t?.offer.asset;
   const asset:Asset|undefined=command.kind==='mintProgressive'&&attested
     ?{id:command.asset,creator:attested.creator,available:'0',definition:{symbol:attested.symbol,decimals:attested.decimals,
@@ -186,7 +208,8 @@ export async function prepare(pinned:Manifest,owner:string,input:unknown,atteste
   const progressive:ProgressiveReview|undefined=lot&&attested?{lot:String(lot.lot),lots:'1000',amount:String(lot.amount),
     fee:String(lot.fee),mintedAfter:String(attested.minted+lot.amount),anchor:{...lot.anchor},block:{...attested.block}}:undefined;
   const value={intent,command:JSON.parse(json(command)) as Record<string,unknown>,...(t?{ticket:t}:{}),...(asset?{asset}:{}),
-    ...(progressive?{progressive}:{}),...(rated?{fees:{...quote!}}:{}),...(Object.keys(notice).length?{notice}:{})};
+    ...(progressive?{progressive}:{}),...(rated?{fees:{...quote!}}:{}),...(tip!=='0'?{tip}:{}),
+    ...(Object.keys(notice).length?{notice}:{})};
   return {...value,digest:await digestOf(value)};
 }
 /** A mint warns when the supply left is under twice its limit: mints included first can fill it.
@@ -223,6 +246,16 @@ export async function tipBlock():Promise<{height:number;hash:string}> {
   requireThat(Number.isSafeInteger(height)&&height>=0,'RPC unavailable or invalid response');
   return {height,hash};
 }
+/** The context the wallet signs: the service's, which always carries tip 0, with the user's
+ * priority tip. The service only accepts tip 0 at /api/submit, so a tipped extrinsic goes to the
+ * node directly (submitToNode). */
+export const signingContext=(review:Review):SigningContext=>({...review.intent.context,tip:review.tip??'0'});
+/** Broadcast signed bytes through the wallet's own node, in the shape /api/submit answers. */
+export async function submitToNode(raw:string,hash:string):Promise<{hash:string;status:'submitted'}> {
+  const returned=await rpc<string>('author_submitExtrinsic',[raw]);
+  requireThat(typeof returned==='string'&&returned.toLowerCase()===hash,'RPC unavailable or invalid response');
+  return {hash,status:'submitted'};
+}
 export function validateContext(c:SigningContext,genesis:string):void {
   requireThat(c.genesisHash===genesis && c.specVersion===PROFILE.runtime.specVersion && c.transactionVersion===PROFILE.runtime.transactionVersion && c.period===256
     && c.tip==='0' && Number.isSafeInteger(c.nonce) && c.nonce>=0 && c.nonce<=0xffffffff
@@ -231,8 +264,10 @@ export function validateContext(c:SigningContext,genesis:string):void {
 }
 export async function recheck(review:Review,pinned:Manifest,address:string):Promise<void> {
   requireThat(Date.now()<review.intent.expiresAt,'Review expired; start again');
-  const s=await network(pinned),i=review.intent, command=parseCommand(review.command);
+  const s=await network(pinned),i=review.intent, command=parseCommand(review.command), tip=review.tip??'0';
   validateContext(i.context,pinned.genesis);
+  parseTip(tip);
+  requireThat(tip==='0'||command.kind==='mintProgressive','A priority tip is offered on lot mints only');
   requireThat(await rpc<string>('chain_getBlockHash',[i.context.blockNumber])===i.context.blockHash,'Review block was reorganized');
   requireThat(s.head-i.context.blockNumber<64,'Review is too old; start again');
   const nonce=await rpc<number>('system_accountNextIndex',[address]);
@@ -261,7 +296,7 @@ export async function recheck(review:Review,pinned:Manifest,address:string):Prom
   if(b)requireThat(i.context.blockNumber===b.height&&i.context.blockHash===b.hash,'Prepared at another block than the attested one');
   checkQlyphsFee(command,t,i.costs.platformFee,basis);
   if (nativeOutlay(command,t)!==undefined)
-    checkPayerBalance(await api<NativeBalance>('/api/balance?owner='+i.owner),i.costs,command,t,basis);
+    checkPayerBalance(await api<NativeBalance>('/api/balance?owner='+i.owner),{...i.costs,tip},command,t,basis);
   // Re-check the symbol right before signing: another claim may have landed since the review.
   await checkSymbol(command,api);
   if(command.kind!=='mintProgressive')

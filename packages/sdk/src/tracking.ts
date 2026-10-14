@@ -7,6 +7,7 @@ import type {
 } from '../../native/src/public.ts';
 import { IndexerClient } from './indexer.ts';
 import { asTransactionHash, explorerUrl } from './identifiers.ts';
+import type { NetworkName } from '../../native/src/network.ts';
 import { immutable } from './validation.ts';
 import { sleep } from './async.ts';
 export interface TransactionObservation {
@@ -26,6 +27,8 @@ export interface TransactionObservation {
 export interface TrackingOptions {
   command?: TransactionCommand;
   explorerBaseUrl: string;
+  /** The network the explorer link names; development when omitted. */
+  network?: NetworkName;
   signal?: AbortSignal;
   /** Overall tracking deadline, not a transaction validity deadline. */
   timeoutMs?: number;
@@ -67,7 +70,7 @@ function base(
     finalized: false,
     result: 'pending',
     receipt: null,
-    explorerUrl: explorerUrl(options.explorerBaseUrl, { kind: 'transaction', id: hash }),
+    explorerUrl: explorerUrl(options.explorerBaseUrl, { kind: 'transaction', id: hash }, options.network),
     observedAt: Date.now(),
   });
 }

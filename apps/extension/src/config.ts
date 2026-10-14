@@ -9,6 +9,8 @@ import { shareWallet, useProfile } from './profile.ts';
 export interface NetworkEndpoints {
   api: string;
   rpc: string;
+  /** A second node for the same chain, used only when `rpc` cannot be reached at all. */
+  rpcFallback?: string;
   dapps: readonly string[];
   explorer: string;
   profile: NetworkProfile;
@@ -18,6 +20,7 @@ export interface NetworkEndpoints {
 
 declare const QLYPHS_API: string;
 declare const QLYPHS_RPC: string;
+declare const QLYPHS_RPC_FALLBACK: string | null | undefined;
 declare const QLYPHS_DAPP_ORIGINS: readonly string[];
 declare const QLYPHS_EXPLORER: string;
 declare const QLYPHS_VERSION: string;
@@ -35,6 +38,13 @@ export const DEFAULT_NETWORK: NetworkName = 'mainnet';
 
 export let API = SWITCHABLE ? NETWORKS![DEFAULT_NETWORK].api : QLYPHS_API;
 export let RPC = SWITCHABLE ? NETWORKS![DEFAULT_NETWORK].rpc : QLYPHS_RPC;
+/** Reached only when RPC fails at the network level (unreachable, blocked, no CORS answer). Every
+ * read through it passes the same genesis, runtime and checkpoint pins as RPC. */
+export let RPC_FALLBACK: string | null = SWITCHABLE
+  ? (NETWORKS![DEFAULT_NETWORK].rpcFallback ?? null)
+  : typeof QLYPHS_RPC_FALLBACK === 'string'
+    ? QLYPHS_RPC_FALLBACK
+    : null;
 export let DAPP = new URL(API).origin;
 /** Kept separate from RPC/API pins; an application cannot alter this list. */
 export let DAPPS: readonly string[] = SWITCHABLE
@@ -59,6 +69,7 @@ function apply(name: NetworkName): void {
   const net = NETWORKS![name];
   API = net.api;
   RPC = net.rpc;
+  RPC_FALLBACK = net.rpcFallback ?? null;
   DAPP = new URL(net.api).origin;
   DAPPS = Object.freeze([...net.dapps]);
   EXPLORER = net.explorer;

@@ -4714,3 +4714,136 @@
     }
   }
 }
+
+/* Priority tip of a lot mint review (review-tip.ts): a segmented track whose thumb slides to the
+   chosen level and warms with it. */
+@layer views {
+  .review-tip {
+    --heat: 0.35;
+    margin: 4px 0 14px;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--card);
+  }
+  .review-tip[data-heat='1'] {
+    --heat: 0.55;
+  }
+  .review-tip[data-heat='2'] {
+    --heat: 0.75;
+  }
+  .review-tip[data-heat='3'],
+  .review-tip[data-heat='4'] {
+    --heat: 1;
+  }
+  .review-tip-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .review-tip-head h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .review-tip-value {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--flare);
+  }
+  .tip-options {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    padding: 3px;
+    border-radius: 11px;
+    background: var(--bg);
+    isolation: isolate;
+  }
+  .tip-thumb {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 0;
+    width: 0;
+    z-index: -1;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--flare) calc(var(--heat) * 28%), var(--raised));
+    box-shadow: 0 0 calc(var(--heat) * 18px) color-mix(in srgb, var(--flare) calc(var(--heat) * 35%), transparent);
+    transition:
+      transform 260ms var(--ease),
+      width 260ms var(--ease),
+      background-color 260ms ease-out,
+      box-shadow 260ms ease-out;
+  }
+  .review-tip[data-pending] .tip-thumb {
+    animation: tip-pending 900ms ease-in-out infinite alternate;
+  }
+  @keyframes tip-pending {
+    to {
+      opacity: 0.45;
+    }
+  }
+  .tip-options button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    min-height: 46px;
+    padding: 6px 2px;
+    border: 0;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 550;
+  }
+  .tip-options button small {
+    font-size: 10px;
+    font-weight: 450;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+  .tip-options button[aria-pressed='true'] small {
+    color: inherit;
+    opacity: 0.8;
+  }
+  .tip-custom {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .tip-custom input {
+    flex: 1;
+    min-width: 0;
+    height: 38px;
+    font-variant-numeric: tabular-nums;
+  }
+  .tip-unit {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .tip-custom button {
+    min-height: 38px;
+    padding: 0 14px;
+    font-size: 12px;
+  }
+  .review-tip-note {
+    margin: 10px 0 0;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tip-thumb {
+      transition: none;
+    }
+    .review-tip[data-pending] .tip-thumb {
+      animation: none;
+    }
+  }
+}

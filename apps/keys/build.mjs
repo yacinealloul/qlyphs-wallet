@@ -107,7 +107,9 @@ const MAINNET_KEYS_ORIGIN = 'https://keys.qlyphs.com';
 // Same defaults as the extension: hosted services on mainnet, local ones on development.
 const MAINNET_DEFAULTS = {
   api: 'https://indexer.qlyphs.com',
-  rpc: 'https://rpc1-mainnet.quantus.com',
+  // The Qlyphs mainnet node first; the public Quantus node only when it cannot be reached.
+  rpc: 'https://rpc.qlyphs.com',
+  rpcFallback: 'https://rpc1-mainnet.quantus.com',
   explorer: 'https://qlyphs.com/explorer',
   // The Qlyphs app and the OTC, as in the extension.
   dapps: ['https://app.qlyphs.com', 'https://otc.qlyphs.com'],
@@ -123,6 +125,9 @@ const DEV_DEFAULTS = {
 const defaults = withMainnet ? MAINNET_DEFAULTS : DEV_DEFAULTS;
 const api = env('QLYPHS_KEYS_API', defaults.api);
 const rpc = env('QLYPHS_KEYS_RPC', defaults.rpc);
+// Empty QLYPHS_KEYS_RPC_FALLBACK turns the fallback off; a testnet build has none unless it names one.
+const rpcFallback = env('QLYPHS_KEYS_RPC_FALLBACK', defaults.rpcFallback ?? '') || null;
+if (rpcFallback === rpc) throw Error('QLYPHS_KEYS_RPC_FALLBACK must differ from QLYPHS_KEYS_RPC');
 const explorer = env('QLYPHS_KEYS_EXPLORER', defaults.explorer);
 const keysOrigin = env('QLYPHS_KEYS_ORIGIN', production ? MAINNET_KEYS_ORIGIN : 'http://localhost:4410');
 const dapps = process.env.QLYPHS_KEYS_DAPP_ORIGINS
@@ -164,12 +169,12 @@ const checkNetwork = (onPublic, values) => {
       );
 };
 checkList(dapps);
-checkNetwork(publicEndpoints, [api, rpc, ...dapps]);
+checkNetwork(publicEndpoints, [api, rpc, ...(rpcFallback ? [rpcFallback] : []), ...dapps]);
 // A testnet wallet stays apart from the mainnet one: its own origin, so its own storage and
 // passkeys, and none of the hosted mainnet services or dapps.
 if (testnet)
-  for (const value of [keysOrigin, api, rpc, ...dapps])
-    if ([MAINNET_KEYS_ORIGIN, MAINNET_DEFAULTS.api, MAINNET_DEFAULTS.rpc, ...MAINNET_DEFAULTS.dapps].includes(value))
+  for (const value of [keysOrigin, api, rpc, rpcFallback, ...dapps])
+    if ([MAINNET_KEYS_ORIGIN, MAINNET_DEFAULTS.api, MAINNET_DEFAULTS.rpc, MAINNET_DEFAULTS.rpcFallback, ...MAINNET_DEFAULTS.dapps].includes(value))
       throw Error(`A testnet build cannot use the mainnet origin ${value}`);
 if (!(production ? isPublicHttps(keysOrigin) : isLoopbackHttp(keysOrigin)))
   throw Error(`The ${profile} keys origin must be an exact ${production ? 'public HTTPS' : 'loopback HTTP'} origin`);
@@ -192,7 +197,7 @@ const networks = switchable
         explorer: DEV_DEFAULTS.explorer,
         profile: DEVELOPMENT,
       },
-      mainnet: { api, rpc, dapps, explorer, profile: mainnetPins },
+      mainnet: { api, rpc, ...(rpcFallback ? { rpcFallback } : {}), dapps, explorer, profile: mainnetPins },
     }
   : null;
 if (networks) {
@@ -200,7 +205,7 @@ if (networks) {
   checkNetwork(false, [networks.development.api, networks.development.rpc, ...networks.development.dapps]);
 }
 const everyApi = networks ? [networks.mainnet.api, networks.development.api] : [api];
-const everyRpc = networks ? [networks.mainnet.rpc, networks.development.rpc] : [rpc];
+const everyRpc = [...(networks ? [networks.mainnet.rpc, networks.development.rpc] : [rpc]), ...(rpcFallback ? [rpcFallback] : [])];
 const everyDapp = networks ? [...new Set([...networks.mainnet.dapps, ...networks.development.dapps])] : dapps;
 if (everyDapp.length > 16) throw Error('At most 16 dapp origins across networks');
 // The pages and the worker call the API and the RPC cross-origin (the extension skips CORS through
@@ -235,7 +240,9 @@ if (publicEndpoints) {
   if (process.env.QLYPHS_KEYS_SKIP_CORS_CHECK === '1')
     console.warn(`WARNING: CORS check skipped; verify ${publicApi} and ${publicRpc} allow ${keysOrigin} before deploying`);
   else {
-    const problems = (await Promise.all([corsProblem(publicApi, '/api/status'), corsProblem(publicRpc, '/')])).filter(Boolean);
+    const checks = [corsProblem(publicApi, '/api/status'), corsProblem(publicRpc, '/')];
+    if (rpcFallback) checks.push(corsProblem(rpcFallback, '/'));
+    const problems = (await Promise.all(checks)).filter(Boolean);
     if (problems.length) {
       const text = `Qlyphs Keys at ${keysOrigin} cannot reach its ${testnet ? 'testnet' : 'mainnet'} endpoints:\n  ${problems.join('\n  ')}\n` +
         `The API must allow this exact origin (apps/native accepts only extension origins today).`;
@@ -271,6 +278,7 @@ const define = {
   QLYPHS_VERSION: JSON.stringify(version),
   QLYPHS_API: JSON.stringify(api),
   QLYPHS_RPC: JSON.stringify(rpc),
+  QLYPHS_RPC_FALLBACK: JSON.stringify(rpcFallback),
   QLYPHS_DAPP_ORIGINS: JSON.stringify(dapps),
   QLYPHS_EXPLORER: JSON.stringify(explorer),
   QLYPHS_PQ_POLICY: JSON.stringify(pqPolicy),
@@ -382,6 +390,7 @@ await writeFile(
       wasmSHA256: binaryHash,
       api,
       rpc,
+      rpcFallback,
       explorer,
       keysOrigin,
       dappOrigins: everyDapp,

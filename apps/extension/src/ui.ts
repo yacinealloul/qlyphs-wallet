@@ -23,6 +23,7 @@ import { formatUnits, parseUnits, json } from '../../native/src/commands.ts';
 import { fromHex, hex } from '../../../packages/native/src/codec.ts';
 import { decodeAccountId, encodeAccountId } from '../../../packages/chain/src/codec/address.ts';
 import { arrive, drop, flash, nudge, pop, roll } from './feel.ts';
+import { mountTipPicker } from './review-tip.ts';
 import {
   blockRate,
   finality,
@@ -486,7 +487,7 @@ function pairs(id: string, items: readonly Row[]) {
           ? 'Transaction details'
           : /^(Network|Signing account|Genesis)$/.test(item[0])
             ? 'Account & network'
-            : /^(Network fee|Native |Qlyphs fee$|Qlyphs fee change$|Estimated total)/.test(item[0])
+            : /^(Network fee|Priority tip$|Native |Qlyphs fee$|Qlyphs fee change$|Estimated total)/.test(item[0])
               ? 'Estimated fees'
               : details;
     if (!groups.has(title)) groups.set(title, []);
@@ -929,6 +930,7 @@ async function render() {
     $('review-amount').hidden = true;
     $('review-qlyph').hidden = true;
     $('review-qlyph').replaceChildren();
+    tipPicker.show(pending.review?.command.kind === 'mintProgressive' ? (pending.review.tip ?? '0') : null);
     if (pending.review) {
       const r = pending.review,
         c = r.command,
@@ -1049,6 +1051,7 @@ async function render() {
         ['Qlyphs fee', r.fees ? feeValue(r.fees) : c.kind === 'buy' ? '1% · ' + qlyphsFee : qlyphsFee],
         ...(pendingFee ? ([['Qlyphs fee change', pendingFee]] as [string, string][]) : []),
         ['Network fee estimate', formatUnits(BigInt(f.networkFee), 12) + ' QTC'],
+        ...(r.tip ? ([['Priority tip', formatUnits(BigInt(r.tip), 12) + ' QTC']] as [string, string][]) : []),
         ['Native non-refundable charge', formatUnits(BigInt(f.nativeFee), 12) + ' QTC'],
         ['Native refundable deposit', formatUnits(BigInt(f.deposit), 12) + ' QTC'],
       );
@@ -1071,7 +1074,8 @@ async function render() {
           BigInt(f.networkFee) +
           BigInt(f.nativeFee) +
           BigInt(f.deposit) +
-          BigInt(f.platformFee);
+          BigInt(f.platformFee) +
+          BigInt(r.tip ?? '0');
         rows.push(['Estimated total', formatUnits(total, 12) + ' QTC']);
       }
       $('review-warning').textContent =
@@ -1080,7 +1084,7 @@ async function render() {
           : c.kind === 'buy'
           ? 'Before signing, this extension requires matching, fresh ML-DSA attestations from both configured witnesses. These are operator claims, not consensus proofs. Network fees are estimates.'
           : c.kind === 'mintProgressive'
-          ? 'This lot and its price come from fresh ML-DSA attestations by both configured witnesses. If someone mints this lot first, your transaction fails on chain: you pay the network fee only, never the Qlyphs fee. Fees are estimates.'
+          ? 'This lot and its price come from fresh ML-DSA attestations by both configured witnesses. If someone mints this lot first, your transaction fails on chain: you pay the network fee and your priority tip, never the Qlyphs fee. Fees are estimates.'
           : 'Fees are estimates, not a guaranteed cap. Approval signs only this operation.';
       // A deploy can lose its fee to another claim of the symbol; a mint, to the cap.
       const notices = [
@@ -2820,6 +2824,25 @@ click('reject', async () => {
 click('cancel-unlock', async () => {
   await call('reject', { id: requestId });
   window.close();
+});
+/** A new tip prepares the lot again in the background: a new review and digest, then a re-render
+ * whose total glows in the direction it moved. */
+const tipPicker = mountTipPicker($('review-tip'), (tip) => {
+  const before = pending?.review?.tip ?? '0';
+  void task(async () => {
+    tipPicker.pending(true);
+    try {
+      await call('review-tip', { id: requestId, tip });
+      await render();
+      const total = document.querySelector('#review-summary .review-total dd');
+      flash(total, BigInt(tip) > BigInt(before) ? 'down' : 'up');
+    } catch (error) {
+      tipPicker.show(before);
+      throw error;
+    } finally {
+      tipPicker.pending(false);
+    }
+  });
 });
 click('approve', async () => {
   const review = pending;

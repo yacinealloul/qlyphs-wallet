@@ -572,6 +572,21 @@
           </div>
           <p id="review-amount" class="review-amount" hidden></p>
           <div id="review-qlyph" class="review-qlyph" hidden></div>
+          <section id="review-tip" class="review-tip" aria-labelledby="review-tip-title" hidden>
+            <div class="review-tip-head">
+              <h2 id="review-tip-title">Priority</h2>
+              <span class="review-tip-value" aria-live="polite">No tip</span>
+            </div>
+            <div class="tip-options" role="group" aria-labelledby="review-tip-title">
+              <span class="tip-thumb" aria-hidden="true"></span>
+            </div>
+            <form class="tip-custom" hidden>
+              <input inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="0.5" aria-label="Tip in QTC" />
+              <span class="tip-unit">QTC</span>
+              <button type="submit" class="secondary">Set tip</button>
+            </form>
+            <p class="review-tip-note">Miners include higher tips first. The tip is paid even if someone mints this lot before you.</p>
+          </section>
           <div id="review-summary"></div>
           <p id="review-warning" class="review-note"></p>
           <details class="review-disclosure review-technical">

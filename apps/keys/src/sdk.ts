@@ -2,6 +2,7 @@
 import {
   CAPABILITIES,
   capabilities,
+  MINT_SESSION_LIMITS,
   parseMintSessionSnapshot,
   QlyphsError,
   publicError,
@@ -266,8 +267,9 @@ function make(keys: string, eager: boolean, declared?: KeysNetwork): QlyphsProvi
     const reported = (lastNetwork ?? snapshot.network)?.network;
     const network =
       reported === 'development' || reported === 'mainnet' ? reported : (declared ?? builtNetwork(keys));
-    // capabilities() lists sessions on development only: no Keys release offers them on mainnet yet.
-    return browserRunsSessions() ? capabilities(network) : capabilities(network, null);
+    // The same reviewed limits on both networks; the keys worker still applies its own checks
+    // (witness policy, progressive activation, ticket charge) before it serves a session.
+    return capabilities(network, browserRunsSessions() ? MINT_SESSION_LIMITS : null);
   };
   const settle = (id: string) => {
     const pending = outstanding.get(id);

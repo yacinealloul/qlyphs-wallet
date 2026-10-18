@@ -11,10 +11,10 @@ messaging, windows and passkeys. It is a Qlyphs product, not an official Quantus
 - Network: **Quantus mainnet** only in production. The release carries the reviewed mainnet witness
   policy ([`deploy/mainnet/witness-policy.json`](../../deploy/mainnet/witness-policy.json)), which
   purchases, token creation and inscriptions require; progressive tokens and their lot mints start at
-  block 218,350. The dapp adapter (`createKeysProvider`, `openKeysProvider`) does not offer mint
-  sessions on mainnet: it answers `capabilities` with `mintSessions: null` there and refuses
-  `requestMintSession` with `not-submitted` without opening the popup. Offering them needs a Keys
-  release that runs them on mainnet first, and only then an adapter that advertises them.
+  block 218,350. Mint sessions run on mainnet with the same limits as on the test network (one
+  `progressive-1000-v2` token, at most 25 lots, no tip), in the desktop browsers listed under
+  [How it works](#how-it-works); the wallet also requires the witness policy, the progressive
+  activation and the pinned ticket charge before it serves one.
 - Accounts: ML-DSA-87 (post-quantum), derivation `m/44'/189189'/0'/0'/0'`, official
   `@quantus-network/wasm@0.3.1` SDK, whose `.wasm` hash is recorded in `BUILD.json`.
 - Every release can be rebuilt from this repository and checked byte for byte against the live site

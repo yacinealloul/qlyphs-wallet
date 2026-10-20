@@ -1,8 +1,9 @@
 # Packaging and store distribution
 
-The extension is published in the Chrome Web Store; it is not listed on Firefox Add-ons yet. Store
-packages use a mainnet build with reviewed pins and the reviewed mainnet witness policy, and have no
-network switch; development and switchable builds are for local installation only. See
+The extension is published in the Chrome Web Store; it is not listed on Firefox Add-ons yet. From
+0.9.0, store packages use the store build (README, Store build): mainnet with reviewed pins and the
+reviewed mainnet witness policy, plus the public testnet with its own policy, hidden until the user
+shows test networks. Development and other switchable builds are for local installation only. See
 [mainnet notes](../MAINNET.md).
 
 ## Build profiles
@@ -80,7 +81,9 @@ creation and inscriptions. A mainnet build accepts only a policy that matches it
 reviewed mainnet rules (`rulesHash`): the committed `deploy/mainnet/witness-policy.json`. A
 development build accepts only one that matches its rules inputs and the development runtime.
 A switchable build accepts only such a development policy and uses it on its development or test
-network only; its mainnet side has none.
+network only; its mainnet side has none, except in a store build, which also takes the mainnet policy
+(`NATIVE_PQ_POLICY_FILE_MAINNET`, checked like a mainnet build's) and uses each policy on its own
+network only.
 Private signing keys and passphrases must never enter the build context. Policy rotations require
 reviewed releases; `BUILD.json` records a policy, but does not independently audit it.
 

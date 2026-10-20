@@ -1,7 +1,8 @@
 /** Page-side provider bridge with origin-bound requests and cancellation. */
-import { ALL_DAPPS } from './config.ts';
+import { ALL_DAPPS, SOLANA_VAULT } from './config.ts';
 import {
   CAPABILITIES,
+  SOLANA_VAULT_METHODS,
   QlyphsError,
   parseMintSessionSnapshot,
   publicError,
@@ -29,6 +30,10 @@ if (window.top === window && ALL_DAPPS.includes(location.origin) && !Object.hasO
     sessionRead: boolean;
   };
   const outstanding = new Map<string, Pending>();
+  // Development builds also forward the Solana vault methods; the background serves them there only.
+  const methods: readonly string[] = SOLANA_VAULT
+    ? [...CAPABILITIES.methods, ...SOLANA_VAULT_METHODS]
+    : CAPABILITIES.methods;
   const listeners = new Map<WalletEvent, Set<(value: never) => void>>();
   let snapshot: ProviderState = Object.freeze({
     accounts: Object.freeze([]),
@@ -136,7 +141,7 @@ if (window.top === window && ALL_DAPPS.includes(location.origin) && !Object.hasO
         pending.writing ? 'unknown' : undefined,
       );
       // A session read drops any outcome the reply names: any same-page script can post a reply.
-      pending.reject(pending.sessionRead ? new QlyphsError(error.code, error.message) : error);
+      pending.reject(pending.sessionRead ? new QlyphsError(error.code, error.message, undefined, error.reason) : error);
     } else pending.resolve(message.result);
   });
   const provider: QlyphsProvider = Object.freeze({
@@ -150,7 +155,7 @@ if (window.top === window && ALL_DAPPS.includes(location.origin) && !Object.hasO
         if (
           !input ||
           typeof input !== 'object' ||
-          !CAPABILITIES.methods.includes(input.method as never)
+          !methods.includes(input.method)
         ) {
           reject(
             new QlyphsError('UNSUPPORTED_METHOD', 'Unsupported wallet method', 'not-submitted'),

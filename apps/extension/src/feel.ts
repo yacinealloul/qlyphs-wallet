@@ -1,11 +1,29 @@
 /** Small state-change cues. Each one explains a change; none delays an action. */
-const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const motion = matchMedia('(prefers-reduced-motion: reduce)');
+const reduced = () => motion.matches;
 const EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+const running = new Set<Animation>();
+
+// Turning reduced motion on also stops cues that are still playing.
+motion.addEventListener('change', () => {
+  if (!motion.matches) return;
+  for (const animation of running) animation.cancel();
+  running.clear();
+});
+
+function play(element: Element, keyframes: Keyframe[], options: KeyframeAnimationOptions) {
+  const animation = element.animate(keyframes, options);
+  running.add(animation);
+  const forget = () => running.delete(animation);
+  animation.addEventListener('finish', forget);
+  animation.addEventListener('cancel', forget);
+}
 
 /** A refused input shakes once, so the eye lands on what needs fixing. */
 export function nudge(element: Element | null) {
   if (!element || reduced()) return;
-  element.animate(
+  play(
+    element,
     [
       { transform: 'translateX(0)' },
       { transform: 'translateX(-5px)' },
@@ -21,7 +39,7 @@ export function nudge(element: Element | null) {
 export function flash(element: Element | null, tone: 'up' | 'down' | 'neutral' = 'neutral') {
   if (!element || reduced()) return;
   const color = tone === 'up' ? '#8aca9f' : tone === 'down' ? '#ff946e' : '#e8e6e0';
-  element.animate([{ color }, { color: 'inherit' }], { duration: 1400, easing: 'ease-out' });
+  play(element, [{ color }, { color: 'inherit' }], { duration: 1400, easing: 'ease-out' });
 }
 
 /** Rolls a number from its previous to its new value; the final text is always exact. */
@@ -54,7 +72,8 @@ export function roll(
  * own background (toasts, badges, buttons) must keep it, so they only slide and fade. */
 export function arrive(element: HTMLElement, highlight = false) {
   if (reduced()) return;
-  element.animate(
+  play(
+    element,
     highlight
       ? [
           { opacity: 0, transform: 'translateY(-6px)', backgroundColor: '#ff6b3522' },
@@ -72,7 +91,8 @@ export function arrive(element: HTMLElement, highlight = false) {
 /** Soft pop for a status that just moved forward. */
 export function pop(element: Element | null) {
   if (!element || reduced()) return;
-  element.animate(
+  play(
+    element,
     [{ transform: 'scale(1)' }, { transform: 'scale(1.12)' }, { transform: 'scale(1)' }],
     { duration: 360, easing: EASE },
   );
@@ -81,7 +101,8 @@ export function pop(element: Element | null) {
 /** Overlays sit on top of content: they slide in fully opaque, never fading through it. */
 export function drop(element: HTMLElement) {
   if (reduced()) return;
-  element.animate(
+  play(
+    element,
     [{ transform: 'translateY(-10px) scale(0.98)' }, { transform: 'translateY(0) scale(1)' }],
     { duration: 220, easing: EASE },
   );

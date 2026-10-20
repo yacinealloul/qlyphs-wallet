@@ -10,7 +10,7 @@ import { checkManifest, finalHeight, finalityDepth } from '../../native/src/netw
 import { PROFILE, WRONG_NETWORK_ERROR } from './profile.ts';
 import { decode, fromHex, hex, parseCall, requireThat } from '../../../packages/native/src/codec.ts';
 import { isRateDerived } from '../../../packages/native/src/fee-schedule.ts';
-import { parseTip } from '../../../packages/native/src/tip.ts';
+import { NO_TIP_ERROR, parseTip } from '../../../packages/native/src/tip.ts';
 import { parseSignedExtrinsic } from '../../../packages/chain/src/codec/extrinsic.ts';
 import { buildCall, parseCommand, json } from '../../native/src/commands.ts';
 import type { Command } from '../../native/src/commands.ts';
@@ -22,7 +22,7 @@ export interface Costs {networkFee:string;nativeFee:string;deposit:string;platfo
 export interface Prepared {id:string;owner:string;callHex:string;context:SigningContext;createdAt:number;expiresAt:number;sequence:string;costs:Costs}
 /** A Quark (policy 'inscription') carries its number; in a review also its content (hex), read
  * from GET /api/inscription and shown only through the safe renderer. */
-export interface QlyphInfo {number:number;contentType?:string;size?:number;content?:string}
+export interface QlyphInfo {number:number;contentType?:string;size?:number;content?:string;height?:number;creator?:string}
 export interface Asset {id:string;creator:string;definition:{symbol:string;decimals:number;cap:string;limit:string;policy:string};available:string;minted?:string;qlyph?:QlyphInfo}
 export interface View {assets:Asset[];offers:unknown[];pairs:unknown[];sequence:string;more:boolean;status:Status}
 /** A progressive mint as the review shows it: every value comes from attested state. */
@@ -39,8 +39,9 @@ export interface Review {intent:Prepared;command:Record<string,unknown>;ticket?:
  * the best block both witnesses attested; the mint is signed with an era born exactly there. */
 export interface AttestedTerms {lot:ProgressiveLot;symbol:string;decimals:number;cap:bigint;minted:bigint;creator:string;block:{height:number;hash:string}}
 /** `max` raises the 1 MiB response cap, for block bodies only. `signal` ends the read early; the
- * 15 s timeout still applies. */
-export interface ReadOptions {max?:number;signal?:AbortSignal}
+ * 15 s timeout still applies. `node` reads from that node alone, never the fallback: a node being
+ * probed before it is kept. */
+export interface ReadOptions {max?:number;signal?:AbortSignal;node?:string}
 export async function getJSON<T>(url:string, body?:unknown, options:ReadOptions={}):Promise<T> {
   const timeout=AbortSignal.timeout(15000), max=options.max??1024*1024;
   const res=await fetch(url,{method:body===undefined?'GET':'POST',cache:'no-store',credentials:'omit',
@@ -53,9 +54,9 @@ export async function getJSON<T>(url:string, body?:unknown, options:ReadOptions=
       requireThat(size<=max,'Response too large');chunks.push(c.value);}
   } finally {await reader.cancel().catch(()=>undefined);}
   const bytes=new Uint8Array(size);let at=0;for(const c of chunks){bytes.set(c,at);at+=c.length;}
-  const data:unknown=JSON.parse(new TextDecoder().decode(bytes));
+  // A refusal is named by its status alone: its body may be a proxy's HTML page, not JSON.
   requireThat(res.ok,`Service refused request (${res.status}); check network and permissions`);
-  return data as T;
+  return JSON.parse(new TextDecoder().decode(bytes)) as T;
 }
 export const api=<T>(path:string,body?:unknown)=>getJSON<T>(API+path,body);
 /** How long reads stay on the fallback node once the main one could not be reached. */
@@ -67,7 +68,7 @@ let rpcDownUntil=0;
 const unreachable=(e:unknown)=>e instanceof TypeError || (e instanceof DOMException && e.name==='TimeoutError');
 export async function rpc<T>(method:string,params:unknown[]=[],options:ReadOptions={}):Promise<T> {
   const id=crypto.randomUUID(), body={jsonrpc:'2.0',id,method,params};
-  const nodes=!RPC_FALLBACK?[RPC]:Date.now()<rpcDownUntil?[RPC_FALLBACK,RPC]:[RPC,RPC_FALLBACK];
+  const nodes=options.node?[options.node]:!RPC_FALLBACK?[RPC]:Date.now()<rpcDownUntil?[RPC_FALLBACK,RPC]:[RPC,RPC_FALLBACK];
   let r:{id:string;result:T;error?:unknown}|undefined, first:unknown;
   for(const node of nodes){
     try {r=await getJSON<{id:string;result:T;error?:unknown}>(node,body,options);if(node===RPC)rpcDownUntil=0;break;}
@@ -87,16 +88,19 @@ export function decimal(value:unknown):string {
  * it to the live chain. This device's clock can be off by many seconds, so lastSync is only checked
  * against it loosely, to refuse a status that is plainly old. */
 const CLOCK_SKEW_MS=120_000;
-export async function network(pinned?:Manifest):Promise<Status> {
-  const [s,genesis,chain,best,final]=await Promise.all([api<Status>('/api/status'),rpc<string>('chain_getBlockHash',[0]),
-    rpc<string>('system_chain'),rpc<string>('chain_getBlockHash'),rpc<string>('chain_getFinalizedHead')]);
+/** `via` checks endpoints that are not in use yet (Settings → Network) without switching anything
+ * else to them: every other read keeps going to the active endpoints meanwhile. */
+export async function network(pinned?:Manifest,via?:{api:string;rpc:string}):Promise<Status> {
+  const read=<T>(method:string,params:unknown[]=[])=>rpc<T>(method,params,via?{node:via.rpc}:{});
+  const [s,genesis,chain,best,final]=await Promise.all([getJSON<Status>((via?.api??API)+'/api/status'),read<string>('chain_getBlockHash',[0]),
+    read<string>('system_chain'),read<string>('chain_getBlockHash'),read<string>('chain_getFinalizedHead')]);
   fromHex(genesis,32);
   if(PROFILE.network==='mainnet')requireThat(genesis===PROFILE.genesis,WRONG_NETWORK_ERROR);
   else requireThat(genesis!==MAINNET && /dev/i.test(chain),'Mainnet is disabled');
   const [version,code,head,finalHead,health]=await Promise.all([
-    rpc<{specName:string;specVersion:number;transactionVersion:number}>('state_getRuntimeVersion',[best]),
-    rpc<string>('state_getStorageHash',['0x3a636f6465',best]),rpc<{number:string}>('chain_getHeader',[best]),
-    rpc<{number:string}>('chain_getHeader',[final]),rpc<{isSyncing:boolean}>('system_health')]);
+    read<{specName:string;specVersion:number;transactionVersion:number}>('state_getRuntimeVersion',[best]),
+    read<string>('state_getStorageHash',['0x3a636f6465',best]),read<{number:string}>('chain_getHeader',[best]),
+    read<{number:string}>('chain_getHeader',[final]),read<{isSyncing:boolean}>('system_health')]);
   requireThat(version.specName==='quantus-runtime' && version.specVersion===PROFILE.runtime.specVersion
     && version.transactionVersion===PROFILE.runtime.transactionVersion && code===PROFILE.runtime.codeHash,'Unsupported runtime; signing disabled');
   const m=s.manifest;
@@ -114,7 +118,7 @@ export async function network(pinned?:Manifest):Promise<Status> {
   requireThat(!health.isSyncing && Number.isSafeInteger(s.head) && Number.isSafeInteger(s.finalized)
     && s.finalized>=0 && s.finalized<=s.head && Math.abs(headHeight-s.head)<=3
     && Math.abs(finalAt-s.finalized)<=3 && Math.abs(Date.now()-s.lastSync)<CLOCK_SKEW_MS,'Indexer is stale');
-  requireThat(await rpc<string>('chain_getBlockHash',[s.finalized])===s.checkpoint,'Finalized checkpoint mismatch');
+  requireThat(await read<string>('chain_getBlockHash',[s.finalized])===s.checkpoint,'Finalized checkpoint mismatch');
   if(pinned)requireThat(sameNetwork(m,pinned),'Network configuration changed; reconnect explicitly');
   return s;
 }
@@ -141,12 +145,13 @@ export async function digestOf(value:unknown):Promise<string> {
   return hex(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(json(value)))));
 }
 /** `quote` is required for a rate-derived operation: the wallet's own price (fees.ts quoteFees).
- * `tip` is a priority tip in planck, offered on lot mints only, where signers race for one lot. */
+ * `tip` is a priority tip in planck: any operation but a rate-derived one, whose price is attested
+ * at one block, may carry one. */
 export async function prepare(pinned:Manifest,owner:string,input:unknown,attested?:AttestedTerms,quote?:FeeQuote,tip='0'):Promise<Review> {
   const s=await network(pinned), command=parseCommand(input);
   parseTip(tip);
-  requireThat(tip==='0'||command.kind==='mintProgressive','A priority tip is offered on lot mints only');
   const rated=isRateDerived(command.kind);
+  requireThat(tip==='0'||!rated,NO_TIP_ERROR);
   requireThat(!rated||quote,FEES_UNVERIFIED_ERROR);
   const basis=rated?quoteBasis(quote!):undefined;
   // The block the fee was priced at, or the lot attested at: the era is born exactly there.
@@ -267,7 +272,7 @@ export async function recheck(review:Review,pinned:Manifest,address:string):Prom
   const s=await network(pinned),i=review.intent, command=parseCommand(review.command), tip=review.tip??'0';
   validateContext(i.context,pinned.genesis);
   parseTip(tip);
-  requireThat(tip==='0'||command.kind==='mintProgressive','A priority tip is offered on lot mints only');
+  requireThat(tip==='0'||!isRateDerived(command.kind),NO_TIP_ERROR);
   requireThat(await rpc<string>('chain_getBlockHash',[i.context.blockNumber])===i.context.blockHash,'Review block was reorganized');
   requireThat(s.head-i.context.blockNumber<64,'Review is too old; start again');
   const nonce=await rpc<number>('system_accountNextIndex',[address]);

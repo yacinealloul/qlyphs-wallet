@@ -16,11 +16,14 @@ import { mountSculptures } from './sculpture.ts';
 import { browser } from './browser.ts';
 import { explorerURL } from './explorer-link.ts';
 import { incomingBalance, spendableBalance } from './send-balance.ts';
-import { VERSION, EXPLORER, TESTNET, loadNetwork, useNetwork } from './config.ts';
+import { VERSION, EXPLORER, PLATFORM, TESTNET, LOCAL_NETWORK, loadNetwork, reloadEndpoints, useNetwork } from './config.ts';
+import { checkEndpoints, hostPatterns } from './endpoints.ts';
+import type { Endpoints } from './endpoints.ts';
 import { MAINNET_BUILD } from './profile.ts';
 import { applyNetworkCopy, networkName } from './network-copy.ts';
 import { formatUnits, parseUnits, json } from '../../native/src/commands.ts';
 import { fromHex, hex } from '../../../packages/native/src/codec.ts';
+import { isRateDerived } from '../../../packages/native/src/fee-schedule.ts';
 import { decodeAccountId, encodeAccountId } from '../../../packages/chain/src/codec/address.ts';
 import { arrive, drop, flash, nudge, pop, roll } from './feel.ts';
 import { mountTipPicker } from './review-tip.ts';
@@ -37,6 +40,8 @@ import type { ChainHeights, TxStage } from './tx-progress.ts';
 import {
   DETAIL_ROWS,
   LIMIT_ROWS,
+  SESSION_KEY_ROWS,
+  roughQtc,
   NO_SESSION,
   RELOADED_BEFORE_START,
   UI_CALL_TIMEOUT_MS,
@@ -53,7 +58,9 @@ import {
   reviewRows,
   reviewTitle,
   reviewWarning,
+  essentialRows,
   signingStops,
+  timeLimit,
   trackerText,
 } from './mint-session-view.ts';
 import type {
@@ -66,7 +73,19 @@ import type {
   SessionAnswer,
 } from './mint-session-view.ts';
 import type { Asset, Review, Manifest, Status } from './network.ts';
+import type { SolanaVaultReview } from './solana-vault.ts';
+import { SOLANA_SLOT_MS } from '../../../packages/provider/src/solana-vault.ts';
 import { renderQlyph, qlyphSize } from './qlyph-render.ts';
+import { qtcMark, tokenMark } from './token-mark.ts';
+import { platformURL } from './platform-link.ts';
+import type { PlatformPage } from './platform-link.ts';
+import type { CatalogToken, PointsView, TokenProfile } from './platform.ts';
+import { collectionRole } from './collections.ts';
+import { RANGES, chartPaths, defaultRange, formatPrice, marketView, unitPrice } from './market.ts';
+import type { Range, Trade } from './market.ts';
+import { formatUsd, formatUsdChange, formatUsdValue, USD_RANGES } from './qtc-price.ts';
+import type { QtcPrice, UsdRange } from './qtc-price.ts';
+import type { CollectionItem, CollectionRole, CollectionSummary, HeldCollection, Holdings } from './collections.ts';
 import { FEE_KEPT, feeKept, feeValue, LOW_SUPPLY_WARNING, pendingFeeNotice, raceWarning } from './fee-copy.ts';
 /** Display name of an asset: its symbol, or 'Quark #n' for a Quark (1-of-1 inscription, no symbol). */
 const assetName = (a: Asset) =>
@@ -136,6 +155,39 @@ const surface = requestId
     : params.get('surface') === 'tab'
       ? 'tab'
       : 'popup';
+/** A site's request shown in the side panel, which returns to the wallet once it is answered. */
+const inPanel = !!requestId && params.get('surface') === 'sidebar';
+/** The key the background hands this panel for the request it shows: only messages that carry it
+ * may read or answer that request. */
+let resolvePanelKey: (key: string | undefined) => void = () => undefined;
+/** The key once received, for messages sent while the page goes away. */
+let panelKeyValue: string | undefined;
+const panelKey = inPanel
+  ? new Promise<string | undefined>((resolve) => {
+      resolvePanelKey = (key) => resolve((panelKeyValue = key));
+      setTimeout(() => resolve(undefined), 5000);
+    })
+  : undefined;
+/** A message to the background, with this panel's request key when it has one. */
+async function keyed(message: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const key = panelKey && (await panelKey);
+  return key ? { ...message, panelKey: key } : message;
+}
+/** Reviews show the essentials. Settings → Advanced → Show transaction details adds every limit,
+ * identifier and the raw payload, to check or debug an operation. Remembered per browser. */
+const DETAILS_KEY = 'qlyphs.showTransactionDetails';
+let showDetails = (() => {
+  try {
+    return localStorage.getItem(DETAILS_KEY) === '1';
+  } catch {
+    return false;
+  }
+})();
+/** Leaves a request's page: its own window closes; the side panel goes back to the wallet. */
+function leave(): void {
+  if (inPanel) location.replace(browser.runtime.getURL('ui.html?surface=sidebar'));
+  else window.close();
+}
 document.body.dataset.surface = surface;
 document.documentElement.dataset.surface = surface;
 document.documentElement.dataset.extension = String(
@@ -153,14 +205,12 @@ if (surface === 'popup' && document.documentElement.dataset.extension === 'true'
 }
 // A switchable build resolves its network before anything below reads it.
 await loadNetwork();
-$('build-version').textContent = 'v' + VERSION;
 /** Network wording, at startup and again after a switch. */
 function paintNetwork() {
   $('about-version').textContent = (MAINNET_BUILD ? 'Mainnet · v' : TESTNET ? 'Testnet · v' : 'Development · v') + VERSION;
   applyNetworkCopy();
 }
 paintNetwork();
-$('menu-version').textContent = 'v' + VERSION;
 let passkeyAbort: AbortController | undefined;
 
 interface WalletAccount {
@@ -189,6 +239,15 @@ interface UIState {
   pqConfigured: boolean;
   /** Which network this wallet is on, and whether Settings may switch it. */
   network?: { active: 'development' | 'mainnet'; switchable: boolean };
+  /** The active network's endpoints, the compiled ones and those the user set (Settings → Network). */
+  endpoints?: {
+    rpc: string;
+    api: string;
+    explorer: string;
+    defaults: { rpc: string; api: string; explorer: string };
+    custom: Endpoints;
+    editable: boolean;
+  };
   /** The selected account's running mint session, or its last one whose payments are not settled. */
   mintSession?: MintSessionStatus | null;
   api: string;
@@ -209,9 +268,16 @@ interface Tx {
   to?: string;
   symbol?: string;
   decimals?: number;
+  /** The token it moves or mints. */
+  asset?: string;
   /** Set on the payments of a mint session: the session and the lot it paid for. */
   session?: string;
   lot?: number;
+  /** The network fee estimate plus tip at signing (planck). */
+  fee?: string;
+  /** The Qlyphs fee and native charges the review showed (planck), when above zero. */
+  qlyphsFee?: string;
+  charges?: string;
 }
 interface Confirmation {
   kind: string;
@@ -226,14 +292,17 @@ interface Confirmation {
   unlockDeadline?: number;
   /** A site sign-in: what the session lets the site do, and when it ends. */
   signIn?: { actions: string[]; expiresAt: number };
+  /** A Solana vault authorization, as the wallet decoded it (development builds only). */
+  solanaVault?: SolanaVaultReview;
 }
 let state: UIState | undefined,
   pending: Confirmation | undefined,
   candidate: Status | undefined,
   assets: Asset[] = [],
   busy = false;
-let addingWallet = false;
 let resetOwner: string | undefined;
+/** The account whose points are shown; cleared on lock so the next unlock reads them again. */
+let pointsOwner: string | undefined;
 let resetBackupSaved = false;
 let renamedOwner: string | undefined;
 let balanceRequest = 0;
@@ -308,11 +377,13 @@ function empty(title: string, description: string, symbol = 'wallet') {
 }
 
 async function call<T = unknown>(action: string, params: Record<string, unknown> = {}): Promise<T> {
-  const r = (await browser.runtime.sendMessage({
-    action,
-    ...params,
-    ...(ACCOUNT_SCOPED_ACTIONS.has(action) ? { expectedOwner: state?.account?.owner } : {}),
-  })) as {
+  const r = (await browser.runtime.sendMessage(
+    await keyed({
+      action,
+      ...params,
+      ...(ACCOUNT_SCOPED_ACTIONS.has(action) ? { expectedOwner: state?.account?.owner } : {}),
+    }),
+  )) as {
     result: T;
     error?: string;
   };
@@ -378,29 +449,24 @@ function syncControls() {
     busy || !canReset || !resetBackupSaved || !$<HTMLInputElement>('reset-confirm').checked;
   const selector = $<HTMLButtonElement>('open-accounts');
   const accountControls =
-    !!state?.account && !!state.unlocked && !!$('recovery').hidden && !addingWallet;
+    !!state?.account && !!state.unlocked && !!$('recovery').hidden;
   selector.hidden = !accountControls;
+  $('copy-address').hidden = !accountControls;
   selector.disabled = busy || !!requestId || !accountControls;
   document.body.dataset.accountControls = String(accountControls);
+  if (!state?.unlocked) {
+    $('points-badge').hidden = true;
+    pointsOwner = undefined;
+  }
   if (!accountControls) {
+    $<HTMLDialogElement>('account-drawer').close();
     $<HTMLDialogElement>('accounts-dialog').close();
-    $<HTMLDialogElement>('wallet-menu').close();
+    $<HTMLDialogElement>('tx-sheet').close();
+    $<HTMLDialogElement>('recipient-sheet').close();
     $('accounts-list').replaceChildren();
     $<HTMLInputElement>('account-name').value = '';
     renamedOwner = undefined;
   }
-  $('create-password-title').textContent = addingWallet
-    ? 'Protect your backup'
-    : 'Set your password';
-  $('create-password-intro').textContent = addingWallet
-    ? 'Choose a password for this wallet’s backup file. Your Qlyphs unlock stays the same.'
-    : 'One password unlocks all your wallets on this device.';
-  $('import-password-title').textContent = addingWallet
-    ? 'Protect your backup'
-    : 'Secure this device';
-  $('import-password-intro').textContent = addingWallet
-    ? 'Choose a password for this wallet’s backup file. Your Qlyphs unlock stays the same.'
-    : 'Choose one password to unlock all your wallets on this device.';
   const migration = state?.unlockSetup;
   $('unlock-intro').hidden = !migration && !state?.unlockHint;
   $('unlock-title').textContent = migration ? 'Link your saved wallets' : 'Welcome back';
@@ -414,9 +480,6 @@ function syncControls() {
   $<HTMLButtonElement>('cancel-unlock').disabled = busy;
   $('active-account-name').textContent = state?.name ?? 'Account 1';
   if (state?.account) paintAccountAvatar($('header-wallet-avatar'), state.account.owner);
-  if (state?.account) paintAccountAvatar($('menu-account-avatar'), state.account.owner);
-  $('menu-account-name').textContent = state?.name ?? 'Account 1';
-  $('menu-account-address').textContent = state?.account ? short(state.account.address) : '';
   selector.title = state?.name ?? 'Switch account';
   selector.setAttribute('aria-label', `Switch account, ${state?.name ?? 'Account 1'}`);
   $('refresh').hidden = !state?.account || $('wallet').hidden;
@@ -437,11 +500,9 @@ function syncViews() {
   const recovery = !$('recovery').hidden;
   const wasUnlocking = !$('unlock').hidden;
   const wasReviewing = !$('confirmation').hidden;
-  $('new-wallet').hidden = !state?.manifest || (!!state.account && !addingWallet) || !!requestId;
-  $('unlock').hidden =
-    !state?.account || !!state?.unlocked || watchOnly || recovery || addingWallet;
-  $('wallet').hidden =
-    !state?.account || !!requestId || (!state.unlocked && !watchOnly) || recovery || addingWallet;
+  $('new-wallet').hidden = !state?.manifest || !!state.account || !!requestId;
+  $('unlock').hidden = !state?.account || !!state?.unlocked || watchOnly || recovery;
+  $('wallet').hidden = !state?.account || !!requestId || (!state.unlocked && !watchOnly) || recovery;
   $('confirmation').hidden =
     !requestId ||
     !pending ||
@@ -476,15 +537,25 @@ function pairs(id: string, items: readonly Row[]) {
   }
   // Keep exact identifiers and charges available without making every review a stack of cards.
   // Only a session review has limits of its own: other reviews may reuse a label such as `Lots`.
+  // A session review leads with what it can cost and when it stops; the rest folds into sections.
   const session = pending?.kind === 'session';
-  const details = pending?.kind === 'signin' ? 'Sign-in' : 'Transaction details';
+  const details =
+    pending?.kind === 'signin'
+      ? 'Sign-in'
+      : pending?.kind === 'vault'
+        ? 'Vault payment'
+        : session
+          ? 'Token'
+          : 'Transaction details';
   const groups = new Map<string, Row[]>();
   for (const item of items) {
     const title =
-      session && LIMIT_ROWS.test(item[0])
+      session && SESSION_KEY_ROWS.test(item[0])
+        ? ''
+        : session && LIMIT_ROWS.test(item[0])
         ? 'Limits'
         : session && DETAIL_ROWS.test(item[0])
-          ? 'Transaction details'
+          ? 'Token'
           : /^(Network|Signing account|Genesis)$/.test(item[0])
             ? 'Account & network'
             : /^(Network fee|Priority tip$|Native |Qlyphs fee$|Qlyphs fee change$|Estimated total)/.test(item[0])
@@ -500,32 +571,47 @@ function pairs(id: string, items: readonly Row[]) {
         'div',
         '',
         'review-row' +
-          (/recipient|account|genesis|asset ID|buyer|payout/i.test(k) ? ' identifier' : '') +
+          (/recipient|account|genesis|asset ID|buyer|payout|from vault/i.test(k) ? ' identifier' : '') +
           (k === 'Estimated total' || k === 'Maximum protocol spend' ? ' review-total' : ''),
       );
-      row.append(node('dt', k, recipientOnly ? 'sr-only' : ''), node('dd', v));
+      row.append(node('dt', k, recipientOnly ? 'sr-only' : ''), rowValue(k, v));
       list.append(row);
     }
     return list;
   };
   $('review-summary').replaceChildren(
     ...[...groups].map(([title, values]) => {
-      if (title === 'Account & network' && pending?.kind !== 'connect') {
+      if (title === 'Account & network' && !showDetails && pending)
+        return reviewList([
+          [
+            accountLabel(pending.kind),
+            accountLine(pending.account.address),
+          ],
+        ]);
+      if (title === 'Account & network') {
         const group = node('details', '', 'review-disclosure review-account');
         const summary = node('summary', '');
         const account = node('span', state?.name ?? 'Your account', 'review-account-name');
         if (pending) account.append(node('small', short(pending.account.address)));
         summary.append(
-          node('span', pending?.kind === 'signin' ? 'Signing in as' : 'Sending from'),
+          node(
+            'span',
+            pending?.kind ? accountLabel(pending.kind) : 'Sending from',
+          ),
           account,
         );
         group.append(summary, rows(values));
         return group;
       }
+      if (session && title) {
+        const fold = node('details', '', 'review-disclosure review-section');
+        fold.append(node('summary', title), rows(values));
+        return fold;
+      }
       const group = node('section', '', 'review-group');
       const recipientOnly = values.length === 1 && values[0]![0] === 'Recipient';
-      const heading = node('h2', recipientOnly ? 'To' : title);
-      group.append(heading);
+      if (title) group.append(node('h2', recipientOnly ? 'To' : title));
+      const heading = group.querySelector('h2')!;
       if (recipientOnly) {
         const copy = node('button', 'Copy', 'text-button review-copy') as HTMLButtonElement;
         copy.type = 'button';
@@ -537,12 +623,19 @@ function pairs(id: string, items: readonly Row[]) {
         title === 'Estimated fees'
           ? values.filter(([k, v]) => /^(Native |Qlyphs fee$)/.test(k) && v === '0 QTC')
           : [];
+      // A token's full ID stays one tap away instead of filling the review.
+      const tokenId = values.filter(([k]) => k === 'Full asset ID');
       group.append(
         rows(
-          values.filter((value) => !zeroFees.includes(value)),
+          values.filter((value) => !zeroFees.includes(value) && !tokenId.includes(value)),
           recipientOnly,
         ),
       );
+      if (tokenId.length && showDetails) {
+        const fold = node('details', '', 'review-disclosure review-token-id');
+        fold.append(node('summary', 'Token ID'), rows(tokenId));
+        group.append(fold);
+      }
       if (zeroFees.length) {
         const details = node('details', '', 'review-disclosure review-zero-fees');
         details.append(node('summary', 'Other fees · 0 QTC'), rows(zeroFees));
@@ -594,8 +687,6 @@ async function task(work: () => Promise<void>, trigger?: HTMLElement) {
     syncControls();
     if ($<HTMLDialogElement>('accounts-dialog').open && !$('accounts-overview').hidden) {
       const count = state?.accounts?.length ?? 1;
-      $<HTMLButtonElement>('add-wallet').disabled =
-        !state?.unlocked || !state.backed || count >= 20;
       $<HTMLButtonElement>('add-account').disabled =
         !state?.unlocked || !state.backed || count >= 20;
     }
@@ -615,10 +706,10 @@ function guardApproval() {
     !state?.unlocked ||
     !pending.unlocked ||
     now >= pending.expires ||
-    ((pending.kind === 'transaction' || pending.kind === 'signin') &&
+    ((pending.kind === 'transaction' || pending.kind === 'signin' || pending.kind === 'vault') &&
       (!state?.unlocked || !state.backed)) ||
     (pending.kind === 'session' && (!pending.session || !state?.backed || blocked !== null));
-  $<HTMLButtonElement>('reject').disabled = busy || !pending;
+  $<HTMLButtonElement>('reject').disabled = busy;
   // Say once why a session cannot start; the guard runs every second.
   if (blocked && blocked !== approvalNote) message(blocked, true);
   approvalNote = blocked ?? '';
@@ -703,13 +794,9 @@ function onboarding(screen: OnboardingScreen, focus = true) {
     ))
       input.disabled = view.hidden;
   }
-  $('onboarding-back').hidden = screen === 'choice' && !addingWallet;
-  $('onboarding-back').setAttribute(
-    'aria-label',
-    screen === 'choice' && addingWallet ? 'Back to accounts' : 'Back',
-  );
+  $('onboarding-back').hidden = screen === 'choice';
   $('onboarding-progress').textContent = {
-    choice: addingWallet ? 'Add a wallet' : 'Set up your wallet',
+    choice: 'Set up your wallet',
     create: 'Create wallet',
     'import-choice': 'Import wallet',
     phrase: 'Recovery phrase · 1 of 2',
@@ -821,7 +908,7 @@ async function render() {
   if (state?.account?.owner !== next.account?.owner) resetAccountView();
   state = next;
   $('setup').hidden = !!state.manifest || !!requestId;
-  $('new-wallet').hidden = !state.manifest || (!!state.account && !addingWallet) || !!requestId;
+  $('new-wallet').hidden = !state.manifest || !!state.account || !!requestId;
   if (!state.unlocked) {
     $('phrase').textContent = '';
     $('recovery').hidden = true;
@@ -850,9 +937,20 @@ async function render() {
     return;
   }
   if (state.account) {
-    $('address').textContent = short(state.account.address);
+    $('address').textContent = 'Copy address ' + state.account.address;
     $('copy-address').title = 'Copy ' + state.account.address;
     $('receive-address').textContent = state.account.address;
+    pairs('account-rows', [
+      ['Address', state.account.address],
+      ['Account ID', state.account.owner],
+      ['Network', networkName()],
+      ...(state.manifest
+        ? ([
+            ['Genesis', state.manifest.genesis],
+            ['Runtime', state.manifest.runtimeHash],
+          ] as const)
+        : []),
+    ]);
     $('account-details').textContent = JSON.stringify(
       { ...state.account, manifest: state.manifest },
       null,
@@ -920,17 +1018,32 @@ async function render() {
       syncViews();
       return;
     }
+    if (pending.kind === 'vault') {
+      if (!pending.solanaVault) throw Error('Invalid vault review');
+      renderSolanaVaultReview(pending, pending.solanaVault);
+      message('');
+      approvalNote = '';
+      syncViews();
+      return;
+    }
+    document.getElementById('review-rules')?.remove();
     $('review-title').textContent =
       pending.kind === 'connect'
         ? 'Connect to this site?'
         : (labels[String(pending.review!.command.kind)] ?? 'Review transaction');
     $('review-origin').textContent = pending.origin;
     $('approve').textContent = pending.kind === 'connect' ? 'Connect' : 'Approve transaction';
+    $('review-full-label').textContent =
+      pending.kind === 'connect' ? 'Technical details' : 'Full transaction details';
     const rows: [string, string][] = [];
     $('review-amount').hidden = true;
     $('review-qlyph').hidden = true;
     $('review-qlyph').replaceChildren();
-    tipPicker.show(pending.review?.command.kind === 'mintProgressive' ? (pending.review.tip ?? '0') : null);
+    // Any operation but a creation or inscription may carry a priority tip.
+    const tippable = !!pending.review && !isRateDerived(String(pending.review.command.kind));
+    const networkFee = BigInt(pending.review?.intent.costs.networkFee ?? '0');
+    tipPicker.show(tippable ? (pending.review!.tip ?? '0') : null, (tip) => networkFee + tip);
+    tipNote(pending.review?.command.kind === 'mintProgressive' ? 'lot' : 'operation');
     if (pending.review) {
       const r = pending.review,
         c = r.command,
@@ -945,6 +1058,22 @@ async function render() {
           renderQlyph(document, String(c.contentType), String(c.content), 'New Quark'),
         );
         $('review-qlyph').hidden = false;
+        // Read from the bytes being signed, never from the site: what this Quark is to a collection.
+        const role = collectionRole(String(c.contentType), String(c.content));
+        if (role) {
+          $('review-title').textContent = {
+            mint: `Mint from ${role.symbol}`,
+            deploy: `Create collection ${role.symbol}`,
+            add: `Add to collection ${role.symbol}`,
+            layers: `Art for collection ${role.symbol}`,
+          }[role.role];
+          rows.push([
+            'Collection',
+            role.role === 'mint'
+              ? `${role.symbol} · counts if the collection's rules accept it; the Quark is yours either way`
+              : role.symbol,
+          ]);
+        }
         rows.push(
           ['Content type', String(c.contentType)],
           ['Size', qlyphSize((String(c.content).length - 2) / 2)],
@@ -1050,8 +1179,13 @@ async function render() {
       rows.push(
         ['Qlyphs fee', r.fees ? feeValue(r.fees) : c.kind === 'buy' ? '1% · ' + qlyphsFee : qlyphsFee],
         ...(pendingFee ? ([['Qlyphs fee change', pendingFee]] as [string, string][]) : []),
-        ['Network fee estimate', formatUnits(BigInt(f.networkFee), 12) + ' QTC'],
-        ...(r.tip ? ([['Priority tip', formatUnits(BigInt(r.tip), 12) + ' QTC']] as [string, string][]) : []),
+        // A review that can carry a tip shows its network fee as one row that opens the fee sheet.
+        ...((tipPicker.active
+          ? [
+              ['Network fee', '≈ ' + roughQtc(BigInt(f.networkFee) + BigInt(r.tip ?? '0'))],
+              ...(showDetails && r.tip ? [['Priority tip', formatUnits(BigInt(r.tip), 12) + ' QTC']] : []),
+            ]
+          : [['Network fee estimate', formatUnits(BigInt(f.networkFee), 12) + ' QTC']]) as [string, string][]),
         ['Native non-refundable charge', formatUnits(BigInt(f.nativeFee), 12) + ' QTC'],
         ['Native refundable deposit', formatUnits(BigInt(f.deposit), 12) + ' QTC'],
       );
@@ -1109,8 +1243,10 @@ async function render() {
       ['Genesis', pending.account.genesis],
     );
     pairs('review-summary', rows);
+    reviewMark(pending.review?.asset?.id);
     $('expires').textContent =
       'Review expires at ' + new Date(pending.expires).toLocaleTimeString();
+    syncDetails();
     guardApproval();
   }
   message('');
@@ -1119,11 +1255,13 @@ async function render() {
 }
 /** A site asks the wallet to prove account control for a short session; nothing is paid. */
 function renderSignInReview(review: Confirmation, signIn: NonNullable<Confirmation['signIn']>) {
+  document.getElementById('review-rules')?.remove();
   const minutes = Math.max(1, Math.round((signIn.expiresAt - Date.now()) / 60_000));
   const until = new Date(signIn.expiresAt).toLocaleTimeString();
   $('review-title').textContent = 'Sign in to this site?';
   $('review-origin').textContent = review.origin;
   $('approve').textContent = 'Sign in';
+  $('review-full-label').textContent = 'Technical details';
   $('review-amount').hidden = true;
   $('review-qlyph').hidden = true;
   $('review-qlyph').replaceChildren();
@@ -1143,7 +1281,130 @@ function renderSignInReview(review: Confirmation, signIn: NonNullable<Confirmati
     ['Genesis', review.account.genesis],
   ]);
   $('expires').textContent = 'Review expires at ' + new Date(review.expires).toLocaleTimeString();
+  reviewMark();
+  syncDetails();
   guardApproval();
+}
+/** What the priority picker says a tip does for this review. */
+function tipNote(kind: 'lot' | 'session' | 'operation') {
+  $('fee-sheet').querySelector('.fee-note')!.textContent =
+    kind === 'operation'
+      ? 'Nodes include higher tips first. The tip is paid with the network fee.'
+      : kind === 'lot'
+        ? 'Miners include higher tips first. The tip is paid even if someone mints this lot before you.'
+        : 'Every payment of the session carries this tip, a lost one too. Higher tips are included first.';
+}
+/** 1000000 → 1,000,000: the integer part of a token amount, grouped for reading. */
+const groupDigits = (amount: string) =>
+  amount.replace(/^\d+/, (digits) => digits.replace(/\B(?=(\d{3})+(?!\d))/g, ','));
+/** What a review calls the account it signs with. */
+const accountLabel = (kind: string) =>
+  kind === 'signin'
+    ? 'Signing in as'
+    : kind === 'connect'
+      ? 'Account'
+      : kind === 'vault'
+        ? 'Signing with'
+        : 'Sending from';
+/** The account a review signs with, by name and short address. */
+const accountLine = (address: string) => `${state?.name ?? 'Your account'} · ${short(address)}`;
+/** A row's value; the network fee of a review that can carry a tip is the fee sheet's button. */
+function rowValue(label: string, value: string) {
+  const dd = document.createElement('dd');
+  if (label === 'Network fee' && tipPicker.active) dd.append(tipPicker.button());
+  else dd.textContent = value;
+  return dd;
+}
+/** A plain list of review rows, without sections. */
+function reviewList(items: readonly Row[]) {
+  const group = node('section', '', 'review-group');
+  const list = node('dl', '', 'rows');
+  for (const [k, v] of items) {
+    const row = node('div', '', 'review-row' + (k === 'Max cost' ? ' review-strong' : ''));
+    row.append(node('dt', k), rowValue(k, v));
+    list.append(row);
+  }
+  group.append(list);
+  return group;
+}
+/** The token's mark beside the review title; none for QTC or a review without a token. */
+function reviewMark(asset?: string) {
+  $('review-mark').replaceChildren(...(asset ? [markOf(asset)] : []));
+  $('review-mark').hidden = !asset;
+}
+/** The expiry line and the raw payload are details: shown only when asked for in Settings. */
+function syncDetails() {
+  $('expires').hidden = !showDetails;
+  document.querySelector<HTMLElement>('.review-technical')!.hidden = !showDetails;
+}
+/**
+ * A site asks for one payment out of the account's quantum vault on Solana, or one wQTC redemption
+ * back to QTC on Quantus; the site submits it.
+ */
+function renderSolanaVaultReview(review: Confirmation, vault: SolanaVaultReview) {
+  const redeem = vault.kind === 'redeem';
+  document.getElementById('review-rules')?.remove();
+  $('review-title').textContent =
+    vault.network + (redeem ? ' · Redeem wQTC' : ' · Quantum vault payment');
+  $('review-origin').textContent = review.origin;
+  $('approve').textContent = redeem ? 'Sign redemption' : 'Sign payment';
+  $('review-full-label').textContent = 'Technical details';
+  $('review-qlyph').hidden = true;
+  $('review-qlyph').replaceChildren();
+  const [quantity, currency] = vault.amountText.split(' ');
+  $('review-amount').replaceChildren(
+    node('span', groupDigits(quantity ?? vault.amount), 'review-quantity'),
+    document.createTextNode(' '),
+    node('span', currency ?? '', 'review-currency'),
+  );
+  $('review-amount').hidden = false;
+  arrive($('review-amount'));
+  const asset =
+    vault.asset === 'SOL'
+      ? 'SOL'
+      : `${vault.unit === 'wQTC' ? 'wQTC' : 'SPL token'} ${vault.mint} · ${vault.decimals} decimals`;
+  pairs('review-summary', [
+    ...(redeem
+      ? ([
+          ['Redeem', vault.summary],
+          ['QTC to', vault.destination + (vault.ownAccount ? ' (your account)' : '')],
+        ] as Row[])
+      : ([['Recipient', vault.destination]] as Row[])),
+    ['From vault', vault.vault],
+    ['Asset', asset],
+    ...(vault.source ? ([['Source token account', vault.source]] as Row[]) : []),
+    ['Amount', `${vault.amountText} (${vault.amount} base units)`],
+    ['Vault nonce', vault.nonce],
+    ['Current Solana slot', vault.currentSlot],
+    ['Valid from slot', `${vault.issuedSlot} (${slotsFromNow(vault, vault.issuedSlot)})`],
+    ['Valid until slot', `${vault.expirySlot} (${slotsFromNow(vault, vault.expirySlot)})`],
+    ['Requested by', review.origin],
+    ['Network', vault.network + ' only'],
+    ['Program', vault.program],
+    ['Signing account', review.account.address],
+  ]);
+  $('review-warning').textContent = redeem
+    ? 'Signing lets this site burn this amount of wQTC once from your vault on ' +
+      vault.network +
+      ', between the slots shown, so that the same amount of QTC is released to the Quantus address shown. The site submits it; nothing is sent from this wallet.'
+    : 'Signing lets this site move this amount once from your vault on ' +
+      vault.network +
+      ', to this recipient only, between the slots shown. The site submits it; nothing is sent from this wallet.';
+  $('review-full').textContent = JSON.stringify({ site: review.origin, ...vault }, null, 2);
+  $('expires').textContent = 'Review expires at ' + new Date(review.expires).toLocaleTimeString();
+  reviewMark();
+  syncDetails();
+  guardApproval();
+}
+/**
+ * A slot of the vault window against the current slot the wallet read, as approximate wall-clock
+ * time from now: slots last about 400 ms.
+ */
+function slotsFromNow(vault: SolanaVaultReview, slot: string): string {
+  const slots = BigInt(slot) - BigInt(vault.currentSlot);
+  if (slots <= 0n) return 'now';
+  const seconds = Number(slots) * (SOLANA_SLOT_MS / 1000);
+  return `in about ${seconds < 90 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`}`;
 }
 function renderSessionReview(review: Confirmation, session: MintSessionReview) {
   const now = Date.now(),
@@ -1153,135 +1414,421 @@ function renderSessionReview(review: Confirmation, session: MintSessionReview) {
   $('approve').textContent = 'Start minting';
   $('review-qlyph').hidden = true;
   $('review-qlyph').replaceChildren();
+  reviewMark(session.asset.id);
+  const perSignature = BigInt(session.costs.networkFee);
+  tipPicker.show(session.tip ?? '0', (tip) => BigInt(session.terms.maxAttempts) * (perSignature + tip));
+  tipNote('session');
   const amount = reviewAmount(session);
   $('review-amount').replaceChildren(
-    document.createTextNode('Up to '),
-    node('span', amount.quantity, 'review-quantity'),
+    ...(session.terms.maxLots > 1 ? [document.createTextNode('Up to ')] : []),
+    node('span', groupDigits(amount.quantity), 'review-quantity'),
     document.createTextNode(' '),
     node('span', amount.currency, 'review-currency'),
   );
   $('review-amount').hidden = false;
-  pairs('review-summary', [
-    ...reviewRows(session, now, unlockDeadline),
-    ['Network', networkName() + ' only'],
-    ['Signing account', review.account.address],
-    ['Genesis', review.account.genesis],
-  ]);
-  $('review-warning').textContent = reviewWarning(
-    session,
-    document.documentElement.dataset.extension === 'true',
+  // With every detail, the network fee row (the fee sheet's button) follows the spend limit.
+  const detailed = reviewRows(session, now, unlockDeadline);
+  if (showDetails)
+    detailed.splice(
+      detailed.findIndex(([k]) => k === 'Maximum protocol spend') + 1,
+      0,
+      essentialRows(session, now, unlockDeadline).find(([k]) => k === 'Network fee')!,
+    );
+  if (showDetails)
+    pairs('review-summary', [
+      ...detailed,
+      ['Network', networkName() + ' only'],
+      ['Signing account', review.account.address],
+      ['Genesis', review.account.genesis],
+    ]);
+  else
+    $('review-summary').replaceChildren(
+      reviewList([
+        ...essentialRows(session, now, unlockDeadline),
+        ['Account', accountLine(review.account.address)],
+      ]),
+    );
+  // One line says how to stop; the full rules sit in their own section.
+  const surfaceName = inPanel ? 'panel' : 'window';
+  $('review-warning').textContent = `Keep this ${surfaceName} open while minting: closing it stops signing.`;
+  document.getElementById('review-rules')?.remove();
+  if (!showDetails) {
+    $('review-full').textContent = JSON.stringify(session, null, 2);
+    $('expires').textContent = reviewExpiry(review.expires, unlockDeadline);
+    syncDetails();
+    guardApproval();
+    return;
+  }
+  const rules = node('details', '', 'review-disclosure review-section');
+  rules.id = 'review-rules';
+  rules.append(
+    node('summary', 'How minting works'),
+    node(
+      'p',
+      reviewWarning(session, document.documentElement.dataset.extension === 'true').replaceAll(
+        'this window',
+        'this ' + surfaceName,
+      ),
+      'review-note',
+    ),
   );
+  $('review-warning').after(rules);
   $('review-full').textContent = JSON.stringify(session, null, 2);
   $('expires').textContent = reviewExpiry(review.expires, unlockDeadline);
+  syncDetails();
   guardApproval();
 }
 /** Signing time left changes every second; only that value is rewritten. */
 function tickSessionReview() {
   if (pending?.kind !== 'session' || !pending.session) return;
-  for (const row of $('review-summary').querySelectorAll('.review-row'))
-    if (row.firstChild?.textContent === 'Signing stops')
-      row.lastChild!.textContent = signingStops(
-        pending.session,
-        Date.now(),
-        pending.unlockDeadline ?? 0,
-      );
-}
-const expandedActivity = new Set<string>();
-const seenActivity = new Map<string, string>();
-function renderHistory(txs: Tx[]) {
-  // Status can briefly return an empty list before the balance response arrives.
-  // Retain disclosure state across both renders, without a delayed toggle handler.
-  for (const detail of $('history').querySelectorAll<HTMLDetailsElement>('details')) {
-    if (detail.open) expandedActivity.add(detail.dataset.hash!);
-    else expandedActivity.delete(detail.dataset.hash!);
+  for (const row of $('review-summary').querySelectorAll('.review-row')) {
+    const label = row.firstChild?.textContent;
+    if (label === 'Signing stops')
+      row.lastChild!.textContent = signingStops(pending.session, Date.now(), pending.unlockDeadline ?? 0);
+    if (label === 'Time limit')
+      row.lastChild!.textContent = timeLimit(pending.session, Date.now(), pending.unlockDeadline ?? 0);
   }
-  while (expandedActivity.size > 200)
-    expandedActivity.delete(expandedActivity.values().next().value!);
+}
+/** Progress rows shown without opening Details: anything in doubt stays visible too. */
+const SESSION_PROGRESS_KEY = /^(Protocol spend|Signing stops at|Unresolved|Outstanding until)$/;
+/** Activity is grouped by the local day it was sent. */
+function activityDay(createdAt?: number) {
+  if (!createdAt) return 'Earlier';
+  const date = new Date(createdAt),
+    today = new Date();
+  const days = Math.round(
+    (new Date(today.toDateString()).getTime() - new Date(date.toDateString()).getTime()) / 86_400_000,
+  );
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  return date.toLocaleDateString([], {
+    month: 'short',
+    day: 'numeric',
+    ...(date.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' }),
+  });
+}
+const seenActivity = new Map<string, string>();
+/** The activity glyph: the asset's mark with a direction badge, or the operation's state. */
+/** The token an operation moves or mints: recorded since 0.9.0; for an older mint, found by its
+ * symbol in the Explore catalogue (a symbol names one token). Display only. */
+function txAsset(tx: Tx): string | undefined {
+  if (tx.asset && /^0x[0-9a-f]{80}$/.test(tx.asset)) return tx.asset;
+  if (!isMint(tx) || !tx.symbol) return undefined;
+  return catalogue?.tokens.find((t) => t.symbol === tx.symbol)?.id;
+}
+let catalogueForActivity = false;
+/** The Quark a creation made, while the account holds it: by its recorded id, or for a creation
+ * recorded before ids were, the account's only Quark created at that block. */
+function createdQuark(tx: Tx): Asset | undefined {
+  if (tx.label !== 'inscribe') return undefined;
+  const quarks = assets.filter((a) => isQlyph(a) && BigInt(a.available) > 0n);
+  if (tx.asset) return quarks.find((a) => a.id === tx.asset);
+  if (tx.height === undefined) return undefined;
+  const owner = state?.account?.owner;
+  const made = quarks.filter((a) => a.qlyph?.height === tx.height && a.qlyph?.creator === owner);
+  return made.length === 1 ? made[0] : undefined;
+}
+/** A created Quark as Activity draws it: the collection item it became, its own content, or the
+ * collection it is a document of. */
+function createdArt(quark: Asset) {
+  const found = collectionItems.get(quark.id);
+  if (found) return quarkArt(found.item.contentType, found.item.content, itemName(found.collection, found.item), '');
+  const role = roleOf(quark);
+  if (role) return node('span', role.symbol.slice(0, 4), 'quark-number');
+  // Too small to read text: a picture is drawn, anything else shows its number.
+  const q = quark.qlyph;
+  return q?.contentType?.startsWith('image/')
+    ? quarkArt(q.contentType, q.content, assetName(quark), '#' + q.number)
+    : node('span', q ? '#' + q.number : 'Q', 'quark-number');
+}
+function activityGlyph(tx: Tx, size = '') {
+  const stage = txStage(tx);
+  const failed = stage === 'failed';
+  const confirmed = stage === 'confirmed' || stage === 'finalized';
+  const glyph = node(
+    'span',
+    '',
+    'activity-icon' + size + (failed ? ' error' : confirmed ? ' success' : ' pending'),
+  );
+  // A Quark creation shows the Quark it made, with a badge for where it stands.
+  const quark = createdQuark(tx);
+  if (quark) {
+    glyph.classList.add('with-art');
+    const art = node('span', '', 'activity-art');
+    art.append(createdArt(quark));
+    const badge = node('span', '', 'activity-badge');
+    badge.append(icon(failed ? 'close' : confirmed ? 'check' : 'clock'));
+    glyph.append(art, badge);
+    return glyph;
+  }
+  // A QTC send carries the QTC mark, a token's operation its mark, with a badge for the direction.
+  const asset = tx.label === 'inscribe' ? undefined : txAsset(tx);
+  const mark = transferLine(tx) && tx.symbol === 'QTC' ? 'qtc' : asset ?? null;
+  if (mark) {
+    glyph.classList.add('with-mark');
+    const badge = node('span', '', 'activity-badge');
+    const made = isMint(tx) || tx.label.startsWith('deploy');
+    badge.append(icon(failed ? 'close' : made ? (confirmed ? 'check' : 'clock') : 'up'));
+    glyph.append(mark === 'qtc' ? qtcMark() : markOf(mark), badge);
+  } else glyph.append(icon(failed ? 'close' : transferLine(tx) ? 'up' : confirmed ? 'check' : 'clock'));
+  return glyph;
+}
+function activityStatus(tx: Tx) {
+  const stage = txStage(tx);
+  if (stage === 'failed') return 'Failed';
+  if (stage === 'confirmed' || stage === 'finalized') return 'Confirmed';
+  if (tx.status === 'broadcast-uncertain') return 'Check status';
+  const text = tx.status.replaceAll('-', ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+let history: Tx[] = [];
+function renderHistory(txs: Tx[]) {
+  history = txs;
+  let day: string | undefined;
   $('history').replaceChildren(
     ...(txs.length
-      ? txs.map((tx) => {
+      ? txs.flatMap((tx) => {
           const stage = txStage(tx);
           const failed = stage === 'failed';
           const confirmed = stage === 'confirmed' || stage === 'finalized';
-          const status = failed
-            ? 'Failed'
-            : confirmed
-              ? 'Confirmed'
-              : tx.status === 'broadcast-uncertain'
-                ? 'Check status'
-                : tx.status.replaceAll('-', ' ');
-          const e = document.createElement('details');
-          e.className = 'activity-item';
+          const status = activityStatus(tx);
+          const e = node('button', '', 'activity-item activity-heading') as HTMLButtonElement;
+          e.type = 'button';
+          e.dataset.hash = tx.hash;
           const seen = seenActivity.get(tx.hash);
           if (seenActivity.size && seen === undefined) requestAnimationFrame(() => arrive(e, true));
-          e.dataset.hash = tx.hash;
-          e.open = expandedActivity.has(tx.hash);
-          const heading = node('summary', '', 'activity-heading');
           const info = node('span', '', 'activity-info');
-          const amount = transferLine(tx);
+          const mint = isMint(tx);
+          const amount = mint ? '' : transferLine(tx);
           info.append(
-            node(
-              'strong',
-              (labels[tx.label] ?? tx.label) +
-                (tx.session && Number.isSafeInteger(tx.lot) ? ` · Lot ${tx.lot}` : ''),
-            ),
+            node('strong', activityTitle(tx)),
             amount
-              ? node('span', `−${amount} · to ${recipientLine(tx.to)}`, 'activity-hash')
-              : node('span', short(tx.hash), 'activity-hash mono'),
+              ? node('span', 'to ' + recipientLine(tx.to), 'activity-hash')
+              : (mint || createdQuark(tx)) && tx.createdAt
+                ? node('span', new Date(tx.createdAt).toLocaleTimeString([], { timeStyle: 'short' }), 'activity-hash')
+                : node('span', short(tx.hash), 'activity-hash mono'),
           );
           if (seen !== undefined && seen !== status)
-            requestAnimationFrame(() => pop(heading.querySelector('.status-chip')));
+            requestAnimationFrame(() => pop(e.querySelector('.status-chip')));
           seenActivity.set(tx.hash, status);
-          heading.append(
-            icon(failed ? 'close' : confirmed ? 'check' : 'clock'),
-            info,
-            node(
-              'span',
-              status.charAt(0).toUpperCase() + status.slice(1),
-              'status-chip' + (failed ? ' error' : confirmed ? ' success' : ''),
-            ),
+          const side = node('span', '', 'activity-side');
+          const cost = amount ? undefined : operationCost(tx);
+          if (amount) side.append(node('strong', '−' + amount, 'activity-amount'));
+          else if (cost !== undefined) side.append(node('strong', '−' + roughQtc(cost), 'activity-amount'));
+          side.append(
+            node('span', status, 'status-chip' + (failed ? ' error' : confirmed ? ' success' : '')),
           );
-          const detail = node('div', '', 'activity-detail');
-          const identity = node('div', '', 'activity-identity');
-          const id = node('div', '', 'activity-id');
-          id.append(
-            node('span', 'Transaction ID', 'activity-detail-label'),
-            node('p', tx.hash, 'mono'),
-          );
-          const copy = node('button', '', 'icon');
-          copy.setAttribute('type', 'button');
-          copy.setAttribute('aria-label', 'Copy transaction ID ' + tx.hash);
-          copy.title = 'Copy transaction ID';
-          copy.append(icon('copy'));
-          copy.addEventListener('click', () => void task(() => copyText(copy, tx.hash), copy));
-          identity.append(id, copy);
-          detail.append(identity);
-          if (tx.verdict) detail.append(node('p', tx.verdict, 'activity-verdict'));
-          if (feeKept(tx)) {
-            const kept = node('p', FEE_KEPT, 'activity-verdict activity-fee-kept');
-            detail.append(kept);
-            if (seen !== undefined && seen !== status) requestAnimationFrame(() => pop(kept));
-          }
-          if (/^0x[0-9a-f]{64}$/i.test(tx.hash)) {
-            const explore = node('button', 'View in explorer ', 'secondary activity-explorer');
-            explore.setAttribute('type', 'button');
-            explore.setAttribute(
-              'aria-label',
-              'View transaction ' + tx.hash + ' in explorer (opens in a new tab)',
-            );
-            explore.append(icon('expand'));
-            explore.addEventListener(
-              'click',
-              () => void task(() => openExplorer(tx.hash), explore),
-            );
-            detail.append(explore);
-          }
-          e.append(heading, detail);
-          return e;
+          e.append(activityGlyph(tx), info, side);
+          e.addEventListener('click', () => openTxSheet(tx.hash));
+          const group = activityDay(tx.createdAt);
+          if (group === day) return [e];
+          day = group;
+          return [node('h3', group, 'activity-day'), e];
         })
       : [empty('No activity yet', 'Your transfers and trades will show up here.', 'clock')]),
   );
+  if (txSheet.open) paintTxSheet();
+  // Older mints name only their symbol: read the catalogue once to show their token's mark.
+  if (!catalogue && !catalogueForActivity && txs.some((tx) => isMint(tx) && !tx.asset && tx.symbol)) {
+    catalogueForActivity = true;
+    void loadCatalogue()
+      .then(() => renderHistory(history))
+      .catch(() => undefined);
+  }
 }
+
+/* One transaction in full, in a sheet over the wallet: who, how much, where it stands on chain. */
+const txSheet = $<HTMLDialogElement>('tx-sheet');
+let sheetHash: string | undefined;
+/** The block the transaction landed in, as the background located it (`null`: not in one yet). */
+let sheetBlock: { height: number; index: number | null; blockHash: string } | null = null;
+let sheetBlockRead: string | undefined;
+function networkLabel() {
+  return state?.network?.active === 'mainnet' || (!state?.network && MAINNET_BUILD)
+    ? 'Quantus Mainnet'
+    : TESTNET
+      ? 'Quantus Testnet'
+      : 'Quantus Devnet';
+}
+/** Where the transaction stands, in words: the sheet's Status line. */
+function txStanding(tx: Tx): string {
+  const stage = txStage(tx);
+  const height = tx.height ?? sheetBlock?.height;
+  if (tx.status === 'expired') return 'Expired, never included in a block';
+  if (tx.status === 'cancelled-before-broadcast') return 'Cancelled before it was sent';
+  if (tx.nativeSuccess === false) return 'Failed';
+  if (stage === 'failed') return 'Rejected';
+  if (tx.status === 'finalized') return 'Finalized';
+  if (stage === 'confirmed' || stage === 'included') {
+    const head = chainSamples.at(-1)?.head;
+    const behind = head !== undefined && Number.isSafeInteger(height) ? head - height! : undefined;
+    return 'Finalizing' + (behind !== undefined && behind > 0 ? ` · included ${behind} block${behind === 1 ? '' : 's'} ago` : '');
+  }
+  if (tx.status === 'signed-not-submitted') return 'Signed, not sent yet';
+  if (tx.status === 'broadcast-uncertain') return 'Sent, not seen in a block yet';
+  return 'Sent, waiting for a block';
+}
+function sheetRow(label: string, value: string, options: { mono?: boolean; copy?: string; strong?: string } = {}) {
+  const row = node('div', '', 'tx-row');
+  const dd = node('dd', '', options.mono ? 'mono' : '');
+  if (options.strong) dd.append(node('strong', options.strong), node('span', value, 'mono tx-row-sub'));
+  else dd.append(node('span', value));
+  if (options.copy) dd.append(copyButton(label, options.copy));
+  row.append(node('dt', label), dd);
+  return row;
+}
+/** A small copy icon for a value shown shortened. */
+function copyButton(label: string, text: string) {
+  const copy = node('button', '', 'icon tx-copy') as HTMLButtonElement;
+  copy.type = 'button';
+  copy.setAttribute('aria-label', `Copy ${label.toLowerCase()}`);
+  copy.title = 'Copy';
+  copy.append(icon('copy'));
+  copy.addEventListener('click', () => void task(() => copyText(copy, text), copy));
+  return copy;
+}
+/** QTC rounded up to six decimals: an estimate reads short, never below what it is. */
+function aboutQtc(planck: bigint) {
+  const step = 1_000_000n;
+  return formatUnits(((planck + step - 1n) / step) * step, 12) + ' QTC';
+}
+/** A card of rows on the transaction page. */
+function txGroup(rows: HTMLElement[]) {
+  const group = node('dl', '', 'tx-group');
+  group.append(...rows);
+  return group;
+}
+function paintTxSheet() {
+  // A refresh can briefly list nothing: the sheet keeps its last paint until the list returns.
+  const tx = history.find((t) => t.hash === sheetHash);
+  if (!tx) return;
+  const stage = txStage(tx);
+  const failed = stage === 'failed';
+  const confirmed = stage === 'confirmed' || stage === 'finalized';
+  $('tx-sheet-icon').replaceChildren(activityGlyph(tx, ' large'));
+  const mint = isMint(tx);
+  const sent = tx.label === 'sendQtc' || tx.label === 'transfer';
+  $('tx-sheet-title').textContent = sent ? 'Sent ' + (tx.symbol ?? '') : activityTitle(tx);
+  // A mint's tokens arrive only if its lot is in a block, so its amount carries no sign. A creation
+  // shows what it cost.
+  const amount = transferLine(tx);
+  const cost = operationCost(tx);
+  $('tx-sheet-amount').textContent = amount
+    ? mint
+      ? groupDigits(amount)
+      : '−' + amount
+    : cost !== undefined
+      ? '−' + roughQtc(cost)
+      : '';
+  $('tx-sheet-amount').hidden = !$('tx-sheet-amount').textContent;
+  // Under the amount: what it is worth, a mint's lot, or the Quark a creation made.
+  const quark = createdQuark(tx);
+  const qtcOut = tx.symbol === 'QTC' && tx.amount && PLANCK.test(tx.amount) ? BigInt(tx.amount) : cost;
+  const worth = qtcOut !== undefined && !mint ? usdOf(qtcOut) : undefined;
+  $('tx-sheet-sub').textContent =
+    mint && Number.isSafeInteger(tx.lot) ? `Lot ${tx.lot} of 1000` : worth ? '≈ ' + worth : '';
+  $('tx-sheet-sub').hidden = !$('tx-sheet-sub').textContent;
+  const chip = $('tx-sheet-status');
+  chip.textContent = activityStatus(tx);
+  chip.className = 'status-chip' + (failed ? ' error' : confirmed ? ' success' : '');
+  const view = $<HTMLButtonElement>('tx-sheet-view');
+  // A Quark it created, or a token it created that the account holds, opens from here.
+  const tokenId = quark ? undefined : tx.label.startsWith('deploy') ? txAsset(tx) : undefined;
+  const token = tokenId ? assets.find((a) => a.id === tokenId) : undefined;
+  view.hidden = !quark && !token;
+  if (quark) {
+    const found = collectionItems.get(quark.id);
+    view.textContent = 'View ' + (found ? itemName(found.collection, found.item) : assetName(quark));
+    view.dataset.asset = quark.id;
+  } else if (token) {
+    view.textContent = 'View ' + assetName(token);
+    view.dataset.asset = token.id;
+  }
+  // Details: where it stands, when, between whom.
+  const details: HTMLElement[] = [sheetRow('Status', txStanding(tx))];
+  details[0]!.dataset.tone = failed ? 'error' : confirmed ? 'ok' : 'pending';
+  if (tx.createdAt)
+    details.push(sheetRow('Date', new Date(tx.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })));
+  if (mint && Number.isSafeInteger(tx.lot)) details.push(sheetRow('Lot', `${tx.lot} of 1000`));
+  if (tx.to) {
+    const to = fullAddress(tx.to);
+    const own = state?.accounts?.find((a) => a.owner === tx.to || a.address === to);
+    details.push(
+      own
+        ? sheetRow('To', short(to), { strong: own.name, copy: to })
+        : sheetRow('To', short(to), { mono: true, copy: to }),
+    );
+  }
+  const from = state?.account?.address;
+  if (from) details.push(sheetRow('From', short(from), { strong: state?.name ?? 'This account', copy: from }));
+  details.push(sheetRow('Network', networkLabel()));
+  // Fees: what it cost, estimates rounded up.
+  const fees: HTMLElement[] = [];
+  if (cost !== undefined && tx.qlyphsFee) fees.push(sheetRow('Qlyphs fee', formatUnits(BigInt(tx.qlyphsFee), 12) + ' QTC'));
+  if (cost !== undefined && tx.charges) fees.push(sheetRow('Native charges', formatUnits(BigInt(tx.charges), 12) + ' QTC'));
+  if (tx.fee && PLANCK.test(tx.fee)) fees.push(sheetRow('Network fee', '≈ ' + aboutQtc(BigInt(tx.fee))));
+  const total =
+    tx.symbol === 'QTC' && tx.amount && tx.fee && PLANCK.test(tx.amount) && PLANCK.test(tx.fee)
+      ? BigInt(tx.amount) + BigInt(tx.fee)
+      : cost;
+  if (total !== undefined && fees.length) {
+    fees.push(sheetRow('Total', '≈ ' + aboutQtc(total)));
+    fees.at(-1)!.classList.add('tx-row-total');
+  }
+  // Chain: the identifiers, for the explorer.
+  const chain: HTMLElement[] = [];
+  const height = tx.height ?? sheetBlock?.height;
+  if (Number.isSafeInteger(height)) chain.push(sheetRow('Block', '#' + height));
+  chain.push(sheetRow('Transaction ID', short(tx.hash), { mono: true, copy: tx.hash }));
+  chain.at(-1)!.querySelector('dd > span')!.classList.add('tx-id');
+  $('tx-sheet-rows').replaceChildren(...[details, fees, chain].filter((g) => g.length).map(txGroup));
+  // An accepted operation needs no verdict; a refusal says why.
+  const notes: HTMLElement[] = [];
+  if (tx.verdict && tx.verdict !== 'accepted') notes.push(node('p', tx.verdict, 'activity-verdict'));
+  if (feeKept(tx)) notes.push(node('p', FEE_KEPT, 'activity-verdict activity-fee-kept'));
+  $('tx-sheet-notes').replaceChildren(...notes);
+  $('tx-sheet-explorer').hidden = !/^0x[0-9a-f]{64}$/i.test(tx.hash) || tx.status === 'cancelled-before-broadcast';
+  // Read the block once the transaction is in one, and again if it moved.
+  if (Number.isSafeInteger(tx.height) && sheetBlockRead !== tx.hash + ':' + tx.height) {
+    sheetBlockRead = tx.hash + ':' + tx.height;
+    const hash = tx.hash;
+    void call<{ height: number; index: number | null; blockHash: string } | null>('tx-detail', { hash })
+      .then((block) => {
+        if (sheetHash !== hash) return;
+        sheetBlock = block;
+        paintTxSheet();
+      })
+      .catch(() => undefined);
+  }
+}
+$('tx-sheet-view').addEventListener('click', () => {
+  const id = $('tx-sheet-view').dataset.asset;
+  const row = $('history').querySelector<HTMLElement>(`[data-hash="${sheetHash}"]`);
+  txSheet.close();
+  if (id) openToken(id, row ?? $('tab-activity'));
+});
+function openTxSheet(hash: string) {
+  if (sheetHash !== hash) {
+    sheetBlock = null;
+    sheetBlockRead = undefined;
+  }
+  sheetHash = hash;
+  paintTxSheet();
+  if (!history.some((t) => t.hash === hash)) return;
+  if (!txSheet.open) txSheet.showModal();
+  $('close-tx-sheet').focus({ preventScroll: true });
+}
+txSheet.addEventListener('click', (event) => {
+  if (event.target === txSheet) txSheet.close();
+});
+txSheet.addEventListener('close', () => {
+  const row = $('history').querySelector<HTMLElement>(`[data-hash="${sheetHash}"]`);
+  row?.focus({ preventScroll: true });
+});
+$('close-tx-sheet').addEventListener('click', () => txSheet.close());
+$('tx-sheet-explorer').addEventListener('click', () => {
+  if (sheetHash) void task(() => openExplorer(sheetHash), $('tx-sheet-explorer'));
+});
 /* Sending feedback: the confirmation window turns into a live receipt, the wallet follows it. */
 interface SentView {
   stage: TxStage;
@@ -1318,6 +1865,41 @@ let awaitingRequest: string | undefined;
 let cancelledUntil = 0;
 let trackedHash: string | undefined;
 let trackerUntil = 0;
+const isMint = (tx: Tx) => tx.label === 'mint' || tx.label === 'mintProgressive';
+/** An operation's name in Activity: a mint names its token only, its lot and amount are in the
+ * detail sheet. */
+function activityTitle(tx: Tx) {
+  if (isMint(tx)) return tx.symbol ? 'Mint ' + tx.symbol : 'Mint';
+  if (tx.label.startsWith('deploy') && tx.symbol) return 'Create ' + tx.symbol;
+  // A creation says what it made: a collection item, a collection's document or a Quark.
+  const quark = createdQuark(tx);
+  if (quark) {
+    const found = collectionItems.get(quark.id);
+    if (found) return 'Mint ' + itemName(found.collection, found.item);
+    const role = roleOf(quark);
+    if (role)
+      return {
+        mint: `Mint from ${role.symbol}`,
+        deploy: `Create collection ${role.symbol}`,
+        layers: `Collection art · ${role.symbol}`,
+        add: `Collection list · ${role.symbol}`,
+      }[role.role];
+    if (quark.qlyph) return 'Create Quark #' + quark.qlyph.number;
+  }
+  return labels[tx.label] ?? tx.label;
+}
+/** Operations whose Activity line is what they cost: creations, deploys and mints. */
+const COSTED = new Set(['inscribe', 'deploy', 'deployProgressive', 'deployProgressiveV2', 'mint', 'mintProgressive']);
+const PLANCK = /^\d{1,30}$/;
+/** What a creation, deploy or mint cost as its review showed it: the Qlyphs fee, native charges and
+ * the network fee. None for a failed operation, whose charges depend on how it failed, nor for one
+ * recorded before the wallet kept its charges. */
+function operationCost(tx: Tx): bigint | undefined {
+  if (!COSTED.has(tx.label) || txStage(tx) === 'failed') return undefined;
+  if (tx.qlyphsFee === undefined && tx.charges === undefined) return undefined;
+  const parts = [tx.qlyphsFee ?? '0', tx.charges ?? '0', tx.fee ?? '0'];
+  return parts.every((v) => PLANCK.test(v)) ? parts.reduce((sum, v) => sum + BigInt(v), 0n) : undefined;
+}
 function transferLine(v: { amount?: string; symbol?: string; decimals?: number }) {
   if (!v.amount || !v.symbol) return '';
   try {
@@ -1390,7 +1972,7 @@ let stopInFlight = false;
  */
 function sessionAnswer(action: string, params: Record<string, unknown>): Promise<SessionAnswer> {
   return Promise.resolve()
-    .then(() => browser.runtime.sendMessage({ action, ...params }))
+    .then(async () => browser.runtime.sendMessage(await keyed({ action, ...params })))
     .then(
       (reply): SessionAnswer => {
         const r = reply as { result?: unknown; error?: string } | undefined;
@@ -1423,6 +2005,7 @@ function sessionCall(action: string, params: Record<string, unknown>): Promise<P
  * (`afterStartPoll`): each poll renews the lease of a session that runs, and shows it at once.
  */
 async function startSession(review: Confirmation) {
+  if (review.session) sessionAsset = { symbol: review.session.asset.symbol, decimals: review.session.asset.decimals };
   let approval: SessionAnswer | undefined;
   sessionStarting = true;
   const answered = sessionAnswer('approve', {
@@ -1519,6 +2102,47 @@ function paintRows(list: HTMLElement, rows: readonly Row[]) {
     if (value.textContent !== v) value.textContent = v;
   });
 }
+/** The token a session mints, as its approved review named it; a reloaded window has only its id. */
+let sessionAsset: { symbol: string; decimals: number } | undefined;
+/** Payment statuses as the step they reached: signed, sent, then in a block. */
+const PAYMENT_STEP: Record<string, number> = { signed: 1, uncertain: 1, sent: 2, included: 3 };
+/** The token, one segment per lot, the tokens received so far and where the current payment is. */
+function paintSessionToken(view: MintSessionView) {
+  const mark = $('mint-session-mark');
+  if (mark.dataset.asset !== view.terms.asset) {
+    mark.dataset.asset = view.terms.asset;
+    mark.replaceChildren(markOf(view.terms.asset));
+  }
+  const symbol = sessionAsset?.symbol ?? state?.mintSession?.symbol;
+  const verb = view.state === 'ended' ? '' : 'Minting ';
+  $('mint-session-token').textContent = symbol ? verb + symbol : verb.trim();
+  const n = view.terms.maxLots,
+    k = view.lots.included,
+    final = view.lots.finalized;
+  const lots = $('mint-session-lots');
+  if (lots.childElementCount !== n)
+    lots.replaceChildren(...Array.from({ length: n }, () => node('span', '')));
+  [...lots.children].forEach((segment, i) => {
+    const s = segment as HTMLElement;
+    s.dataset.state =
+      i < final ? 'final' : i < k ? 'included' : i === k && view.pending && view.state !== 'ended' ? 'pending' : '';
+  });
+  const received = $('mint-session-received');
+  received.hidden = !sessionAsset || k === 0;
+  if (sessionAsset && k > 0)
+    received.textContent =
+      '+' +
+      groupDigits(formatUnits(BigInt(view.terms.lotAmount) * BigInt(k), sessionAsset.decimals)) +
+      ' ' +
+      sessionAsset.symbol +
+      ' received';
+  const payment = view.state === 'ended' ? null : view.pending;
+  $('mint-session-payment').hidden = !payment;
+  if (payment) {
+    $('mint-session-lot').textContent = `Lot ${payment.lot} of 1000`;
+    $('mint-session-steps').dataset.step = String(PAYMENT_STEP[payment.status] ?? 1);
+  }
+}
 function paintSession(first = false) {
   if (!minting) return;
   const focused = document.activeElement;
@@ -1533,8 +2157,14 @@ function paintSession(first = false) {
     hash = $('mint-session-hash');
   $('mint-session-title').textContent = p.title;
   count.textContent = p.count;
-  paintRows($('mint-session-rows'), p.rows);
-  $('mint-session-detail').textContent = sessionNote || p.detail;
+  paintSessionToken(minting);
+  // The progress leads with what is being paid and spent and when signing stops; counts fold away.
+  paintRows($('mint-session-rows'), p.rows.filter(([k]) => SESSION_PROGRESS_KEY.test(k)));
+  const more = p.rows.filter(([k]) => !SESSION_PROGRESS_KEY.test(k));
+  paintRows($('mint-session-more-rows'), more);
+  $('mint-session-more').hidden = more.length === 0;
+  $('mint-session-detail').textContent =
+    sessionNote || (inPanel ? p.detail.replaceAll('this window', 'this panel') : p.detail);
   hash.hidden = !p.hash;
   hash.querySelector('span')!.textContent = p.hash ? short(p.hash) : '';
   hash.title = p.hash ? 'Copy transaction ID ' + p.hash : '';
@@ -1573,7 +2203,7 @@ $('mint-session-stop').addEventListener('click', () => {
     applySessionOutcome(outcome);
   });
 });
-$('mint-session-done').addEventListener('click', () => window.close());
+$('mint-session-done').addEventListener('click', leave);
 function followResult(txs: Tx[]) {
   const tx = sent?.hash ? txs.find((t) => t.hash === sent!.hash) : undefined;
   if (!sent || !tx) return;
@@ -1656,7 +2286,13 @@ function paintTracker(txs: Tx[]) {
           ? 'Confirm'
           : 'Sending';
   $('tx-tracker-title').textContent =
-    amount && stage !== 'failed' ? `${verb} ${amount}` : tx ? (labels[tx.label] ?? text.title) : text.title;
+    amount && stage !== 'failed'
+      ? `${verb} ${amount}`
+      : tx
+        ? tx.label === 'inscribe'
+          ? activityTitle(tx)
+          : (labels[tx.label] ?? text.title)
+        : text.title;
   $('tx-tracker-detail').textContent =
     stage === 'failed' ? text.title + ' · ' + text.detail : text.detail;
   paintSeal($('tx-tracker-seal'), stage, tx);
@@ -1710,24 +2346,97 @@ function refreshBalances(force = false) {
 window.addEventListener('focus', () => refreshBalances(true));
 document.addEventListener('visibilitychange', () => refreshBalances(true));
 const assetAmounts = new Map<string, string>();
+/** Logos come from the background, already checked and turned into data: URLs. */
+const logoRequests = new Map<string, Promise<string | null>>();
+function logo(asset: string) {
+  let request = logoRequests.get(asset);
+  if (!request) {
+    request = call<string | null>('token-logo', { asset }).then(
+      (value) => {
+        // A token's logo is served once its creation is final: no logo yet is asked again later.
+        if (!value) setTimeout(() => logoRequests.delete(asset), 60_000);
+        return value;
+      },
+      () => {
+        // Not cached: the next view asks again.
+        logoRequests.delete(asset);
+        return null;
+      },
+    );
+    logoRequests.set(asset, request);
+  }
+  return request;
+}
+const markOf = (id?: string) => (id ? tokenMark(id, logo) : qtcMark());
+/** Token profiles from the background, already checked (platform.ts): text and safe links only. */
+const profileViews = new Map<string, TokenProfile | null>();
+const profileRequests = new Set<string>();
+function loadProfile(asset: string) {
+  if (profileViews.has(asset) || profileRequests.has(asset)) return;
+  profileRequests.add(asset);
+  void call<TokenProfile | null>('token-profile', { asset })
+    .then(
+      (value) => {
+        profileViews.set(asset, value);
+        // No profile yet may be added later: ask again on a later view.
+        if (!value) setTimeout(() => profileViews.delete(asset), 60_000);
+        if (shownToken === asset) paintAbout(asset);
+      },
+      () => undefined,
+    )
+    .finally(() => profileRequests.delete(asset));
+}
+/** Where each profile link goes: the creator's https website, or the handle on X or Telegram. */
+function profileLinks(p: TokenProfile): [label: string, url: string, icon: string][] {
+  const links: [string, string, string][] = [];
+  if (p.website) links.push([new URL(p.website).host.replace(/^www\./, ''), p.website, 'i-expand']);
+  if (p.x) links.push(['@' + p.x + ' on X', 'https://x.com/' + p.x, 'i-expand']);
+  if (p.telegram) links.push(['@' + p.telegram + ' on Telegram', 'https://t.me/' + p.telegram, 'i-expand']);
+  return links;
+}
+function paintAbout(id: string) {
+  const p = id === 'qtc' ? null : (profileViews.get(id) ?? null);
+  $('token-about').hidden = !p;
+  $('token-description').textContent = p?.description ?? '';
+  $('token-links').replaceChildren(
+    ...(p ? profileLinks(p) : []).map(([label, url]) => {
+      const b = node('button', '', 'secondary');
+      b.setAttribute('type', 'button');
+      b.title = url;
+      b.append(node('span', label));
+      b.insertAdjacentHTML('beforeend', '<svg aria-hidden="true"><use href="#i-expand" /></svg>');
+      b.addEventListener('click', () => void browser.tabs.create({ url }));
+      return b;
+    }),
+  );
+}
 function assetRow(
   symbol: string,
   title: string,
   amount: string,
   id?: string,
   exactAmount = amount,
+  value?: string,
+  change?: { text: string; tone: string },
 ) {
   const e = node('button', '', 'asset-row') as HTMLButtonElement;
   e.type = 'button';
-  const badge = node(
-    'span',
-    id ? symbol.slice(0, 2).toUpperCase() : '',
-    'asset-icon' + (id ? '' : ' native'),
-  );
-  if (!id) badge.textContent = 'Q';
   const info = node('span', '', 'asset-info');
-  info.append(node('strong', id ? symbol : 'Quantus'), node('small', title));
-  const quantity = node('span', privateBalances ? '••••' : amount, 'asset-amount');
+  info.append(
+    node('strong', id ? symbol : 'Quantus'),
+    node('small', privateBalances ? '•••• ' + symbol : amount + ' ' + symbol),
+  );
+  info.lastElementChild!.classList.add('asset-amount');
+  const side = node('span', '', 'asset-side');
+  if (value && !privateBalances) side.append(node('span', value, 'asset-value'));
+  if (change && value && !privateBalances) {
+    const line = node('small', change.text, 'asset-change');
+    line.dataset.tone = change.tone;
+    side.append(line);
+  }
+  if (title) side.append(node('small', title, 'asset-note'));
+  e.title = id ?? '';
+  const quantity = info.lastElementChild as HTMLElement;
   const key = id ?? 'qtc',
     previous = assetAmounts.get(key);
   assetAmounts.set(key, exactAmount);
@@ -1736,11 +2445,928 @@ function assetRow(
       flash(quantity, Number(exactAmount) > Number(previous) ? 'up' : 'down'),
     );
   if (!privateBalances) quantity.title = exactAmount + ' ' + symbol;
-  e.append(badge, info, quantity);
-  e.setAttribute('aria-label', 'Send ' + symbol + (id ? ' · ' + id : ''));
-  e.addEventListener('click', () => openSend(id ?? 'qtc', e));
+  e.append(markOf(id), info, side);
+  e.setAttribute('aria-label', (id ? symbol : 'Quantus') + ', ' + (privateBalances ? 'balance hidden' : amount + ' ' + symbol));
+  e.addEventListener('click', () => openToken(id ?? 'qtc', e));
   return e;
 }
+/** A Quark as a tile: its content through the safe renderer, or its number when unread. */
+/** A Quark's content through the safe renderer, or its number when it cannot be shown. */
+function quarkArt(contentType: string | undefined, content: string | undefined, label: string, fallback: string) {
+  if (contentType && content)
+    try {
+      return renderQlyph(document, contentType, content, label);
+    } catch {
+      // Falls through to the number.
+    }
+  return node('span', fallback, 'quark-number');
+}
+/** What a held Quark that is not a collection item is to a collection, from its own content: a
+ * mint not counted yet (not final, or refused by the rules), or a creator's deploy, list or art. */
+function roleOf(asset: Asset): CollectionRole | null {
+  const q = asset.qlyph;
+  return q?.contentType && q.content ? collectionRole(q.contentType, q.content) : null;
+}
+const ROLE_LABEL: Record<CollectionRole['role'], [string, string]> = {
+  mint: ['mint', 'mint · not counted yet'],
+  deploy: ['deploy', 'collection deploy'],
+  add: ['list', 'collection list'],
+  layers: ['art', 'collection art'],
+};
+function quarkTile(asset: Asset) {
+  const name = assetName(asset);
+  const tile = node('button', '', 'quark-tile') as HTMLButtonElement;
+  tile.type = 'button';
+  const art = node('span', '', 'quark-art');
+  const q = asset.qlyph;
+  const role = roleOf(asset);
+  if (role) {
+    // A document, not a picture: its symbol and role say what it is to the collection.
+    const doc = node('span', '', 'quark-doc');
+    doc.append(node('span', role.symbol, 'quark-number'), node('small', ROLE_LABEL[role.role][1]));
+    art.append(doc);
+  } else art.append(quarkArt(q?.contentType, q?.content, name, q ? '#' + q.number : 'Q'));
+  const label = node('span', '', 'quark-label');
+  label.append(node('strong', name), node('small', '1 of 1'));
+  tile.setAttribute(
+    'aria-label',
+    role ? `${name}, ${role.symbol} ${ROLE_LABEL[role.role][1]}` : name + ', 1 of 1',
+  );
+  tile.append(art, label);
+  tile.title = asset.id;
+  tile.addEventListener('click', () => openToken(asset.id, tile));
+  return tile;
+}
+
+/* Collections: the account's Quarks that belong to a collection, named, numbered and drawn by the
+ * Qlyphs app. The indexer's list of held Quarks stays the source: the app is asked about those only,
+ * and an item whose Quark left the account disappears with it. */
+let holdings: (Holdings & { owner: string }) | undefined;
+/** The last read failed and nothing is known yet: the tab says so instead of "none". */
+let holdingsFailed = false;
+const collectionItems = new Map<string, { collection: HeldCollection; item: CollectionItem }>();
+let holdingsRequest = 0;
+const heldQuarks = () => assets.filter((a) => isQlyph(a) && BigInt(a.available) > 0n);
+async function loadCollections() {
+  const owner = state?.account?.owner;
+  if (!owner || !state?.unlocked) return;
+  const request = ++holdingsRequest;
+  try {
+    const answer = await call<Holdings>('collections', { quarks: heldQuarks().map((a) => a.id).slice(0, 1000) });
+    if (request !== holdingsRequest || state?.account?.owner !== owner) return;
+    holdings = { ...answer, owner };
+    holdingsFailed = false;
+  } catch {
+    // Unavailable for now: the Quarks stay listed as Quarks, and the next refresh asks again.
+    if (request !== holdingsRequest || holdings?.owner === owner) return;
+    holdings = undefined;
+    holdingsFailed = true;
+  }
+  paintHoldings();
+}
+/** A collection on Collectibles: the items the account holds, and the Quarks it holds that are
+ * the collection's documents (a deploy, art, a list) or its mints not counted yet. */
+interface Group extends HeldCollection {
+  /** Listed by the Qlyphs app; false when only known from the account's own documents. */
+  listed: boolean;
+  docs: { asset: Asset; role: CollectionRole }[];
+}
+const groupsBySymbol = new Map<string, Group>();
+function paintHoldings() {
+  const quarks = heldQuarks();
+  const held = new Set(quarks.map((a) => a.id));
+  collectionItems.clear();
+  groupsBySymbol.clear();
+  const known = holdings && holdings.owner === state?.account?.owner ? holdings : undefined;
+  for (const collection of known?.collections ?? []) {
+    // Items in collection order.
+    const items = collection.items.filter((i) => held.has(i.id)).sort((a, b) => a.edition - b.edition);
+    if (!items.length && !collection.created) continue;
+    const group: Group = { ...collection, items, listed: true, docs: [] };
+    groupsBySymbol.set(collection.symbol, group);
+    for (const item of items) collectionItems.set(item.id, { collection: group, item });
+  }
+  // Once collections are read (or cannot be), a collection's documents and uncounted mints join it
+  // instead of standing among the Quarks.
+  const settled = !!known || holdingsFailed;
+  const loose: Asset[] = [];
+  for (const asset of quarks) {
+    if (collectionItems.has(asset.id)) continue;
+    const role = settled ? roleOf(asset) : null;
+    if (!role) {
+      loose.push(asset);
+      continue;
+    }
+    let group = groupsBySymbol.get(role.symbol);
+    if (!group) {
+      group = {
+        symbol: role.symbol,
+        name: role.symbol,
+        supply: null,
+        minted: 0,
+        created: false,
+        cover: null,
+        items: [],
+        listed: false,
+        docs: [],
+      };
+      groupsBySymbol.set(role.symbol, group);
+    }
+    if (role.role === 'deploy') group.created = true;
+    group.docs.push({ asset, role });
+  }
+  // The sets the account holds most of first, then its own.
+  const groups = [...groupsBySymbol.values()].sort(
+    (a, b) =>
+      b.items.length - a.items.length || Number(b.created) - Number(a.created) || a.name.localeCompare(b.name),
+  );
+  $('collectible-count').textContent = String(quarks.length);
+  $('collection-count').textContent = String(groups.length);
+  $('quark-count').textContent = String(loose.length);
+  const loading = !settled && quarks.length > 0;
+  $('collections-block').hidden = !groups.length && !loading && !(known && !known.open && quarks.length);
+  $('collections').replaceChildren(
+    ...(loading
+      ? [node('div', '', 'skeleton collection-skeleton'), node('div', '', 'skeleton collection-skeleton')]
+      : groups.map(collectionCard)),
+    ...(holdingsFailed && !known
+      ? [node('p', 'Collections unavailable · Check your connection, then refresh.', 'field-hint')]
+      : known && !known.open && quarks.length
+        ? [node('p', 'Collections are not open on this network yet.', 'field-hint')]
+        : known?.more
+          ? [node('p', 'More of your items are on Qlyphs.', 'field-hint')]
+          : []),
+  );
+  $('quarks-block').hidden = !loose.length;
+  $('quarks').replaceChildren(...loose.map(quarkTile));
+  $('collectibles-empty').replaceChildren(...(quarks.length ? [] : [noCollectibles(known?.open !== false)]));
+  // The send form names an item as the collection does, still with its Quark's id.
+  for (const option of $<HTMLSelectElement>('send-asset').options) {
+    const found = collectionItems.get(option.value);
+    if (found) option.textContent = itemName(found.collection, found.item) + ' · ' + short(option.value);
+  }
+  if ($<HTMLDetailsElement>('send-panel').open) sendAssetDetails();
+  if ($<HTMLDetailsElement>('collection-panel').open) paintCollection();
+  if ($('token-panel').hasAttribute('open')) paintToken();
+  // Activity names a creation by the collection item it became.
+  if (history.length) renderHistory(history);
+}
+const itemName = (collection: HeldCollection, item: CollectionItem) => `${collection.name} #${item.edition}`;
+/** An asset as this wallet names it: a collection item by its collection and number. */
+function ownName(asset: Asset) {
+  const found = collectionItems.get(asset.id);
+  return found ? itemName(found.collection, found.item) : assetName(asset);
+}
+function noCollectibles(open: boolean) {
+  const box = empty(
+    'No collectibles yet',
+    open
+      ? 'Quarks and collection items you create, mint or receive appear here.'
+      : 'Quarks you create or receive appear here.',
+    'grid',
+  );
+  if (open) {
+    const explore = node('button', 'Explore collections on Qlyphs ', 'secondary') as HTMLButtonElement;
+    explore.type = 'button';
+    explore.append(icon('expand'));
+    explore.addEventListener('click', () => void task(() => openPage({ kind: 'collections' }), explore));
+    box.append(explore);
+  }
+  return box;
+}
+const itemCount = (n: number) => `${n} ${n === 1 ? 'item' : 'items'}`;
+/** What a collection's card says under its name: what the account holds of it, or why it is there. */
+function groupNote(group: Group) {
+  if (group.items.length === 1 && !group.created) return '#' + group.items[0]!.edition;
+  if (group.items.length) return itemCount(group.items.length);
+  if (group.created) return 'Created by you';
+  const pending = group.docs.filter((d) => d.role.role === 'mint').length;
+  return pending ? `${pending} not counted yet` : 'Collection Quarks';
+}
+/** The picture of a collection: its first item, else the cover the app draws, else its symbol. */
+function groupArt(group: Group) {
+  const first = group.items[0];
+  if (first) return quarkArt(first.contentType, first.content, itemName(group, first), '#' + first.edition);
+  if (group.cover) return quarkArt(group.cover.contentType, group.cover.content, group.name, group.symbol);
+  return node('span', group.symbol, 'quark-number');
+}
+/** A collection card: four items or more as a mosaic, else one picture; its name and note. A single
+ * item, with nothing else of the collection held, opens that item; any other card the collection. */
+function collectionCard(group: Group) {
+  const items = group.items;
+  const card = node('button', '', 'collection-card') as HTMLButtonElement;
+  card.type = 'button';
+  const cover = node('span', '', 'collection-cover');
+  if (items.length >= 4) {
+    cover.dataset.mosaic = '';
+    for (const item of items.slice(0, 4)) {
+      const cell = node('span', '', 'cell');
+      cell.append(quarkArt(item.contentType, item.content, itemName(group, item), '#' + item.edition));
+      cover.append(cell);
+    }
+  } else {
+    const cell = node('span', '', 'cell');
+    cell.append(groupArt(group));
+    cover.append(cell);
+  }
+  const note = groupNote(group);
+  const label = node('span', '', 'quark-label');
+  label.append(node('strong', group.name), node('small', note));
+  card.append(cover, label);
+  card.title = group.symbol;
+  const single = items.length === 1 && !group.created && !group.docs.length;
+  card.setAttribute('aria-label', single ? itemName(group, items[0]!) : `${group.name}, ${note}`);
+  card.addEventListener('click', () =>
+    single ? openToken(items[0]!.id, card) : openCollection(group.symbol, card),
+  );
+  return card;
+}
+/* Collection: the account's items of one collection by number, then its other Quarks of it. */
+let shownCollection: string | undefined;
+function openCollection(symbol: string, trigger: HTMLElement) {
+  shownCollection = symbol;
+  paintCollection();
+  openPanel('collection-panel', trigger);
+}
+const DOC_ORDER: CollectionRole['role'][] = ['deploy', 'layers', 'add', 'mint'];
+const DOC_LABEL: Record<CollectionRole['role'], string> = {
+  deploy: 'Deploy',
+  layers: 'Art',
+  add: 'Item list',
+  mint: 'Mint · not counted yet',
+};
+function paintCollection() {
+  const group = shownCollection ? groupsBySymbol.get(shownCollection) : undefined;
+  if (!group) {
+    // Nothing of it is left in the account: nothing to show any more.
+    if ($<HTMLDetailsElement>('collection-panel').open) closePanel('collection-panel');
+    return;
+  }
+  const items = group.items;
+  $('collection-title').textContent = group.name;
+  $('collection-cover').replaceChildren(groupArt(group));
+  $('collection-held').textContent = items.length
+    ? group.supply
+      ? `You hold ${items.length} of ${group.supply}`
+      : `You hold ${itemCount(items.length)}`
+    : group.created
+      ? 'Created by you'
+      : 'No item yet';
+  $('collection-meta').textContent = (
+    group.listed
+      ? [
+          group.name === group.symbol ? '' : group.symbol,
+          group.supply ? `${group.minted} minted` : `${group.minted} minted · Open edition`,
+          items.length && group.created ? 'Created by you' : '',
+        ]
+      : [group.symbol, 'Not listed on Qlyphs yet']
+  )
+    .filter(Boolean)
+    .join(' · ');
+  $('collection-items').hidden = !items.length;
+  $('collection-items').replaceChildren(...items.map((item) => itemTile(group, item)));
+  const docs = [...group.docs].sort(
+    (a, b) =>
+      DOC_ORDER.indexOf(a.role.role) - DOC_ORDER.indexOf(b.role.role) ||
+      (a.asset.qlyph?.number ?? 0) - (b.asset.qlyph?.number ?? 0),
+  );
+  $('collection-docs-block').hidden = !docs.length;
+  $('collection-docs').replaceChildren(...docs.map(docRow));
+  $('collection-more').hidden = !holdings?.more || !items.length;
+  // A creator without items yet mints from the collection's page.
+  $('collection-open').firstChild!.textContent =
+    group.created && !items.length ? 'Mint on Qlyphs ' : 'View collection on Qlyphs ';
+}
+function docRow({ asset, role }: { asset: Asset; role: CollectionRole }) {
+  const row = node('button', '', 'asset-row doc-row') as HTMLButtonElement;
+  row.type = 'button';
+  const mark = node('span', { deploy: 'D', layers: 'A', add: 'L', mint: '…' }[role.role], 'doc-mark');
+  mark.setAttribute('aria-hidden', 'true');
+  const info = node('span', '', 'asset-info');
+  info.append(node('strong', DOC_LABEL[role.role]), node('small', assetName(asset)));
+  row.append(mark, info);
+  row.title = asset.id;
+  row.setAttribute('aria-label', `${DOC_LABEL[role.role]}, ${assetName(asset)}`);
+  row.addEventListener('click', () => openToken(asset.id, row));
+  return row;
+}
+function itemTile(collection: HeldCollection, item: CollectionItem) {
+  const tile = node('button', '', 'item-tile') as HTMLButtonElement;
+  tile.type = 'button';
+  const art = node('span', '', 'item-art');
+  art.append(quarkArt(item.contentType, item.content, itemName(collection, item), '#' + item.edition));
+  const label = node('span', '', 'item-label');
+  label.append(node('strong', '#' + item.edition), ...(item.rank ? [node('small', 'Rank ' + item.rank)] : []));
+  tile.append(art, label);
+  tile.title = item.id;
+  tile.setAttribute('aria-label', itemName(collection, item) + (item.rank ? `, rarity rank ${item.rank}` : ''));
+  tile.addEventListener('click', () => openToken(item.id, tile));
+  return tile;
+}
+/** A token's value in QTC from its last completed sale, when it has one. Display only. */
+/** What a token balance is worth in QTC (planck): at the price its page last showed, else at its
+ * last sale. */
+function qtcValueOf(asset: Asset): bigint {
+  const price = marketPrices.get(asset.id);
+  const sale = catalogue?.tokens.find((t) => t.id === asset.id)?.lastSale;
+  return price !== undefined
+    ? (BigInt(asset.available) * price) / 10n ** BigInt(asset.definition.decimals)
+    : sale
+      ? (BigInt(asset.available) * BigInt(sale.price)) / BigInt(sale.amount)
+      : 0n;
+}
+/** A token balance's value: in dollars when the QTC price is known, else in QTC. */
+function valueOf(asset: Asset): string | undefined {
+  const value = qtcValueOf(asset);
+  return value > 0n ? (usdOf(value) ?? '≈ ' + formatBalance(value, 12) + ' QTC') : undefined;
+}
+/** A balance worth `now` QTC (planck), and `then` 24 hours ago at the same holdings, in dollars:
+ * its value and its change, as wallets list holdings. The change also follows QTC's own price. */
+function dollarLine(now: bigint, then?: bigint) {
+  if (!showPrices || !qtcUsd || now <= 0n) return undefined;
+  const usd = qtcUsd.usd;
+  const value = (Number(now) / 1e12) * usd;
+  if (then === undefined) return { value: formatUsdValue(value) };
+  const before = (Number(then) / 1e12) * (qtcUsd.change === null ? usd : usd / (1 + qtcUsd.change / 100));
+  const change = value - before;
+  return {
+    value: formatUsdValue(value),
+    change: formatUsdChange(change),
+    tone: Math.abs(change) < 0.005 ? 'flat' : change > 0 ? 'up' : 'down',
+  };
+}
+/** The account's total in dollars now and 24 hours ago: its QTC and every token with a price,
+ * at the same holdings. None without the QTC price. */
+function totalDollars(free: bigint, tokens: Asset[]) {
+  if (!showPrices || !qtcUsd) return undefined;
+  const usd = qtcUsd.usd,
+    usdThen = qtcUsd.change === null ? usd : usd / (1 + qtcUsd.change / 100);
+  let now = Number(free) / 1e12,
+    then = now;
+  for (const a of tokens) {
+    const value = qtcValueOf(a);
+    if (value <= 0n) continue;
+    const trades = heldTrades.get(a.id);
+    const day = trades?.length ? marketView(trades, a.definition.decimals, '1D', Date.now()) : null;
+    const before = day ? (BigInt(a.available) * day.points[0]!.price) / 10n ** BigInt(a.definition.decimals) : value;
+    now += Number(value) / 1e12;
+    then += Number(before) / 1e12;
+  }
+  return { now: now * usd, then: then * usdThen };
+}
+/** A held token's line: its value now and 24 hours ago, from its trades once read. */
+function tokenDollars(asset: Asset) {
+  const now = qtcValueOf(asset);
+  const trades = heldTrades.get(asset.id);
+  if (!trades?.length) return dollarLine(now);
+  const day = marketView(trades, asset.definition.decimals, '1D', Date.now());
+  const then = day ? (BigInt(asset.available) * day.points[0]!.price) / 10n ** BigInt(asset.definition.decimals) : undefined;
+  return dollarLine(now, then);
+}
+/** Trades of the tokens the account holds (at most 12), for their price and 24 h change. */
+const heldTrades = new Map<string, Trade[]>();
+let heldTradesAt = 0;
+async function loadHeldTrades(tokens: Asset[]) {
+  if (Date.now() - heldTradesAt < 30_000) return;
+  heldTradesAt = Date.now();
+  let changed = false;
+  await Promise.all(
+    tokens.slice(0, 12).map(async (a) => {
+      try {
+        const trades = await call<Trade[]>('token-market', { asset: a.id });
+        heldTrades.set(a.id, trades);
+        if (trades.length) {
+          marketPrices.set(a.id, unitPrice(trades[0]!, a.definition.decimals));
+          changed = true;
+        }
+      } catch {
+        // That token keeps its last-sale value.
+      }
+    }),
+  );
+  if (changed) paintBalances();
+}
+/* The QTC price in dollars, from CoinGecko through the background, unless turned off in Settings.
+ * Dollar values of balances show on mainnet only: test QTC have no value. */
+const PRICES_KEY = 'qlyphs.showPrices';
+let showPrices = (() => {
+  try {
+    return localStorage.getItem(PRICES_KEY) !== '0';
+  } catch {
+    return true;
+  }
+})();
+let qtcUsd: QtcPrice | undefined;
+const qtcCharts = new Map<UsdRange, { at: number; points: [number, number][] }>();
+let qtcRange: UsdRange = '1D';
+const onMainnet = () => state?.network?.active === 'mainnet' || (!state?.network && MAINNET_BUILD);
+/** A QTC amount (planck) in dollars, when the price is known. On a test network it is the mainnet
+ * price: the QTC page says test QTC have no value. */
+function usdOf(planck: bigint): string | undefined {
+  if (!showPrices || !qtcUsd) return undefined;
+  return formatUsdValue((Number(planck) / 1e12) * qtcUsd.usd);
+}
+async function loadQtcPrice() {
+  if (!showPrices) return;
+  try {
+    const price = await call<QtcPrice>('qtc-price');
+    if (!showPrices) return;
+    const changed = price.usd !== qtcUsd?.usd || price.change !== qtcUsd?.change;
+    qtcUsd = price;
+    if (!changed) return;
+    paintBalances();
+    if ($<HTMLDetailsElement>('token-panel').open) paintToken();
+  } catch {
+    // No dollar values; QTC amounts stand alone.
+  }
+}
+async function loadQtcChart(range: UsdRange) {
+  const known = qtcCharts.get(range);
+  if (!showPrices || (known && Date.now() - known.at < 5 * 60_000)) return;
+  try {
+    const points = await call<[number, number][]>('qtc-chart', { range });
+    qtcCharts.set(range, { at: Date.now(), points });
+    if (shownToken === 'qtc' && $<HTMLDetailsElement>('token-panel').open) paintToken();
+  } catch {
+    // The price shows without its chart.
+  }
+}
+/* A token's price on its page: the latest trade on Qlyphs, its change over a period and a chart,
+ * read when the page opens. */
+let market: { asset: string; trades: Trade[] } | undefined;
+let marketRange: Range | undefined;
+/** The latest price each token page showed, planck per whole token. */
+const marketPrices = new Map<string, bigint>();
+async function loadMarket(id: string) {
+  if (market?.asset !== id) {
+    market = undefined;
+    marketRange = undefined;
+  }
+  try {
+    const trades = await call<Trade[]>('token-market', { asset: id });
+    if (shownToken !== id) return;
+    market = { asset: id, trades };
+    paintToken();
+  } catch {
+    // No price is shown; the page works without it.
+  }
+}
+/** Period buttons for the chart: a token's trades (with All) or the QTC market (with 1Y). */
+function marketRanges(kind: 'token' | 'qtc', selected: string) {
+  const ranges = $('token-ranges');
+  const names: Record<string, string> = { '1D': 'One day', '1W': 'One week', '1M': 'One month', '1Y': 'One year', All: 'All trades' };
+  if (ranges.dataset.kind !== kind) {
+    ranges.dataset.kind = kind;
+    ranges.replaceChildren(
+      ...(kind === 'qtc' ? USD_RANGES : RANGES).map(([r]) => {
+        const button = node('button', r, 'pill market-range') as HTMLButtonElement;
+        button.type = 'button';
+        button.dataset.range = r;
+        button.setAttribute('aria-label', names[r]!);
+        button.addEventListener('click', () => {
+          if (ranges.dataset.kind === 'qtc') {
+            qtcRange = r as UsdRange;
+            void loadQtcChart(qtcRange);
+          } else marketRange = r as Range;
+          paintMarket();
+        });
+        return button;
+      }),
+    );
+  }
+  for (const button of ranges.querySelectorAll<HTMLElement>('button'))
+    button.setAttribute('aria-pressed', String(button.dataset.range === selected));
+}
+function drawMarket(view: {
+  price: string;
+  usd: string;
+  change: number | null;
+  label: string;
+  points: { time: number; price: bigint | number }[];
+  step: boolean;
+  note: string;
+}) {
+  const section = $('token-market');
+  section.hidden = false;
+  $('token-price').textContent = view.price;
+  $('token-price-usd').textContent = view.usd;
+  $('token-change').textContent =
+    view.change === null ? '' : `${view.change < 0 ? '−' : '+'}${Math.abs(view.change).toFixed(2)}% · ${view.label}`;
+  section.dataset.trend = !view.change ? 'flat' : view.change > 0 ? 'up' : 'down';
+  const { line, area } = view.points.length > 1 ? chartPaths(view.points, 320, 88, view.step) : { line: '', area: '' };
+  $('token-chart').querySelector('.market-line')!.setAttribute('d', line);
+  $('token-chart').querySelector('.market-area')!.setAttribute('d', area);
+  $('token-market-note').textContent = view.note;
+}
+/** QTC: its market price in dollars, its change and chart over the chosen period. */
+function paintQtcMarket() {
+  const chart = qtcCharts.get(qtcRange)?.points;
+  const usd = qtcUsd?.usd ?? chart?.at(-1)?.[1];
+  if (!showPrices || usd === undefined) {
+    $('token-market').hidden = true;
+    return;
+  }
+  const first = chart?.[0]?.[1];
+  const change =
+    qtcRange === '1D' && qtcUsd?.change != null
+      ? qtcUsd.change
+      : first && chart!.length > 1
+        ? ((chart!.at(-1)![1] - first) / first) * 100
+        : null;
+  drawMarket({
+    price: formatUsd(usd),
+    usd: '',
+    change,
+    label: qtcRange,
+    points: (chart ?? []).map(([time, price]) => ({ time, price })),
+    step: false,
+    note: onMainnet()
+      ? 'Market price from CoinGecko.'
+      : 'Market price of QTC on mainnet, from CoinGecko. Test QTC have no value.',
+  });
+  marketRanges('qtc', qtcRange);
+}
+function paintMarket() {
+  const id = shownToken;
+  if (id === 'qtc') return paintQtcMarket();
+  const section = $('token-market');
+  const decimals =
+    assets.find((a) => a.id === id)?.definition.decimals ?? catalogue?.tokens.find((t) => t.id === id)?.decimals;
+  const now = Date.now();
+  const view =
+    market?.asset === id && decimals !== undefined
+      ? marketView(market.trades, decimals, (marketRange ??= defaultRange(market.trades, now)), now)
+      : null;
+  section.hidden = !view;
+  if (!view) return;
+  const range = marketRange!;
+  marketPrices.set(id, view.price);
+  drawMarket({
+    price: formatPrice(view.price),
+    usd: showPrices && qtcUsd ? '≈ ' + formatUsd((Number(view.price) / 1e12) * qtcUsd.usd) : '',
+    change: view.change,
+    label: range === 'All' ? 'all trades' : range,
+    points: view.points,
+    step: true,
+    note: 'From the latest sales and mints on Qlyphs.',
+  });
+  marketRanges('token', range);
+}
+async function openPage(page: PlatformPage) {
+  await browser.tabs.create({ url: platformURL(PLATFORM, page) });
+}
+/** `click` for handlers bound before it is declared further down. */
+const onClick = (id: string, fn: () => Promise<void>) =>
+  $(id).addEventListener('click', () => void task(fn, $(id)));
+
+/* Token detail: balance, Send and Receive, and the token's page on Qlyphs. */
+let shownToken = 'qtc';
+function openToken(id: string, trigger: HTMLElement) {
+  shownToken = id;
+  paintToken();
+  openPanel('token-panel', trigger);
+  const asset = assets.find((a) => a.id === id);
+  if (id === 'qtc') {
+    void loadQtcPrice();
+    void loadQtcChart(qtcRange);
+  } else if (!isQlyph(asset)) {
+    void loadMarket(id);
+    loadProfile(id);
+  }
+}
+function paintToken() {
+  const id = shownToken;
+  const native = id === 'qtc';
+  const asset = native ? undefined : assets.find((a) => a.id === id);
+  const quark = isQlyph(asset);
+  const entry = quark ? collectionItems.get(id) : undefined;
+  const name = entry
+    ? itemName(entry.collection, entry.item)
+    : native
+      ? 'Quantus'
+      : asset
+        ? assetName(asset)
+        : 'Unavailable asset';
+  const symbol = native ? 'QTC' : asset ? ownName(asset) : '';
+  $('token-title').textContent = name;
+  paintAbout(quark ? 'qtc' : id);
+  const mark = $('token-mark');
+  const art = entry ? entry.item : asset?.qlyph;
+  if (quark && art?.contentType && art.content) {
+    try {
+      mark.replaceChildren(renderQlyph(document, art.contentType, art.content, name));
+    } catch {
+      mark.replaceChildren(markOf(id));
+    }
+  } else mark.replaceChildren(native ? qtcMark() : markOf(id));
+  mark.dataset.kind = entry ? 'item' : quark ? 'quark' : 'token';
+  const available = native ? (balanceView ? BigInt(balanceView.balance.free) : undefined) : asset ? BigInt(asset.available) : undefined;
+  const decimals = native ? 12 : (asset?.definition.decimals ?? 0);
+  // A Quark stands alone (1 of 1); a collection item is one numbered piece of a set.
+  $('token-balance').textContent = entry
+    ? entry.collection.supply
+      ? `#${entry.item.edition} of ${entry.collection.supply}`
+      : `#${entry.item.edition}`
+    : privateBalances
+      ? '•••• ' + symbol
+      : available === undefined
+        ? '—'
+        : quark
+          ? '1 of 1'
+          : formatBalance(available, decimals) + ' ' + symbol;
+  const fiat =
+    privateBalances || quark || available === undefined
+      ? undefined
+      : native
+        ? usdOf(available)
+        : asset && qtcValueOf(asset) > 0n
+          ? usdOf(qtcValueOf(asset))
+          : undefined;
+  $('token-fiat').hidden = !fiat;
+  $('token-fiat').textContent = fiat ?? '';
+  // The asset ID is in the rows below, with Copy; only an item names its Quark here.
+  $('token-id').textContent = entry ? `Quark #${entry.item.quark}` : '';
+  $('token-id').hidden = !entry;
+  const traits = entry?.item.traits ?? [];
+  $('token-traits').hidden = !traits.length;
+  $('token-traits').replaceChildren(
+    ...traits.map(([type, trait]) => {
+      const card = node('div', '');
+      card.append(node('dt', type), node('dd', trait));
+      card.title = `${type}: ${trait}`;
+      return card;
+    }),
+  );
+  // First, so the Value row below uses the price the page shows.
+  paintMarket();
+  const token = catalogue?.tokens.find((t) => t.id === id);
+  const rows: [string, string][] = [];
+  if (entry) {
+    const { collection, item } = entry;
+    rows.push([
+      'Collection',
+      collection.name === collection.symbol ? collection.name : `${collection.name} · ${collection.symbol}`,
+    ]);
+    if (item.rank) rows.push(['Rarity rank', `#${item.rank}${collection.supply ? ` of ${collection.supply}` : ''}`]);
+  }
+  const role = quark && !entry && asset ? roleOf(asset) : null;
+  if (role)
+    rows.push([
+      'Collection',
+      role.role === 'mint'
+        ? `${role.symbol} mint, not counted yet. A mint counts once it is final and the collection's rules accept it; this Quark stays yours either way.`
+        : `${role.symbol} · ${ROLE_LABEL[role.role][0]} document of the collection`,
+    ]);
+  if (!native && asset) rows.push(['Asset ID', id]);
+  if (token?.lots) rows.push(['Minted', `${token.lots.minted} / ${token.lots.total} lots`]);
+  if (token?.holders) rows.push(['Holders', String(token.holders)]);
+  if (asset && !native && !quark && !privateBalances) {
+    const value = qtcValueOf(asset);
+    if (value > 0n) rows.push(['Value', 'About ' + formatBalance(value, 12) + ' QTC']);
+  }
+  pairs('token-rows', rows);
+  const idTerm = [...$('token-rows').querySelectorAll('dt')].find((dt) => dt.textContent === 'Asset ID');
+  if (idTerm?.nextElementSibling) {
+    const dd = idTerm.nextElementSibling as HTMLElement;
+    dd.classList.add('copy-value');
+    dd.title = id;
+    dd.replaceChildren(node('span', short(id), 'mono'), copyButton('Asset ID', id));
+  }
+  $('token-receive').hidden = quark;
+  $('token-receive').parentElement!.toggleAttribute('data-single', quark);
+  $('token-open').hidden = native;
+  $('token-open').firstChild!.textContent = entry
+    ? 'View item on Qlyphs '
+    : quark
+      ? 'View Quark on Qlyphs '
+      : 'View on Qlyphs ';
+  $<HTMLButtonElement>('token-send').disabled = !native && !asset;
+}
+$('token-send').addEventListener('click', () => openSend(shownToken, $('token-send')));
+onClick('token-receive', () => showReceive($('token-receive')));
+onClick('collection-open', async () => {
+  if (shownCollection) await openPage({ kind: 'collection', symbol: shownCollection });
+});
+onClick('token-open', async () => {
+  const asset = assets.find((a) => a.id === shownToken);
+  const entry = collectionItems.get(shownToken);
+  if (entry)
+    await openPage({ kind: 'collection-item', symbol: entry.collection.symbol, edition: entry.item.edition });
+  else if (isQlyph(asset) && asset?.qlyph) await openPage({ kind: 'quark', number: asset.qlyph.number });
+  else await openPage({ kind: 'token', id: shownToken });
+});
+
+/* Explore: the Qlyphs catalogue, read from the indexer, and the collections the Qlyphs app lists.
+ * Tapping a token or a collection opens its page on Qlyphs. */
+let catalogue: { tokens: CatalogToken[]; more: boolean } | undefined;
+let collectionCatalogue: { open: boolean; collections: CollectionSummary[] } | undefined;
+async function loadCollectionCatalogue() {
+  try {
+    collectionCatalogue = await call<{ open: boolean; collections: CollectionSummary[] }>('discover-collections');
+  } catch {
+    // Explore still lists tokens; the next visit asks again.
+  }
+}
+/** A thin progress bar, read out as a progress bar. */
+function miniBar(label: string, now: number, max: number) {
+  const bar = node('span', '', 'mini-bar');
+  bar.setAttribute('role', 'progressbar');
+  bar.setAttribute('aria-label', label);
+  bar.setAttribute('aria-valuemin', '0');
+  bar.setAttribute('aria-valuemax', String(max));
+  bar.setAttribute('aria-valuenow', String(now));
+  const fill = node('i', '');
+  fill.style.setProperty('--progress', String(max ? Math.min(1, now / max) : 0));
+  bar.append(fill);
+  return bar;
+}
+/** One Explore line: mark, name and progress, and a figure on the right. The whole line opens the
+ * page on Qlyphs. */
+function exploreRow(mark: HTMLElement, name: string, sub: HTMLElement[], figure: string, note: string, urgent = false) {
+  const row = node('button', '', 'explore-row') as HTMLButtonElement;
+  row.type = 'button';
+  const info = node('span', '', 'explore-info');
+  const line = node('span', '', 'explore-sub');
+  line.append(...sub);
+  info.append(node('strong', name), line);
+  const side = node('span', '', 'explore-side');
+  const small = node('small', note);
+  if (urgent) small.classList.add('urgent');
+  side.append(node('strong', figure), small);
+  row.append(mark, info, side);
+  return row;
+}
+function collectionRow(c: CollectionSummary) {
+  const mark = node('span', '', 'collection-mark medium');
+  mark.setAttribute('aria-hidden', 'true');
+  if (c.cover) mark.append(quarkArt(c.cover.contentType, c.cover.content, c.name, ''));
+  const share = c.supply ? Math.floor((c.minted * 1000) / c.supply) / 10 : 0;
+  const row = exploreRow(
+    mark,
+    c.name,
+    c.supply
+      ? [miniBar(`${c.name} items minted`, c.minted, c.supply), node('span', `${share}%`)]
+      : [node('span', 'Open edition')],
+    c.supply ? `${c.minted} / ${c.supply}` : String(c.minted),
+    'minted',
+  );
+  row.classList.add('collection-row');
+  row.title = c.symbol;
+  const progress = c.supply ? `${c.minted} of ${c.supply} minted` : `${c.minted} minted, open edition`;
+  row.setAttribute('aria-label', `${c.name}, ${progress}. Open on Qlyphs`);
+  row.addEventListener('click', () => void task(() => openPage({ kind: 'collection', symbol: c.symbol }), row));
+  return row;
+}
+let catalogueAt = 0;
+async function loadCatalogue(force = false) {
+  if (!force && catalogue && Date.now() - catalogueAt < 30_000) return;
+  catalogue = await call<{ tokens: CatalogToken[]; more: boolean }>('discover');
+  catalogueAt = Date.now();
+}
+function mintRow(token: CatalogToken) {
+  const lots = token.lots!;
+  const fee = BigInt(lots.nextFee!);
+  const share = Math.floor((lots.minted * 1000) / lots.total) / 10;
+  // The price steps up every 200 lots: close to the next step, say when and by how much.
+  const next = lots.nextTierFee === null ? null : BigInt(lots.nextTierFee);
+  const soon = next !== null && lots.leftInTier <= 50;
+  const row = exploreRow(
+    markOf(token.id),
+    token.symbol,
+    [miniBar(`${token.symbol} lots minted`, lots.minted, lots.total), node('span', `${share}%`)],
+    formatBalance(fee, 12) + ' QTC',
+    soon
+      ? `×${(Number((next! * 100n) / fee) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 })} in ${lots.leftInTier} ${lots.leftInTier === 1 ? 'lot' : 'lots'}`
+      : 'per lot',
+    soon,
+  );
+  row.classList.add('mint-row');
+  row.title = token.id;
+  row.setAttribute(
+    'aria-label',
+    `${token.symbol}, ${formatBalance(fee, 12)} QTC per lot, ${share}% minted. Mint ${token.symbol} on Qlyphs`,
+  );
+  row.addEventListener('click', () => void task(() => openPage({ kind: 'token', id: token.id, mint: true }), row));
+  return row;
+}
+const TRENDING = 5;
+/** Explore lists opened with See all. */
+const exploreAll = new Set<string>();
+function paintExplore() {
+  const box = $('explore');
+  if (!catalogue) return;
+  const query = value('explore-search').trim().toLowerCase();
+  const tokens = catalogue.tokens.filter(
+    (t) => !query || t.symbol.toLowerCase().includes(query) || t.id.includes(query),
+  );
+  // Each list shows its five busiest, ranked, unless a search asks for every match.
+  const section = (title: string, rows: HTMLElement[], id: string) => {
+    const s = node('section', '', 'explore-section');
+    s.id = id;
+    const all = !!query || exploreAll.has(id);
+    const shown = all ? rows : rows.slice(0, TRENDING);
+    if (!query)
+      shown.forEach((row, i) => {
+        const rank = node('span', String(i + 1), 'explore-rank');
+        rank.setAttribute('aria-hidden', 'true');
+        row.prepend(rank);
+      });
+    s.append(node('h2', title, 'list-heading'), ...shown);
+    if (!query && rows.length > TRENDING) {
+      const more = node('button', all ? 'Show less' : `See all ${rows.length}`, 'text-button explore-more') as HTMLButtonElement;
+      more.type = 'button';
+      more.setAttribute('aria-expanded', String(all));
+      more.addEventListener('click', () => {
+        if (all) exploreAll.delete(id);
+        else exploreAll.add(id);
+        paintExplore();
+        $(id).querySelector<HTMLElement>('.explore-more')?.focus({ preventScroll: true });
+      });
+      s.append(more);
+    }
+    return s;
+  };
+  // Only tokens that can still be minted, the most active first.
+  const minting = tokens.filter((t) => t.lots?.nextFee).sort((a, b) => b.transactions - a.transactions);
+  const sets = (collectionCatalogue?.collections ?? []).filter(
+    (c) => !query || c.name.toLowerCase().includes(query) || c.symbol.toLowerCase().includes(query),
+  );
+  if (!minting.length && !sets.length) {
+    box.replaceChildren(
+      empty(
+        query ? 'Nothing found' : 'Nothing to mint right now',
+        query ? 'Try another name, symbol or asset ID.' : 'Every lot of every token is minted.',
+        'search',
+      ),
+    );
+    return;
+  }
+  box.replaceChildren(
+    ...(minting.length ? [section('Minting now', minting.map(mintRow), 'explore-mint')] : []),
+    ...(sets.length ? [section('Collections', sets.map(collectionRow), 'explore-collections')] : []),
+  );
+}
+async function showExplore(force = false) {
+  if (!catalogue) $('explore').replaceChildren(node('div', '', 'skeleton'), node('div', '', 'skeleton'), node('div', '', 'skeleton'));
+  try {
+    await Promise.all([loadCatalogue(force), loadCollectionCatalogue()]);
+    paintExplore();
+    if (balanceView) paintBalances();
+  } catch {
+    if (!catalogue)
+      $('explore').replaceChildren(empty('Qlyphs is unavailable', 'Check your connection, then try again.', 'refresh'));
+  }
+}
+$('explore-search').addEventListener('input', paintExplore);
+// Each visit asks again: the background keeps the catalogue for 30 s, so this stays cheap.
+$('tab-explore').addEventListener('click', () => void showExplore(true));
+
+
+/* Points: the account's level on Qlyphs, read from the indexer. */
+async function loadPoints() {
+  const owner = state?.account?.owner;
+  if (!owner || !state?.unlocked || pointsOwner === owner) return;
+  pointsOwner = owner;
+  try {
+    paintPoints(await call<PointsView | null>('points'), true);
+  } catch {
+    pointsOwner = undefined;
+  }
+}
+/** Fills the hexagon's six sides, clockwise from the top, by the share of the level done. */
+function paintHexagon(progress: number) {
+  const sides = $('points-badge').querySelectorAll('.hex-fill');
+  sides.forEach((side, i) => {
+    const fill = Math.min(1, Math.max(0, progress * sides.length - i));
+    (side as SVGElement).style.setProperty('--fill', String(Number(fill.toFixed(3))));
+    side.toggleAttribute('data-empty', fill === 0);
+  });
+}
+/** `null` hides the card (locked, or no answer); an account without XP yet shows level 0. */
+function paintPoints(p: PointsView | null, empty = false) {
+  const badge = $('points-badge');
+  badge.hidden = !p && !empty;
+  if (!p) {
+    if (!empty) return;
+    paintHexagon(0);
+    $('points-title').textContent = 'Level 0';
+    $('points-detail').textContent = 'Mint, trade or create on Qlyphs to earn XP';
+    badge.setAttribute('aria-label', 'No Qlyphs XP yet. Open the points page');
+    return;
+  }
+  const from = BigInt(p.levelFrom),
+    to = BigInt(p.levelTo),
+    xp = BigInt(p.xp);
+  const progress = to > from ? Number(((xp - from) * 100n) / (to - from)) / 100 : 1;
+  paintHexagon(progress);
+  $('points-title').textContent = 'Level ' + p.level;
+  $('points-detail').textContent = to > xp ? `${formatBalance(xp, 0)} / ${formatBalance(to, 0)} XP` : formatBalance(xp, 0) + ' XP';
+  badge.setAttribute(
+    'aria-label',
+    `Level ${p.level}, ${formatBalance(xp, 0)} XP on Qlyphs, ${Math.round(Math.min(1, Math.max(0, progress)) * 100)}% of the way to level ${p.level + 1}. Open the points page`,
+  );
+}
+onClick('points-badge', () => openPage({ kind: 'points' }));
 let lastBalance: { owner?: string; free: bigint } | undefined;
 let deltaTimer: ReturnType<typeof setTimeout> | undefined;
 function balanceDelta(delta: bigint) {
@@ -1764,11 +3390,19 @@ function paintBalances() {
   const exactAmount = formatUnits(free, 12);
   const before = lastBalance && lastBalance.owner === v.owner ? lastBalance.free : undefined;
   lastBalance = { owner: v.owner, free };
-  $('balance').replaceChildren(
-    document.createTextNode(privateBalances ? '••••' : amount),
-    node('small', ' QTC'),
-  );
-  if (before !== undefined && before !== free && !privateBalances) {
+  const held = assets.filter((a) => BigInt(a.available) > 0n);
+  const tokens = held.filter((a) => !isQlyph(a));
+  // With the QTC price, the total is in dollars: QTC and every token valued, as wallets show it.
+  const total = totalDollars(free, tokens);
+  if (total) {
+    $('balance').replaceChildren(document.createTextNode(privateBalances ? '••••' : formatUsdValue(total.now)));
+    if (before !== undefined && before !== free && !privateBalances) balanceDelta(free - before);
+  } else
+    $('balance').replaceChildren(
+      document.createTextNode(privateBalances ? '••••' : amount),
+      node('small', ' QTC'),
+    );
+  if (!total && before !== undefined && before !== free && !privateBalances) {
     // Show the change itself, then settle on the exact new balance.
     const decimals = Math.min(4, (amount.split('.')[1] ?? '').length);
     roll(
@@ -1780,31 +3414,52 @@ function paintBalances() {
     );
     balanceDelta(free - before);
   }
-  $('balance').setAttribute('aria-label', privateBalances ? 'Balance hidden' : amount + ' QTC');
-  $('balance').title = privateBalances ? '' : exactAmount + ' QTC';
-  $('reserved').textContent = privateBalances
-    ? ''
-    : BigInt(v.balance.reserved) || BigInt(v.balance.frozen)
-      ? `Reserved ${formatBalance(BigInt(v.balance.reserved), 12)} · Frozen ${formatBalance(BigInt(v.balance.frozen), 12)} QTC`
-      : '';
-  if ($('reserved').textContent) $('reserved').dataset.visible = 'true';
-  else delete $('reserved').dataset.visible;
-  const held = assets.filter((a) => BigInt(a.available) > 0n);
-  $('tokens').replaceChildren(
-    assetRow('QTC', 'QTC', amount, undefined, exactAmount),
-    ...held.map((a) =>
-      isQlyph(a)
-        ? assetRow(assetName(a), '1 of 1 · ' + short(a.id), '1', a.id)
-        : assetRow(
-            a.definition.symbol,
-            short(a.id),
-            formatBalance(BigInt(a.available), a.definition.decimals),
-            a.id,
-            formatUnits(BigInt(a.available), a.definition.decimals),
-          ),
-    ),
+  $('balance').setAttribute(
+    'aria-label',
+    privateBalances ? 'Balance hidden' : total ? 'Total ' + formatUsdValue(total.now) : amount + ' QTC',
   );
-  $('asset-count').textContent = String(held.length + 1);
+  $('balance').title = privateBalances ? '' : exactAmount + ' QTC' + (total && tokens.length ? ' and your tokens' : '');
+  const qtcLine = privateBalances ? undefined : dollarLine(free, free);
+  // Under the total: its change over 24 hours, then anything reserved or frozen.
+  const parts: (string | HTMLElement)[] = [];
+  if (total && !privateBalances && total.then > 0) {
+    const change = total.now - total.then;
+    const line = node('span', `${formatUsdChange(change)} (${change < 0 ? '−' : '+'}${Math.abs((change / total.then) * 100).toFixed(2)}%)`, 'total-change');
+    line.dataset.tone = Math.abs(change) < 0.005 ? 'flat' : change > 0 ? 'up' : 'down';
+    parts.push(line);
+  }
+  if (!privateBalances && (BigInt(v.balance.reserved) || BigInt(v.balance.frozen)))
+    parts.push(
+      `Reserved ${formatBalance(BigInt(v.balance.reserved), 12)} · Frozen ${formatBalance(BigInt(v.balance.frozen), 12)} QTC`,
+    );
+  $('reserved').replaceChildren(...parts.flatMap((p, i) => (i ? [' · ', p] : [p])));
+  if (parts.length) $('reserved').dataset.visible = 'true';
+  else delete $('reserved').dataset.visible;
+  $('tokens').replaceChildren(
+    assetRow(
+      'QTC',
+      '',
+      amount,
+      undefined,
+      exactAmount,
+      qtcLine?.value,
+      qtcLine?.change ? { text: qtcLine.change, tone: qtcLine.tone! } : undefined,
+    ),
+    ...tokens.map((a) => {
+      const line = tokenDollars(a);
+      return assetRow(
+        a.definition.symbol,
+        '',
+        formatBalance(BigInt(a.available), a.definition.decimals),
+        a.id,
+        formatUnits(BigInt(a.available), a.definition.decimals),
+        line?.value ?? valueOf(a),
+        line?.change ? { text: line.change, tone: line.tone! } : undefined,
+      );
+    }),
+  );
+  $('asset-count').textContent = String(tokens.length + 1);
+  if ($('token-panel').hasAttribute('open')) paintToken();
   if (v.more)
     $('tokens').append(
       node('p', 'More assets available. Open Qlyphs to see all pages.', 'field-hint'),
@@ -1819,7 +3474,7 @@ function paintBalances() {
     ...held.map((a) => {
       const o = document.createElement('option');
       o.value = a.id;
-      o.textContent = assetName(a) + ' · ' + short(a.id);
+      o.textContent = ownName(a) + ' · ' + short(a.id);
       o.title = a.id;
       return o;
     }),
@@ -1833,47 +3488,263 @@ function paintBalances() {
   }
   select.value = previous || 'qtc';
   sendAssetDetails();
+  paintHoldings();
 }
 function sendAssetDetails() {
   const id = value('send-asset');
   const asset = assets.find((a) => a.id === id && BigInt(a.available) > 0n);
   const native = id === 'qtc';
-  const symbol = native ? 'QTC' : asset ? assetName(asset) : undefined;
+  const symbol = native ? 'QTC' : asset ? ownName(asset) : undefined;
+  const item = asset ? collectionItems.get(asset.id) : undefined;
   // A Quark moves as a whole: the amount is fixed to 1.
   const whole = isQlyph(asset),
     amount = $<HTMLInputElement>('send-amount');
   amount.readOnly = whole;
   if (whole) amount.value = '1';
   $('send-title').textContent = symbol ? 'Send ' + symbol : 'Send asset';
+  paintAssetPicker();
   $('send-unit').textContent = symbol ?? '—';
   $('send-unit').title = symbol ?? '';
   $('send-asset').title = native ? 'QTC · Quantus native token' : id;
   const available = native ? freeBalance : asset ? BigInt(asset.available) : undefined;
-  $('send-available').textContent = whole
-    ? 'Quark · 1 of 1. The whole Quark moves to the recipient. Fees in QTC.'
+  $('send-available').textContent = item
+    ? `Collection item · Quark #${item.item.quark}. The item moves to the recipient.`
+    : whole
+      ? 'Quark · 1 of 1. The whole Quark moves to the recipient.'
     : available === undefined
       ? 'Balance unavailable. Refresh before sending.'
       : privateBalances
-        ? 'Balance hidden · Fees are paid in QTC.'
-        : `Available: ${formatUnits(available, native ? 12 : asset!.definition.decimals)} ${symbol} · Fees in QTC.` +
+        ? 'Balance hidden'
+        : `Available: ${formatUnits(available, native ? 12 : asset!.definition.decimals)} ${symbol}` +
           (native && balanceView && incomingBalance(balanceView.balance)
             ? ` ${formatBalance(incomingBalance(balanceView.balance), 12)} QTC locked until final.`
             : '');
 }
+/** The asset picker: the selected asset's mark, name and balance; the list shows every asset held. */
+function assetChoices() {
+  return [...$<HTMLSelectElement>('send-asset').options].map((o) => {
+    const native = o.value === 'qtc';
+    const asset = native ? undefined : assets.find((a) => a.id === o.value);
+    const name = native ? 'QTC' : asset ? ownName(asset) : o.textContent!;
+    const balance = native
+      ? freeBalance !== undefined
+        ? formatBalance(freeBalance, 12) + ' QTC'
+        : ''
+      : asset
+        ? isQlyph(asset)
+          ? '1 of 1'
+          : formatBalance(BigInt(asset.available), asset.definition.decimals) + ' ' + name
+        : 'Unavailable';
+    return { value: o.value, name, balance: privateBalances ? '••••' : balance, native, quark: isQlyph(asset) };
+  });
+}
+function paintAssetPicker() {
+  const id = value('send-asset');
+  const choice = assetChoices().find((c) => c.value === id);
+  $('send-asset-mark').replaceChildren(id === 'qtc' ? qtcMark() : markOf(id));
+  $('send-asset-name').textContent = choice?.name ?? 'Choose an asset';
+  $('send-asset-balance').textContent = choice?.balance ?? '';
+  $('send-max').hidden = !!choice?.quark;
+}
+function closeAssetList(focus = false) {
+  $('send-asset-list').hidden = true;
+  $('send-asset-button').setAttribute('aria-expanded', 'false');
+  if (focus) $('send-asset-button').focus({ preventScroll: true });
+}
+function openAssetList() {
+  const list = $('send-asset-list');
+  const selected = value('send-asset');
+  list.replaceChildren(
+    ...assetChoices().map((c) => {
+      const option = node('button', '', 'picker-option') as HTMLButtonElement;
+      option.type = 'button';
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-selected', String(c.value === selected));
+      const info = node('span', '', 'asset-info');
+      info.append(node('strong', c.name), node('small', c.balance));
+      option.append(c.native ? qtcMark() : markOf(c.value), info);
+      option.title = c.native ? '' : c.value;
+      option.addEventListener('click', () => {
+        const select = $<HTMLSelectElement>('send-asset');
+        if (select.value !== c.value) {
+          select.value = c.value;
+          select.dispatchEvent(new Event('change'));
+        }
+        closeAssetList(true);
+      });
+      return option;
+    }),
+  );
+  list.hidden = false;
+  $('send-asset-button').setAttribute('aria-expanded', 'true');
+  list.querySelector<HTMLElement>('[aria-selected=true]')?.focus({ preventScroll: true });
+}
+$('send-asset-button').addEventListener('click', () =>
+  $('send-asset-list').hidden ? openAssetList() : closeAssetList(),
+);
+$('send-asset-list').addEventListener('keydown', (e) => {
+  const options = [...$('send-asset-list').querySelectorAll<HTMLElement>('[role=option]')];
+  const at = options.indexOf(document.activeElement as HTMLElement);
+  if (e.key === 'Escape') {
+    e.stopPropagation();
+    closeAssetList(true);
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    options[(at + (e.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length]?.focus();
+  }
+});
+document.addEventListener('pointerdown', (e) => {
+  if (!$('send-asset-list').hidden && !(e.target as Element).closest('#send-asset-list, #send-asset-button'))
+    closeAssetList();
+});
+/* Recipients: the book in the recipient field opens the wallet's other accounts and the addresses
+   this account sent to. Choosing one only fills the field; the review shows the full address. */
+const recipientSheet = $<HTMLDialogElement>('recipient-sheet');
+let recipientChosen = false;
+/** The wallet's account an entered address belongs to, if any. */
+function ownAccountAt(text: string) {
+  let id: string;
+  try {
+    id = recipient(text.trim());
+  } catch {
+    return undefined;
+  }
+  return state?.accounts?.find((a) => a.owner === id);
+}
+/** Names the account under the field when the recipient is one of this wallet's. */
+function paintRecipientName() {
+  const own = ownAccountAt(value('send-to'));
+  const hint = $('send-to-name');
+  hint.hidden = !own || own.owner === state?.account?.owner;
+  if (own) hint.replaceChildren('Your account ', node('strong', own.name));
+}
+/** Addresses this account sent QTC or tokens to, latest first, its own accounts left out. */
+function recentRecipients(limit = 8) {
+  const seen = new Map<string, number | undefined>();
+  for (const tx of history) {
+    if ((tx.label !== 'sendQtc' && tx.label !== 'transfer') || !tx.to || !/^0x[0-9a-f]{64}$/.test(tx.to)) continue;
+    if (tx.status === 'cancelled-before-broadcast' || seen.has(tx.to)) continue;
+    if (state?.accounts?.some((a) => a.owner === tx.to)) continue;
+    seen.set(tx.to, tx.createdAt);
+    if (seen.size === limit) break;
+  }
+  return [...seen];
+}
+function recipientRow(group: string, owner: string, address: string, title: string, detail: string, search: string) {
+  const row = node('div', '', 'account-option');
+  row.dataset.group = group;
+  row.dataset.search = search.toLocaleLowerCase();
+  const button = node('button', '', 'account-choice') as HTMLButtonElement;
+  button.type = 'button';
+  button.title = address;
+  const avatar = node('span', '', 'account-avatar');
+  avatar.setAttribute('aria-hidden', 'true');
+  paintAccountAvatar(avatar, owner);
+  const info = node('span', '', 'account-option-info');
+  info.append(node('strong', title, group === 'recent' ? 'mono' : ''), node('small', detail, group === 'recent' ? '' : 'mono'));
+  button.append(avatar, info);
+  button.addEventListener('click', () => {
+    const input = $<HTMLInputElement>('send-to');
+    input.value = address;
+    transferFeedback('send-to');
+    paintRecipientName();
+    recipientChosen = true;
+    recipientSheet.close();
+    $('send-amount').focus({ preventScroll: true });
+  });
+  row.append(button);
+  return row;
+}
+function paintRecipients() {
+  const others = (state?.accounts ?? []).filter((a) => a.owner !== state?.account?.owner);
+  const recent = recentRecipients();
+  const heading = (group: string, text: string) => {
+    const h = node('div', text, 'account-wallet-heading');
+    h.dataset.group = group;
+    return h;
+  };
+  $('recipient-list').replaceChildren(
+    ...(others.length ? [heading('own', 'Your accounts')] : []),
+    ...others.map((a) => recipientRow('own', a.owner, a.address, a.name, short(a.address), `${a.name} ${a.address} ${a.owner}`)),
+    ...(recent.length ? [heading('recent', 'Recent')] : []),
+    ...recent.map(([to, at]) => {
+      const address = fullAddress(to);
+      const day = activityDay(at);
+      const when = day === 'Earlier' ? 'Sent before' : 'Last sent ' + (/^(Today|Yesterday)$/.test(day) ? day.toLowerCase() : day);
+      return recipientRow('recent', to, address, short(address), when, `${address} ${to}`);
+    }),
+  );
+}
+function filterRecipients() {
+  const query = value('recipient-search').trim().toLocaleLowerCase();
+  const rows = [...$('recipient-list').querySelectorAll<HTMLElement>('.account-option')];
+  for (const row of rows) row.hidden = !row.dataset.search!.includes(query);
+  for (const heading of $('recipient-list').querySelectorAll<HTMLElement>('.account-wallet-heading'))
+    heading.hidden = !rows.some((row) => !row.hidden && row.dataset.group === heading.dataset.group);
+  const none = rows.every((row) => row.hidden);
+  const emptyState = $('recipient-empty');
+  emptyState.hidden = !none;
+  emptyState.querySelector('strong')!.textContent = rows.length ? 'No match' : 'No recipients yet';
+  emptyState.querySelector('p')!.textContent = rows.length
+    ? 'Try another name or address, or paste the address in the field.'
+    : 'Your other accounts and the addresses you send to will show up here.';
+  $('recipient-search').closest('label')!.hidden = !rows.length;
+}
+$('send-book').addEventListener('click', () => {
+  paintRecipients();
+  $<HTMLInputElement>('recipient-search').value = '';
+  filterRecipients();
+  recipientChosen = false;
+  recipientSheet.showModal();
+  const first = $<HTMLInputElement>('recipient-search');
+  (first.closest('label')!.hidden ? $('close-recipients') : first).focus({ preventScroll: true });
+});
+$('recipient-search').addEventListener('input', filterRecipients);
+$('close-recipients').addEventListener('click', () => recipientSheet.close());
+recipientSheet.addEventListener('click', (event) => {
+  if (event.target === recipientSheet) recipientSheet.close();
+});
+recipientSheet.addEventListener('close', () => {
+  if (!recipientChosen && $<HTMLDetailsElement>('send-panel').open) $('send-book').focus({ preventScroll: true });
+});
+$('send-to').addEventListener('input', paintRecipientName);
+/** Keeps this much QTC for the network fee when sending the whole balance; the review shows the
+ * exact fee, and the background refuses a send that cannot pay it. */
+const MAX_FEE_RESERVE = 10_000_000_000n;
+const EXISTENTIAL_DEPOSIT = 1_000_000_000n;
+$('send-max').addEventListener('click', () => {
+  const id = value('send-asset');
+  let amount: bigint, decimals: number;
+  if (id === 'qtc') {
+    if (!balanceView) return;
+    const spendable = spendableBalance(balanceView.balance, EXISTENTIAL_DEPOSIT);
+    amount = spendable > MAX_FEE_RESERVE ? spendable - MAX_FEE_RESERVE : 0n;
+    decimals = 12;
+  } else {
+    const asset = assets.find((a) => a.id === id);
+    if (!asset) return;
+    amount = BigInt(asset.available);
+    decimals = asset.definition.decimals;
+  }
+  $<HTMLInputElement>('send-amount').value = formatUnits(amount, decimals);
+  transferFeedback('send-amount');
+  if (id === 'qtc')
+    $('send-available').textContent = `Max keeps ${formatUnits(MAX_FEE_RESERVE, 12)} QTC for the network fee. The review shows the exact fee.`;
+});
 function changeSendAsset() {
   $<HTMLInputElement>('send-amount').value = '';
   transferFeedback('send-amount');
   sendAssetDetails();
 }
-let sendTrigger: HTMLElement | undefined;
 function openSend(id = 'qtc', trigger: HTMLElement = $('show-send')) {
+  paintRecipientName();
+  closeAssetList();
   const select = $<HTMLSelectElement>('send-asset');
   if (select.value !== id) {
     select.value = id;
     changeSendAsset();
   } else sendAssetDetails();
-  sendTrigger = trigger;
-  openPanel('send-panel');
+  openPanel('send-panel', trigger);
 }
 async function balances(quiet = false) {
   if (!state?.account) return;
@@ -1901,11 +3772,18 @@ async function balances(quiet = false) {
     paintTracker(v.transactions);
     $('sync-state').textContent =
       'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    delete $('sync-state').dataset.state;
+    void loadPoints();
+    void loadCollections();
+    void loadQtcPrice();
+    void loadHeldTrades(v.assets.filter((a) => BigInt(a.available) > 0n && !isQlyph(a)));
+    if (!catalogue) void showExplore();
   } catch (e) {
     if (request !== balanceRequest || state?.account?.owner !== owner) return;
     $('sync-state').textContent = balanceView
       ? 'Refresh failed · Showing previously loaded balances.'
       : 'Balances unavailable · Try refreshing.';
+    $('sync-state').dataset.state = 'error';
     if (!balanceView)
       $('tokens').replaceChildren(
         empty(
@@ -1932,23 +3810,42 @@ function resetAccountView() {
   freeBalance = undefined;
   assets = [];
   watchOnly = false;
-  expandedActivity.clear();
+  if (txSheet.open) txSheet.close();
+  $<HTMLDialogElement>('recipient-sheet').close();
+  closeClearActivity();
   $('balance').textContent = '—';
   $('balance').removeAttribute('title');
   $('balance').removeAttribute('aria-label');
   $('wallet').scrollTop = 0;
   syncWalletScroll();
   $('tokens').replaceChildren();
+  $('quarks').replaceChildren();
+  $('quark-count').textContent = '0';
+  holdings = undefined;
+  holdingsFailed = false;
+  holdingsRequest++;
+  collectionItems.clear();
+  groupsBySymbol.clear();
+  shownCollection = undefined;
+  $<HTMLDetailsElement>('collection-panel').open = false;
+  $('collections').replaceChildren();
+  $('collection-count').textContent = '0';
+  $('collectible-count').textContent = '0';
   $('history').replaceChildren();
   $('send-asset').replaceChildren(new Option('QTC · Native token', 'qtc'));
   sendAssetDetails();
   $('sync-state').textContent = '';
+  delete $('sync-state').dataset.state;
+  pointsOwner = undefined;
+  paintPoints(null);
+  selectHome($<HTMLButtonElement>('home-tokens'));
   $('receive-address').textContent = '';
   const canvas = $<HTMLCanvasElement>('receive-qr');
   canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
   for (const form of document.querySelectorAll<HTMLFormElement>('#wallet form')) form.reset();
   clearTransferFeedback();
-  for (const panel of document.querySelectorAll<HTMLDetailsElement>('#wallet details[open]'))
+  // Screens close; the folded Collectibles sections keep the viewer's choice.
+  for (const panel of document.querySelectorAll<HTMLDetailsElement>('#wallet details[open]:not(.collectible-block)'))
     panel.open = false;
   clearSecrets();
   $('phrase').textContent = '';
@@ -1965,6 +3862,8 @@ async function followNetwork(name: 'mainnet' | 'development') {
 }
 /** After a network switch: forget everything the old chain showed, keep how the wallet is viewed. */
 function resetNetworkView() {
+  catalogue = undefined;
+  logoRequests.clear();
   const watching = watchOnly,
     scroll = $('wallet').scrollTop;
   resetAccountView();
@@ -2030,7 +3929,6 @@ function populateAccounts() {
             try {
               if (!selected) {
                 await call('account-select', { owner: account.owner });
-                addingWallet = false;
                 await render();
                 message(`Switched to ${account.name}.`, false, true);
                 arrive($('open-accounts'));
@@ -2146,7 +4044,7 @@ function populateAccounts() {
       ) {
         const heading = node(
           'div',
-          `Wallet ${walletOwners.indexOf(walletOwner) + 1}`,
+          `Wallet (${all.filter((a) => (a.walletOwner ?? a.owner) === walletOwner).length})`,
           'account-wallet-heading',
         );
         heading.dataset.wallet = walletOwner;
@@ -2156,18 +4054,7 @@ function populateAccounts() {
     }),
   );
   filterAccounts();
-  const add = $<HTMLButtonElement>('add-wallet');
-  add.disabled = busy || !state?.unlocked || !state.backed || all.length >= 20;
-  $<HTMLButtonElement>('add-account').disabled = add.disabled;
-  $('add-wallet-hint').textContent =
-    all.length >= 20
-      ? 'You have reached the limit of 20 accounts.'
-      : !state?.unlocked
-        ? 'Unlock Qlyphs to add another wallet.'
-        : !state.backed
-          ? 'Save your recovery phrase before adding another wallet.'
-          : '';
-  $('add-wallet-hint').hidden = !$('add-wallet-hint').textContent;
+  $<HTMLButtonElement>('add-account').disabled = busy || !state?.unlocked || !state.backed || all.length >= 20;
 }
 function filterAccounts() {
   const query = value('account-search').trim().toLocaleLowerCase();
@@ -2177,7 +4064,6 @@ function filterAccounts() {
     if (!row.hidden) count++;
     for (const menu of row.querySelectorAll<HTMLElement>(':popover-open')) menu.hidePopover();
   }
-  $('accounts-count').textContent = String(count);
   for (const heading of $('accounts-list').querySelectorAll<HTMLElement>(
     '.account-wallet-heading',
   )) {
@@ -2189,7 +4075,7 @@ function filterAccounts() {
   $('accounts-list').hidden = count === 0;
 }
 function showAccounts(preserveSearch = false) {
-  if (!state?.unlocked || requestId || !$('recovery').hidden || addingWallet) return;
+  if (!state?.unlocked || requestId || !$('recovery').hidden) return;
   if (!preserveSearch) $<HTMLInputElement>('account-search').value = '';
   $('accounts-overview').hidden = false;
   $('account-name-form').hidden = true;
@@ -2216,9 +4102,7 @@ const form = (id: string, fn: () => Promise<void>) =>
       (e as SubmitEvent).submitter ?? $(id).querySelector('button[type=submit]') ?? undefined,
     );
   });
-$('open-accounts').addEventListener('click', () => {
-  if (!busy && !requestId) showAccounts();
-});
+$('open-accounts').addEventListener('click', openDrawer);
 $('close-accounts').addEventListener('click', () => {
   if (busy) return;
   if (!$('account-name-form').hidden) showAccounts(true);
@@ -2241,6 +4125,9 @@ $('accounts-dialog').addEventListener('close', () => {
   for (const menu of $('accounts-dialog').querySelectorAll<HTMLElement>(':popover-open'))
     menu.hidePopover();
   renamedOwner = undefined;
+  // Opened from the drawer, which is closed by then: focus returns to the account control.
+  if (!document.activeElement || document.activeElement === document.body)
+    $('open-accounts').focus({ preventScroll: true });
 });
 $('cancel-account-name').addEventListener('click', () => {
   if (!busy) showAccounts(true);
@@ -2262,16 +4149,6 @@ $('add-account').addEventListener('click', () => {
       nudge($('accounts-error'));
     }
   }, $('add-account'));
-});
-$('add-wallet').addEventListener('click', () => {
-  if (busy || !state?.unlocked || !state.backed) return;
-  $<HTMLDialogElement>('accounts-dialog').close();
-  clearSecrets();
-  $<HTMLInputElement>('backup-file').value = '';
-  addingWallet = true;
-  message('');
-  syncViews();
-  onboarding('choice');
 });
 form('account-name-form', async () => {
   if (!state?.unlocked) return;
@@ -2304,14 +4181,6 @@ for (const [id, screen] of [
 $('onboarding-back').addEventListener('click', () => {
   if (busy) return;
   message('');
-  if (addingWallet && onboardingScreen === 'choice') {
-    addingWallet = false;
-    clearSecrets();
-    $<HTMLInputElement>('backup-file').value = '';
-    syncViews();
-    showAccounts();
-    return;
-  }
   const previous: Record<OnboardingScreen, OnboardingScreen> = {
     choice: 'choice',
     create: 'choice',
@@ -2373,10 +4242,9 @@ form('create-form', async () => {
   }
   message('');
   try {
-    const v = await call<{ phrase: string }>(addingWallet ? 'account-create' : 'create', {
+    const v = await call<{ phrase: string }>('create', {
       password: value('new-password'),
     });
-    addingWallet = false;
     await render();
     showPhrase(v.phrase);
     message('');
@@ -2388,11 +4256,10 @@ form('import-form', async () => {
   if (onboardingScreen !== 'import-password') return;
   message('');
   try {
-    await call(addingWallet ? 'account-import' : 'import', {
+    await call('import', {
       password: value('import-password'),
       phrase: value('import-phrase'),
     });
-    addingWallet = false;
     clearSecrets();
     await render();
     message('Wallet imported.', false, true);
@@ -2406,11 +4273,10 @@ form('restore-form', async () => {
   if (onboardingScreen !== 'restore-password') return;
   message('');
   try {
-    await call(addingWallet ? 'account-restore' : 'restore', {
+    await call('restore', {
       password: value('restore-password'),
       backup: await readBackup(),
     });
-    addingWallet = false;
     clearSecrets();
     $<HTMLInputElement>('backup-file').value = '';
     await render();
@@ -2479,6 +4345,7 @@ click('acknowledge', async () => {
   await balances();
 });
 click('lock', async () => {
+  closePanel('settings-panel');
   await call('lock');
   watchOnly = false;
   $('phrase').textContent = '';
@@ -2571,52 +4438,6 @@ async function inspectConnection(recover = false) {
 click('copy-address', async () => {
   await copyText($('copy-address'), state!.account!.address);
 });
-/** Swap and Qlyphs are announced, not live: a tap answers with a short note instead of nothing. */
-const SOON = {
-  swap: ['Swap is coming', 'Trade QTC in one tap, without leaving your wallet.'],
-  qlyphs: ['Qlyphs is coming', 'Your Qlyphs apps, one tap from your wallet.'],
-} as const;
-let soonTimer = 0;
-function hideSoon() {
-  clearTimeout(soonTimer);
-  const bubble = $('soon-bubble');
-  if (bubble.hidden) return;
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    bubble.hidden = true;
-    return;
-  }
-  bubble
-    .animate([{ opacity: 1 }, { opacity: 0, transform: 'translateY(-4px)' }], {
-      duration: 140,
-      easing: 'ease-in',
-    })
-    .finished.then(() => (bubble.hidden = true), () => (bubble.hidden = true));
-}
-function showSoon(button: HTMLElement) {
-  const kind = button.dataset.soon as keyof typeof SOON;
-  pop(button.querySelector('.soon-pill') ?? button);
-  // Only the quick-action row carries the bubble; the Qlyphs card already says it in place.
-  if (!button.classList.contains('round')) return;
-  const bubble = $('soon-bubble'),
-    reopen = !bubble.hidden && bubble.dataset.for === kind;
-  $('soon-title').textContent = SOON[kind][0];
-  $('soon-text').textContent = SOON[kind][1];
-  bubble.dataset.for = kind;
-  bubble.style.setProperty('--tip', `${button.offsetLeft + button.offsetWidth / 2}px`);
-  bubble.hidden = false;
-  if (!reopen) drop(bubble);
-  clearTimeout(soonTimer);
-  soonTimer = window.setTimeout(hideSoon, 2600);
-}
-for (const button of document.querySelectorAll<HTMLElement>('[data-soon]'))
-  button.addEventListener('click', (event) => {
-    event.stopPropagation();
-    showSoon(button);
-  });
-document.addEventListener('click', hideSoon);
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') hideSoon();
-});
 function saveFile(content: string, type: string, name: string) {
   const url = URL.createObjectURL(new Blob([content], { type })),
     a = document.createElement('a');
@@ -2703,11 +4524,11 @@ click('confirm-reset', async () => {
   try {
     await call('wallet-reset', { confirmation: 'START_NEW_WALLET' });
     $<HTMLDialogElement>('reset-dialog').close();
-    addingWallet = false;
     watchOnly = false;
     clearSecrets();
     await render();
-    onboarding('create');
+    // Restore with a recovery phrase or a backup, or start a new wallet.
+    onboarding('choice');
   } catch (error) {
     $('reset-error').textContent = uiError(error);
   }
@@ -2798,10 +4619,11 @@ form('send-form', async () => {
   cancelledUntil = 0;
   $<HTMLInputElement>('send-to').value = '';
   $<HTMLInputElement>('send-amount').value = '';
+  paintRecipientName();
   $<HTMLDetailsElement>('send-panel').open = false;
   awaitingSince = Date.now();
   awaitingAmount = formatUnits(BigInt(fields.amount), native ? 12 : asset!.definition.decimals) +
-    ' ' + (native ? 'QTC' : assetName(asset!));
+    ' ' + (native ? 'QTC' : ownName(asset!));
   trackedHash = undefined;
   trackerUntil = 0;
   paintTracker(balanceView?.transactions ?? state?.transactions ?? []);
@@ -2810,31 +4632,31 @@ $('tx-tracker').addEventListener('click', () => {
   const hash = $('tx-tracker').dataset.hash;
   selectTab($<HTMLButtonElement>('tab-activity'), true);
   if (!hash) return;
-  expandedActivity.add(hash);
-  const item = $('history').querySelector<HTMLDetailsElement>(`details[data-hash="${hash}"]`);
-  if (item) {
-    item.open = true;
-    item.scrollIntoView({ block: 'nearest' });
+  $('history').querySelector(`[data-hash="${hash}"]`)?.scrollIntoView({ block: 'nearest' });
+  openTxSheet(hash);
+});
+/** Rejecting only removes authority, so it always leaves: a request the wallet already cancelled
+ * (the site's page changed, the wallet locked) has nothing left to refuse. */
+async function rejectRequest() {
+  try {
+    await call('reject', { id: requestId });
+  } catch {
+    // Already answered or cancelled.
   }
-});
-click('reject', async () => {
-  await call('reject', { id: requestId });
-  window.close();
-});
-click('cancel-unlock', async () => {
-  await call('reject', { id: requestId });
-  window.close();
-});
+  leave();
+}
+click('reject', rejectRequest);
+click('cancel-unlock', rejectRequest);
 /** A new tip prepares the lot again in the background: a new review and digest, then a re-render
  * whose total glows in the direction it moved. */
-const tipPicker = mountTipPicker($('review-tip'), (tip) => {
-  const before = pending?.review?.tip ?? '0';
+const tipPicker = mountTipPicker($<HTMLDialogElement>('fee-sheet'), (tip) => {
+  const before = pending?.review?.tip ?? pending?.session?.tip ?? '0';
   void task(async () => {
     tipPicker.pending(true);
     try {
       await call('review-tip', { id: requestId, tip });
       await render();
-      const total = document.querySelector('#review-summary .review-total dd');
+      const total = document.querySelector('#review-summary :is(.review-total, .review-strong) dd');
       flash(total, BigInt(tip) > BigInt(before) ? 'down' : 'up');
     } catch (error) {
       tipPicker.show(before);
@@ -2850,9 +4672,18 @@ click('approve', async () => {
   // A consumed/failed review cannot be clicked a second time from a stale popup.
   pending = undefined;
   if (review.kind === 'session') return startSession(review);
+  if (review.kind === 'vault') {
+    await call('approve', { id: requestId, digest: review.digest });
+    // The signature went back to the site: say so on the button for a beat, then step aside.
+    $('approve').textContent = 'Signed';
+    pop($('approve'));
+    // A side panel returns to its home view; a window closes.
+    setTimeout(leave, SENT_CLOSE_MS);
+    return;
+  }
   if (review.kind !== 'transaction') {
     await call('approve', { id: requestId, digest: review.digest });
-    window.close();
+    leave();
     return;
   }
   const c = review.review!.command;
@@ -2888,7 +4719,7 @@ click('approve', async () => {
   // transaction, the site shows its progress, so the window steps aside after a beat.
   if (window.top !== window && sent.stage === 'sent') setTimeout(() => window.close(), SENT_CLOSE_MS);
 });
-click('tx-result-done', async () => window.close());
+click('tx-result-done', async () => leave());
 click('tx-result-explorer', async () => {
   if (sent?.hash) await openExplorer(sent.hash);
 });
@@ -2909,38 +4740,50 @@ function requireSigning() {
     throw Error('Save your recovery phrase before sending. You can reveal it in Settings.');
 }
 // View changes are local. Background approval still owns all signing operations.
-const panels = ['send-panel', 'receive-panel'];
-const triggers: Record<string, string> = {
-  'send-panel': 'show-send',
-  'receive-panel': 'show-receive',
-};
-function openPanel(id: string) {
+const panels = ['send-panel', 'receive-panel', 'token-panel', 'collection-panel', 'settings-panel'];
+/** What gets focus back when a screen closes, and the screen it was opened from. */
+const panelReturn = new Map<string, { trigger: HTMLElement; parent?: string }>();
+function openPanel(id: string, trigger?: HTMLElement) {
+  const parent = panels.find((p) => p !== id && $<HTMLDetailsElement>(p).open);
+  const back = panelReturn.get(id);
+  panelReturn.set(id, {
+    trigger: trigger ?? back?.trigger ?? $('open-accounts'),
+    parent: parent && trigger && $(parent).contains(trigger) ? parent : undefined,
+  });
   $('wallet').scrollTop = 0;
   for (const p of panels) $<HTMLDetailsElement>(p).open = p === id;
   $(id).scrollTop = 0;
   $(id)
-    .querySelectorAll('.flow-content')
+    .querySelectorAll('.flow-content, .flow-shell')
     .forEach((content) => content.scrollTo(0, 0));
   motion.reveal($(id), pointerInput, true);
   requestAnimationFrame(
     () =>
       $<HTMLDetailsElement>(id).open &&
       $<HTMLDetailsElement>(id)
-        .querySelector<HTMLElement>('input,select,button')
+        .querySelector<HTMLElement>(id === 'settings-panel' ? '.settings-title' : 'input,select,button:not(summary *)')
         ?.focus({ preventScroll: true }),
   );
 }
+function closePanel(id: string) {
+  $<HTMLDetailsElement>(id).open = false;
+}
 for (const id of panels)
   $<HTMLDetailsElement>(id).addEventListener('toggle', () => {
-    if (!$<HTMLDetailsElement>(id).open && !panels.some((p) => $<HTMLDetailsElement>(p).open)) {
-      motion.cancel();
-      (id === 'send-panel' && sendTrigger?.isConnected ? sendTrigger : $(triggers[id]!)).focus({
-        preventScroll: true,
-      });
+    if ($<HTMLDetailsElement>(id).open || panels.some((p) => $<HTMLDetailsElement>(p).open)) return;
+    for (const setting of $(id).querySelectorAll<HTMLDetailsElement>('details.setting[open]'))
+      setting.open = false;
+    const back = panelReturn.get(id);
+    if (back?.parent) {
+      $<HTMLDetailsElement>(back.parent).open = true;
+      back.trigger.focus({ preventScroll: true });
+      return;
     }
+    motion.cancel();
+    (back?.trigger?.isConnected ? back.trigger : $('tab-tokens')).focus({ preventScroll: true });
   });
 $('show-send').addEventListener('click', () => openSend());
-click('show-receive', async () => {
+async function showReceive(trigger: HTMLElement) {
   if (!state?.account) return;
   await QRCode.toCanvas($<HTMLCanvasElement>('receive-qr'), state.account.address, {
     width: 240,
@@ -2951,19 +4794,15 @@ click('show-receive', async () => {
   // Keep the encoded bitmap intact; CSS owns the displayed size for each surface.
   $('receive-qr').style.removeProperty('width');
   $('receive-qr').style.removeProperty('height');
-  openPanel('receive-panel');
-});
+  openPanel('receive-panel', trigger);
+}
+click('show-receive', () => showReceive($('show-receive')));
 click('copy-receive', async () => {
   await copyText($('copy-receive'), state!.account!.address);
 });
 click('retry-network', render);
 $('saved-phrase').addEventListener('change', syncControls);
 $('send-asset').addEventListener('change', changeSendAsset);
-$('watch-wallet').addEventListener('click', () => {
-  watchOnly = true;
-  syncViews();
-  $('unlock').scrollTop = 0;
-});
 $('return-unlock').addEventListener('click', () => {
   watchOnly = false;
   syncViews();
@@ -2974,6 +4813,7 @@ $('hide-balance').addEventListener('click', () => {
   privateBalances = !privateBalances;
   $('hide-balance').setAttribute('aria-label', privateBalances ? 'Show balances' : 'Hide balances');
   $('hide-balance').setAttribute('aria-pressed', String(privateBalances));
+  $('hide-balance').querySelector('use')!.setAttribute('href', privateBalances ? '#i-eye-off' : '#i-eye');
   paintBalances();
 });
 for (const id of Object.keys(onboardingHints)) {
@@ -3023,7 +4863,7 @@ for (const toggle of document.querySelectorAll<HTMLButtonElement>('[data-passwor
     input.focus({ preventScroll: true });
     if (start !== null && end !== null) input.setSelectionRange(start, end);
   });
-const tabs = [...document.querySelectorAll<HTMLButtonElement>('[role=tab]')];
+const tabs = [...document.querySelectorAll<HTMLButtonElement>('.bottom-nav [role=tab]')];
 function selectTab(tab: HTMLButtonElement, animate = false) {
   if (tab.getAttribute('aria-selected') === 'true') return;
   $('wallet').dataset.view = tab.dataset.tab!.replace('-tab', '');
@@ -3057,39 +4897,170 @@ for (const tab of tabs) {
   });
 }
 $('backup-reminder').addEventListener('click', () => {
-  selectTab($<HTMLButtonElement>('tab-settings'));
+  openSettings($('backup-reminder'));
   $<HTMLDetailsElement>('reveal-panel').open = true;
-  $('reveal-password').focus();
+  requestAnimationFrame(() => $('reveal-password').focus());
 });
+function openSettings(trigger: HTMLElement = $('open-accounts')) {
+  $<HTMLDialogElement>('account-drawer').close();
+  openPanel('settings-panel', trigger);
+}
+// Inside Settings, one page at a time: the pages share a details name, so opening one closes the
+// one before.
+// A page covers the list from its top: the list scrolls back up while it is open, and returns to
+// where it was when the page closes.
+let settingsScroll = 0;
+for (const page of document.querySelectorAll<HTMLDetailsElement>('#settings-tab details.setting'))
+  page.addEventListener('toggle', () => {
+    const list = $('settings-tab');
+    if (page.open) {
+      if (list.scrollTop) settingsScroll = list.scrollTop;
+      list.scrollTop = 0;
+      page.scrollTop = 0;
+    } else if (!list.querySelector('details.setting[open]')) {
+      list.scrollTop = settingsScroll;
+      settingsScroll = 0;
+    }
+  });
+
+/* Home: tokens, then collectibles (collections and Quarks), small tabs under the actions. */
+/* Collectibles: Collections and Quarks fold away, each remembered per browser, so a long list of
+ * one does not push the other out of reach. */
+const FOLDED_KEY = 'qlyphs-collectibles-folded';
+for (const id of ['collections-block', 'quarks-block']) {
+  const block = $<HTMLDetailsElement>(id);
+  try {
+    if ((JSON.parse(localStorage.getItem(FOLDED_KEY) ?? '[]') as unknown[]).includes(id)) block.open = false;
+  } catch {
+    // Not remembered: the section starts open.
+  }
+  block.addEventListener('toggle', () => {
+    try {
+      const folded = ['collections-block', 'quarks-block'].filter((b) => !$<HTMLDetailsElement>(b).open);
+      localStorage.setItem(FOLDED_KEY, JSON.stringify(folded));
+    } catch {
+      // Kept for this page only.
+    }
+  });
+}
+const homeTabs = [$<HTMLButtonElement>('home-tokens'), $<HTMLButtonElement>('home-collectibles')];
+function selectHome(tab: HTMLButtonElement) {
+  for (const t of homeTabs) {
+    const on = t === tab;
+    t.setAttribute('aria-selected', String(on));
+    t.tabIndex = on ? 0 : -1;
+    $(t.getAttribute('aria-controls')!).hidden = !on;
+  }
+}
+for (const tab of homeTabs) {
+  tab.addEventListener('click', () => selectHome(tab));
+  tab.addEventListener('keydown', (e) => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+    e.preventDefault();
+    const step = e.key === 'ArrowRight' ? 1 : homeTabs.length - 1;
+    const next = homeTabs[(homeTabs.indexOf(tab) + step) % homeTabs.length]!;
+    selectHome(next);
+    next.focus();
+  });
+}
+
+/* Account drawer: every account as an avatar, then add, manage and settings. */
+const drawer = $<HTMLDialogElement>('account-drawer');
+function paintDrawer() {
+  const all = state?.accounts ?? [];
+  $('drawer-accounts').replaceChildren(
+    ...all.map((account) => {
+      const selected = account.owner === state?.account?.owner;
+      const button = node('button', '', 'drawer-account') as HTMLButtonElement;
+      button.type = 'button';
+      button.setAttribute('aria-label', account.name + (selected ? ', selected' : ''));
+      if (selected) button.setAttribute('aria-current', 'true');
+      const avatar = node('span', '', 'account-avatar');
+      avatar.setAttribute('aria-hidden', 'true');
+      paintAccountAvatar(avatar, account.owner);
+      button.append(avatar, node('span', account.name, 'drawer-name'));
+      button.addEventListener(
+        'click',
+        () =>
+          void task(async () => {
+            drawer.close();
+            if (selected) return;
+            await call('account-select', { owner: account.owner });
+            await render();
+            message(`Switched to ${account.name}.`, false, true);
+            arrive($('open-accounts'));
+            if (state?.unlocked) await balances();
+          }, button),
+      );
+      return button;
+    }),
+  );
+  const count = all.length;
+  $<HTMLButtonElement>('drawer-add').disabled = busy || !state?.unlocked || !state.backed || count >= 20;
+}
+function openDrawer() {
+  if (busy || requestId || drawer.open) return;
+  paintDrawer();
+  drawer.showModal();
+  ($('drawer-accounts').querySelector<HTMLElement>('[aria-current]') ?? $('close-drawer')).focus({
+    preventScroll: true,
+  });
+}
+$('close-drawer').addEventListener('click', () => drawer.close());
+drawer.addEventListener('click', (event) => {
+  // A click on the dimmed page beside the rail closes the drawer.
+  if (event.target === drawer) drawer.close();
+});
+drawer.addEventListener('close', () => {
+  if (!document.querySelector('#wallet details.flow[open]') && !$<HTMLDialogElement>('accounts-dialog').open)
+    $('open-accounts').focus({ preventScroll: true });
+});
+/* The drawer's +: another account from this wallet's recovery phrase. Another phrase means
+ * another wallet: forget this one (Forgot password) and import or create it. */
+$('drawer-add').addEventListener('click', () => {
+  drawer.close();
+  $('add-account').click();
+});
+$('drawer-edit').addEventListener('click', () => {
+  drawer.close();
+  showAccounts();
+});
+$('drawer-settings').addEventListener('click', () => openSettings());
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (document.querySelector('dialog[open]')) return;
     const id = panels.find((p) => $<HTMLDetailsElement>(p).open);
-    if (id) {
-      $<HTMLDetailsElement>(id).open = false;
-      (id === 'send-panel' && sendTrigger?.isConnected ? sendTrigger : $(triggers[id]!)).focus({
-        preventScroll: true,
-      });
+    if (!id) return;
+    // A settings page closes first, back to the settings list.
+    const page = $(id).querySelector<HTMLDetailsElement>('details.setting[open]');
+    if (page) {
+      page.open = false;
+      page.querySelector('summary')!.focus({ preventScroll: true });
+      return;
     }
+    closePanel(id);
   }
 });
 function syncPreferences() {
   $('expand-wallet').hidden = !['popup', 'sidebar'].includes(surface) || !$('recovery').hidden;
-  $('open-menu').hidden = !state?.account || $('wallet').hidden || !!requestId;
-  $<HTMLButtonElement>('open-menu').disabled = busy;
-  $('menu-lock').hidden = !state?.unlocked;
-  $('menu-open-tab').hidden = surface === 'tab';
   $('display-settings').hidden = !state?.display?.sidebar;
   syncNetworkSwitch();
   for (const mode of ['sidebar', 'popup'])
     $('display-' + mode).setAttribute('aria-pressed', String(state?.display?.mode === mode));
+  $('display-value').textContent = state?.display?.mode === 'popup' ? 'Popup' : 'Side panel';
+  syncSurfaceToggle();
+  $('sites-count').textContent = String(state?.sites?.length ?? 0);
+  // Settings opens on the account it applies to.
+  $('settings-account-name').textContent = state?.name ?? 'Account 1';
+  $('settings-account-address').textContent = state?.account ? short(state.account.address) : '';
+  if (state?.account) paintAccountAvatar($('settings-avatar'), state.account.owner);
   $('unlock-passkey').hidden = !state?.passkey || !!state?.unlockSetup;
   $('passkey-divider').hidden = !state?.passkey || !!state?.unlockSetup;
   $('passkey-tab-hint').hidden = !state?.passkey || !!state?.unlockSetup || surface !== 'popup';
   $('passkey-status').textContent = state?.passkey
-    ? 'Linked · All wallets on this device'
-    : 'Add your device or password manager';
-  $('passkey-badge').textContent = state?.passkey ? 'ENABLED' : 'OPTIONAL';
+    ? 'On · Linked for all wallets on this device'
+    : 'Off · Your password unlocks the wallet';
+  $('passkey-badge').textContent = state?.passkey ? 'On' : 'Off';
   $('manage-passkey').textContent = state?.passkey
     ? 'Manage in a dedicated tab'
     : 'Set up in a dedicated tab';
@@ -3105,12 +5076,7 @@ function syncPreferences() {
     on = !!n?.enabled && !!n?.permitted;
   $('notification-toggle').setAttribute('aria-checked', String(on));
   $<HTMLButtonElement>('notification-toggle').disabled = busy || !n?.available;
-  $('notification-status').textContent =
-    n?.enabled && !n.permitted
-      ? 'Permission removed · Enable to reconnect'
-      : on
-        ? 'On · Transaction updates'
-        : 'Off · Your choice';
+  $('notification-status').textContent = n?.enabled && !n.permitted ? 'Paused' : on ? 'On' : 'Off';
   $('test-notification').hidden = !on;
 }
 async function openWalletTab(view?: string) {
@@ -3125,6 +5091,70 @@ async function openExplorer(hash?: string) {
 }
 click('open-explorer', () => openExplorer());
 click('expand-wallet', () => openWalletTab());
+/** The header's popup ↔ side panel control. Chrome opens a side panel only inside the click, so
+ * the window is known beforehand; the toolbar icon then keeps opening the chosen surface. */
+const sidePanel = browser.sidePanel;
+let windowId: number | undefined;
+if (sidePanel && surface === 'popup')
+  void browser.windows.getCurrent?.().then((w) => (windowId = w.id)).catch(() => undefined);
+/** The user is in the middle of something a site's request must not throw away: an operation, a
+ * send or settings screen, a dialog, or a password being typed. The request waits for its popup. */
+function inputInProgress() {
+  return (
+    busy ||
+    $<HTMLDetailsElement>('send-panel').open ||
+    $<HTMLDetailsElement>('settings-panel').open ||
+    !!document.querySelector('dialog[open]') ||
+    (!$('unlock').hidden && !!value('password'))
+  );
+}
+/** The side panel's channel to the background: on its home view it takes a site's request (unless
+ * the recovery phrase or onboarding is on screen); on a request it keeps the review alive. */
+if (sidePanel && (surface === 'sidebar' || inPanel)) {
+  const port = browser.runtime.connect({ name: 'qlyphs-panel' });
+  void browser.windows.getCurrent?.()
+    .then((w) => port.postMessage({ window: w.id }))
+    .catch(() => undefined);
+  port.onMessage.addListener((message) => {
+    const m = message as { action?: unknown; request?: unknown; key?: unknown };
+    if (inPanel && typeof m?.key === 'string') return resolvePanelKey(m.key);
+    if (m?.action !== 'open-request' || typeof m.request !== 'string' || !/^[0-9a-f-]{36}$/.test(m.request))
+      return;
+    const free =
+      !requestId && !!state?.account && $('recovery').hidden && (!$('wallet').hidden || !$('unlock').hidden) &&
+      !inputInProgress();
+    port.postMessage({ accepted: free });
+    if (free)
+      location.replace(
+        browser.runtime.getURL('ui.html?surface=sidebar&request=' + encodeURIComponent(m.request)),
+      );
+  });
+}
+function syncSurfaceToggle() {
+  const toggle = $('toggle-surface');
+  toggle.hidden =
+    !state?.display?.sidebar || !['popup', 'sidebar'].includes(surface) || !state?.account || !$('recovery').hidden;
+  const label = surface === 'sidebar' ? 'Open as popup' : 'Open in side panel';
+  toggle.setAttribute('aria-label', label);
+  toggle.title = label;
+}
+$('toggle-surface').addEventListener('click', () => {
+  if (busy) return;
+  if (surface === 'popup') {
+    if (windowId === undefined || !sidePanel) return;
+    // Opened first, synchronously in the gesture; the preference follows.
+    void sidePanel
+      .open({ windowId })
+      .then(() => call('display-mode', { mode: 'sidebar' }))
+      .then(() => window.close())
+      .catch((error: Error) => message(error.message || 'The side panel could not open.', true));
+    return;
+  }
+  void call('display-mode', { mode: 'popup' })
+    .then(() => browser.action?.openPopup?.())
+    .catch(() => undefined)
+    .finally(() => window.close());
+});
 for (const mode of ['sidebar', 'popup'])
   click('display-' + mode, async () => {
     await call('display-mode', { mode });
@@ -3140,14 +5170,199 @@ for (const mode of ['sidebar', 'popup'])
   });
 /** The network switch (switchable builds): in Settings, on the welcome screen and next to a
  * connection error, so a wallet is never stuck on a network it cannot reach. */
+/** Test networks stay out of the way until asked for, as other wallets do. Per browser. */
+const SHOW_TEST_KEY = 'qlyphs.showTestNetworks';
+let showTestNetworks = (() => {
+  try {
+    return localStorage.getItem(SHOW_TEST_KEY) === '1';
+  } catch {
+    return false;
+  }
+})();
+$('show-tx-details').setAttribute('aria-checked', String(showDetails));
+$('show-tx-details').addEventListener('click', () => {
+  showDetails = !showDetails;
+  try {
+    localStorage.setItem(DETAILS_KEY, showDetails ? '1' : '0');
+  } catch {
+    // Not remembered: the choice holds for this page.
+  }
+  $('show-tx-details').setAttribute('aria-checked', String(showDetails));
+});
+$('show-prices').setAttribute('aria-checked', String(showPrices));
+$('show-prices').addEventListener('click', () => {
+  showPrices = !showPrices;
+  try {
+    localStorage.setItem(PRICES_KEY, showPrices ? '1' : '0');
+  } catch {
+    // Not remembered: the choice holds for this page.
+  }
+  $('show-prices').setAttribute('aria-checked', String(showPrices));
+  if (!showPrices) {
+    qtcUsd = undefined;
+    qtcCharts.clear();
+  }
+  paintBalances();
+  if ($<HTMLDetailsElement>('token-panel').open) paintToken();
+  void loadQtcPrice();
+});
+/* Clear activity: finished operations leave this browser's history after a confirmation; the
+ * background keeps those still in progress and those a mint session counts on. */
+const FINISHED = ['finalized', 'expired', 'cancelled-before-broadcast'];
+const clearDialog = $<HTMLDialogElement>('clear-dialog');
+/** Called from resetAccountView, which may run before `clearDialog` is set. */
+function closeClearActivity() {
+  const dialog = $<HTMLDialogElement>('clear-dialog');
+  if (dialog.open) dialog.close();
+}
+$('clear-activity').addEventListener('click', () => {
+  const finished = history.filter((tx) => FINISHED.includes(tx.status)).length;
+  if (!finished) {
+    message('No finished operations to clear.', false, true);
+    return;
+  }
+  $('clear-text').textContent = `This removes ${finished} finished operation${finished === 1 ? '' : 's'} of ${
+    state?.name ?? 'this account'
+  } from this browser.`;
+  clearDialog.showModal();
+  $('cancel-clear-activity').focus();
+});
+clearDialog.addEventListener('close', () => $('clear-activity').focus({ preventScroll: true }));
+clearDialog.addEventListener('click', (event) => {
+  if (event.target === clearDialog) clearDialog.close();
+});
+$('cancel-clear-activity').addEventListener('click', () => clearDialog.close());
+onClick('confirm-clear-activity', async () => {
+  const { removed } = await call<{ removed: number }>('clear-history');
+  clearDialog.close();
+  seenActivity.clear();
+  message(removed ? `Cleared ${removed} operation${removed === 1 ? '' : 's'}.` : 'Nothing to clear.', false, true);
+  await balances(true);
+});
+$('show-test-networks').addEventListener('click', () => {
+  showTestNetworks = !showTestNetworks;
+  try {
+    localStorage.setItem(SHOW_TEST_KEY, showTestNetworks ? '1' : '0');
+  } catch {
+    // Not remembered: the choice holds for this page.
+  }
+  syncNetworkSwitch();
+});
+function paintEndpoints() {
+  const e = state?.endpoints;
+  const test = state?.network?.active === 'development' || (!state?.network?.switchable && !MAINNET_BUILD);
+  $('network-settings').hidden = !e;
+  if (!e) return;
+  const tag = (key: keyof Endpoints) => (e.custom[key] ? ' · Custom' : '');
+  pairs('endpoint-rows', [
+    ['Node' + tag('rpc'), e.rpc],
+    ...(test
+      ? ([
+          ['Indexer' + tag('api'), e.api],
+          ['Explorer' + tag('explorer'), e.explorer],
+        ] as [string, string][])
+      : []),
+  ]);
+  $('edit-endpoints').hidden = !e.editable || !$('endpoints-form').hidden;
+  $('endpoint-api-field').hidden = !test;
+  $('endpoint-explorer-field').hidden = !test;
+  $('reset-endpoints').hidden = !Object.keys(e.custom).length;
+}
+function fillEndpoints(values: { rpc: string; api: string; explorer: string }) {
+  $<HTMLInputElement>('endpoint-rpc').value = values.rpc;
+  $<HTMLInputElement>('endpoint-api').value = values.api;
+  $<HTMLInputElement>('endpoint-explorer').value = values.explorer;
+}
+const endpointsHint = $('endpoints-hint').textContent!.trim();
+function endpointsFeedback(text = endpointsHint, error = false) {
+  $('endpoints-hint').textContent = text;
+  $('endpoints-hint').classList.toggle('field-error', error);
+}
+$('edit-endpoints').addEventListener('click', () => {
+  const e = state?.endpoints;
+  if (!e) return;
+  fillEndpoints(e);
+  endpointsFeedback();
+  $('endpoints-form').hidden = false;
+  $('edit-endpoints').hidden = true;
+  $('endpoint-rpc').focus();
+});
+$('cancel-endpoints').addEventListener('click', () => {
+  $('endpoints-form').hidden = true;
+  endpointsFeedback();
+  paintEndpoints();
+  $('edit-endpoints').focus();
+});
+/** Save new endpoints: the browser's consent first (inside the click), then the wallet proves them. */
+function saveEndpoints(endpoints: Endpoints | null, trigger: HTMLElement) {
+  const name = state?.network?.active ?? (MAINNET_BUILD ? 'mainnet' : 'development');
+  let hosts: string[] = [];
+  try {
+    if (endpoints) hosts = hostPatterns(checkEndpoints(name, endpoints, LOCAL_NETWORK));
+  } catch (error) {
+    endpointsFeedback((error as Error).message, true);
+    return;
+  }
+  const consent = hosts.length
+    ? (browser.permissions?.request({ origins: hosts }) ?? Promise.resolve(false))
+    : Promise.resolve(true);
+  void task(async () => {
+    if (!(await consent)) {
+      endpointsFeedback('Qlyphs needs your permission to reach this address.', true);
+      return;
+    }
+    try {
+      await call('set-endpoints', { network: name, endpoints });
+    } catch (error) {
+      endpointsFeedback(uiError(error), true);
+      return;
+    }
+    await reloadEndpoints();
+    $('endpoints-form').hidden = true;
+    endpointsFeedback();
+    resetNetworkView();
+    await render();
+    // Back where the change was made: the network page, now showing the new endpoints.
+    if (!$('wallet').hidden) {
+      openSettings();
+      $<HTMLDetailsElement>('network-settings').open = true;
+    }
+    if (state?.unlocked) await balances(true);
+    message(endpoints ? 'Network endpoints updated.' : 'Default endpoints restored.', false, true);
+  }, trigger);
+}
+$('endpoints-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const e = state?.endpoints;
+  if (!e) return;
+  const test = !$('endpoint-api-field').hidden;
+  // Only what differs from the compiled endpoints is stored: the rest follows the build.
+  const entered: Endpoints = {};
+  const rpc = value('endpoint-rpc').trim(),
+    api = value('endpoint-api').trim(),
+    explorer = value('endpoint-explorer').trim();
+  if (rpc && rpc !== e.defaults.rpc) entered.rpc = rpc;
+  if (test && api && api !== e.defaults.api) entered.api = api;
+  if (test && explorer && explorer !== e.defaults.explorer) entered.explorer = explorer;
+  saveEndpoints(Object.keys(entered).length ? entered : null, (event as SubmitEvent).submitter as HTMLElement);
+});
+$('reset-endpoints').addEventListener('click', () => saveEndpoints(null, $('reset-endpoints')));
 function syncNetworkSwitch() {
   const switchable = !!state?.network?.switchable;
-  $('network-settings').hidden = !switchable;
+  $('network-choices').hidden = !switchable;
+  const testActive = state?.network?.active === 'development';
+  $('choice-test-network').hidden = !showTestNetworks && !testActive;
+  $('show-test-networks').setAttribute('aria-checked', String(showTestNetworks || testActive));
+  $<HTMLButtonElement>('show-test-networks').disabled = testActive;
+  paintEndpoints();
   for (const label of document.querySelectorAll<HTMLElement>('[data-network-name]'))
     label.textContent =
       state?.network?.active === 'mainnet' ? 'Quantus Mainnet' : TESTNET ? 'Quantus Testnet' : 'Quantus Devnet';
+  // Outside Settings the test network is offered only once test networks are shown.
   for (const group of document.querySelectorAll<HTMLElement>('[data-network-switch]'))
-    group.hidden = !switchable;
+    group.hidden = !switchable || (!showTestNetworks && !testActive);
+  $('network-value').textContent =
+    state?.network?.active === 'mainnet' ? 'Mainnet' : TESTNET ? 'Testnet' : 'Development';
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-switch-network]')) {
     button.setAttribute('aria-pressed', String(state?.network?.active === button.dataset.switchNetwork));
     button.disabled = busy;
@@ -3175,108 +5390,6 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-switch-
       message(`Now on ${name === 'mainnet' ? 'Quantus mainnet' : TESTNET ? 'the test network' : 'the development network'}.`, false, true);
     }, button);
   });
-const walletMenu = $<HTMLDialogElement>('wallet-menu');
-let menuExit: Animation | undefined;
-function closeWalletMenu(animate = false) {
-  if (!walletMenu.open) return;
-  menuExit?.cancel();
-  if (!animate || matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    walletMenu.close();
-    return;
-  }
-  const current = getComputedStyle(walletMenu);
-  const from = { transform: current.transform, opacity: current.opacity };
-  walletMenu.dataset.closing = 'true';
-  const exit = walletMenu.animate([from, { transform: 'translateX(8px)', opacity: 0 }], {
-    duration: 100,
-    easing: 'ease-out',
-    fill: 'forwards',
-  });
-  menuExit = exit;
-  void exit.finished
-    .then(() => {
-      if (menuExit === exit) walletMenu.close();
-    })
-    .catch(() => {});
-}
-$('open-menu').addEventListener('click', (event) => {
-  if (busy || walletMenu.open) return;
-  menuExit?.cancel();
-  menuExit = undefined;
-  delete walletMenu.dataset.closing;
-  walletMenu.dataset.pointer = String(event.detail > 0);
-  for (const [id, tab] of [
-    ['menu-assets', 'tab-tokens'],
-    ['menu-activity', 'tab-activity'],
-    ['menu-settings', 'tab-settings'],
-  ]) {
-    if ($(tab!).getAttribute('aria-selected') === 'true')
-      $(id!).setAttribute('aria-current', 'page');
-    else $(id!).removeAttribute('aria-current');
-  }
-  $('menu-open-tab').hidden = surface === 'tab';
-  $('open-menu').setAttribute('aria-expanded', 'true');
-  $<HTMLButtonElement>('menu-accounts').disabled = !state?.unlocked;
-  $('menu-accounts').title = state?.unlocked ? '' : 'Unlock to manage accounts';
-  walletMenu.showModal();
-  walletMenu.querySelector('.wallet-menu-content')!.scrollTop = 0;
-  $('close-menu').focus({ preventScroll: true });
-});
-$('close-menu').addEventListener('click', (event) => closeWalletMenu(event.detail > 0));
-function outsideMenu(event: MouseEvent) {
-  const box = walletMenu.getBoundingClientRect();
-  return (
-    event.clientX < box.left ||
-    event.clientX > box.right ||
-    event.clientY < box.top ||
-    event.clientY > box.bottom
-  );
-}
-let menuBackdropDown = false;
-walletMenu.addEventListener('pointerdown', (event) => {
-  menuBackdropDown = event.target === walletMenu && outsideMenu(event);
-});
-walletMenu.addEventListener('click', (event) => {
-  if (menuBackdropDown && event.target === walletMenu && outsideMenu(event)) closeWalletMenu(true);
-  menuBackdropDown = false;
-});
-walletMenu.addEventListener('cancel', (event) => {
-  event.preventDefault();
-  closeWalletMenu();
-});
-walletMenu.addEventListener('close', () => {
-  if (walletMenu.open) return;
-  menuExit?.cancel();
-  menuExit = undefined;
-  delete walletMenu.dataset.closing;
-  $('open-menu').setAttribute('aria-expanded', 'false');
-});
-for (const [id, tab] of [
-  ['menu-assets', 'tab-tokens'],
-  ['menu-activity', 'tab-activity'],
-  ['menu-settings', 'tab-settings'],
-] as const)
-  $(id).addEventListener('click', () => {
-    closeWalletMenu();
-    selectTab($<HTMLButtonElement>(tab), true);
-    $(tab.replace('tab-', '') + '-tab').focus({ preventScroll: true });
-  });
-$('menu-accounts').addEventListener('click', () => {
-  closeWalletMenu();
-  showAccounts();
-});
-$('menu-explorer').addEventListener('click', () => {
-  closeWalletMenu();
-  void task(() => openExplorer());
-});
-$('menu-open-tab').addEventListener('click', () => {
-  closeWalletMenu();
-  void task(() => openWalletTab());
-});
-$('menu-lock').addEventListener('click', () => {
-  closeWalletMenu();
-  $('lock').click();
-});
 click('manage-passkey', () => openWalletTab('settings'));
 async function usePasskey(enroll: boolean) {
   if (surface !== 'tab') {
@@ -3370,7 +5483,12 @@ window.addEventListener('pagehide', () => {
   if (requestId && (sessionStarting || (minting && minting.state !== 'ended')))
     void Promise.resolve()
       .then(() =>
-        browser.runtime.sendMessage({ action: 'session-leave', request: requestId, page: PAGE }),
+        browser.runtime.sendMessage({
+          action: 'session-leave',
+          request: requestId,
+          page: PAGE,
+          ...(panelKeyValue ? { panelKey: panelKeyValue } : {}),
+        }),
       )
       .catch(() => undefined);
   for (const restore of copyTimers.values()) restore();
@@ -3383,7 +5501,8 @@ void task(async () => {
   await render();
   if (!requestId && state?.account) await balances();
   const tab = params.get('view');
-  if (tab === 'settings' || tab === 'activity') selectTab($<HTMLButtonElement>('tab-' + tab));
+  if (tab === 'activity' || tab === 'explore') selectTab($<HTMLButtonElement>('tab-' + tab));
+  if (tab === 'settings' && !$('wallet').hidden) openSettings();
   if (params.get('security') === 'passkey') {
     $<HTMLDetailsElement>('passkey-panel').open = true;
   }
@@ -3412,7 +5531,6 @@ setInterval(() => {
         JSON.stringify(next.accounts) !== JSON.stringify(state?.accounts);
       if (switched) {
         passkeyAbort?.abort();
-        addingWallet = false;
         resetAccountView();
         // The progress stays in place: the session poll reports the account change.
         if (minting) state = next;
@@ -3431,7 +5549,6 @@ setInterval(() => {
           populateAccounts();
       }
       if (changed && !next.unlocked) {
-        addingWallet = false;
         passkeyAbort?.abort();
         $('phrase').textContent = '';
         $('recovery').hidden = true;
@@ -3450,7 +5567,6 @@ setInterval(() => {
       if (minting) minting = endedLocally(minting, 'restarted', Date.now());
       paintSession();
       if (state) state = { ...state, unlocked: false, unlockSetup: null };
-      addingWallet = false;
       passkeyAbort?.abort();
       resetAccountView();
       syncViews();

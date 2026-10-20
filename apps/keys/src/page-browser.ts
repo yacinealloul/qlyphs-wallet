@@ -4,10 +4,13 @@ import { boot } from './host.ts';
 import type { Host } from './host.ts';
 import type { DocToHub, HubToDoc } from './hub.ts';
 import { RUNTIME_ID } from './hub.ts';
+import { persistOnceWalletExists } from './persist.ts';
 import { KEYS_CHANNEL } from './protocol.ts';
 import { get } from './storage.ts';
 
 const framed = window.top !== window;
+// After each call of the top-level page: the first one that finds a wallet asks to keep its storage.
+const keepWallet = framed ? null : persistOnceWalletExists(navigator.storage, get);
 let host: Promise<Host> | undefined;
 // Inside a confirmation overlay, calls wait for the port the host page hands over.
 let doc: MessagePort | null = null;
@@ -31,7 +34,10 @@ if (framed)
   });
 function sendMessage(value: unknown): Promise<unknown> {
   const message = JSON.parse(JSON.stringify(value)) as unknown;
-  if (!framed) return (host ??= boot()).then((h) => h.call(message));
+  if (!framed)
+    return (host ??= boot())
+      .then((h) => h.call(message))
+      .finally(() => void keepWallet?.());
   return new Promise((resolve) => {
     const m: DocToHub = { type: 'call', callId: nextCall++, message };
     waiting.set(m.callId, resolve);

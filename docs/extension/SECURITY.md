@@ -6,11 +6,15 @@ The extension imports the active QLYP-v1 command parser, canonical encoders, Qua
 
 ## Privilege boundaries
 
-The MAIN-world provider and isolated content script are untrusted inputs. They carry typed intents and public responses only. The browser-owned background context alone opens the encrypted vault, reconstructs operations and calls the packaged official signer. Only the extension's `ui.html` can access privileged UI messages. Confirmation requests have background-generated UUIDs and are bound to their extension window; website fields claiming an origin are ignored.
+The MAIN-world provider and isolated content script are untrusted inputs. They carry typed intents and public responses only. The browser-owned background context alone opens the encrypted vault, reconstructs operations and calls the packaged official signer. Only the extension's `ui.html` can access privileged UI messages. Confirmation requests have background-generated UUIDs and are bound to their extension window; website fields claiming an origin are ignored. When the wallet's Chrome side panel is open on its home view in the asking tab's window, a site's request (connect, transaction, sign-in or mint session) opens there instead of in a new window. Chrome gives a side panel's messages no window or document of their own, so the binding is a key: once the panel page showing the request connects its channel from that window, the background hands it a random key, and reading, re-tipping, approving or rejecting that request requires a tabless sender at the panel's URL carrying that key. A mint session approved there is bound to the same key: its progress reads need it, and closing the panel or leaving that page stops signing, as closing the progress window does. Closing or leaving the page also cancels a pending review; a panel that does not take the request within 1.5 s, or whose page does not connect within 10 s, leaves it to a window or cancels it.
 
 Connection grants identify origin, owner and genesis and disclose accounts only. Actual signing repeats live-document/permission/account/epoch/network/nonce/sequence/ticket checks (for a Keys mint session, the live popup channel in place of the live document). A rejected, expired or consumed request cannot authorize another operation. Top-frame-only injection is reinforced by checking browser sender frame ID. Same-origin hostile script can manipulate its own public page/provider responses, but cannot approve a privileged request or obtain signing material.
 
+Refusals cross to a site as a public error code, an outcome and, when the wallet knows it, a reason code from the fixed list in `packages/provider/src/reasons.ts`. The wallet chooses the reason from exact matches of its own fixed check messages (`apps/extension/src/reasons.ts`); a message it does not know gives no reason. No message, status text or body from a service, and nothing from the request, is reflected. Providers and the SDK drop any reason that is not on the list and derive `retryable` themselves, never from the wire, and never as true for an unknown outcome.
+
 A [site sign-in](PROVIDER.md#site-sign-in) is the one signature that is not a transaction. It covers a fixed, canonical challenge only, under its own FIPS 204 signing context (`QLYPHS_SITE_SESSION_V1`, while transactions use `QUANTUS_EXTRINSIC`), so neither can be replayed as the other. The wallet compares the challenge's origin with the browser-reported origin of the connected document, its genesis and account with its own, and its expiry with its own clock (at most 15 minutes ahead), before a review opens and again at signing. The signing key is derived exactly as for transactions; the copy of its secret key used for the signature is wiped and the derivation handle freed right after.
+
+Development builds only add a second kind: a [Solana vault authorization](PROVIDER.md#solana-vault-authorizations-development-builds), a fixed 296-byte message signed under its own context (`qlyphs/solana-vault/v1`). The wallet signs it only for compiled deployments (Solana devnet genesis and program id; a development build given a wQTC program and mint adds that program, the only one whose redeems it signs) and only when the vault it names is derived from the active account's own public key, so a site cannot obtain a signature over arbitrary bytes or for another vault. The checks run before the review opens and again at signing; the secret key copy is wiped and the handle freed right after. Mainnet, switchable and testnet builds neither forward nor serve these requests.
 
 Chrome runs an MV3 module service worker. Firefox runs its supported MV3 module background scripts with an event-page lifecycle, not a service worker. Both execute the same controller. All executable JS and WASM are in the installation package; no remote code, eval, dynamically generated function, analytics or crash-report integration is enabled. CSP permits packaged WASM compilation, not generic JavaScript eval.
 
@@ -20,11 +24,11 @@ Vault v2 uses Web Crypto AES-256-GCM with fresh random 16-byte salt and 12-byte 
 
 The password is not persisted. `storage.local` contains encrypted vault data and public manifests/grants/transaction records; `storage.sync` is never used. Chrome storage access is restricted to trusted contexts where supported. Decrypted UTF-8 bytes are memory-only and wiped at lock. Browser process isolation and JavaScript garbage collection do **not** guarantee zeroization of all string copies or protect against a compromised OS, debugger or malicious privileged extension update.
 
-The legacy scheme remains ML-DSA-87 at `m/44'/189189'/0'/0'/0'`. Changing SDK, glue, derivation or signature schema requires explicit compatibility vectors and migration review. Build fails when the installed official SDK is not 0.3.1. The lockfile binds the dependency tree. No automatic import of web-page secrets occurs.
+The legacy scheme remains ML-DSA-87 at `m/44'/189189'/0'/0'/0'`. Changing SDK, glue, derivation or signature schema requires explicit compatibility vectors and migration review. Build fails when the installed official SDK is not 1.0.0. The move from 0.3.1 kept every derived key and address identical; signatures became hedged (FIPS 204 randomized mode), so two signatures of the same payload differ and no extrinsic hash repeats. Verifiers are unaffected: a hedged signature verifies like a deterministic one. The lockfile binds the dependency tree. No automatic import of web-page secrets occurs.
 
 ## Lifecycle, concurrency, and uncertain broadcasts
 
-Unlocking establishes an absolute five-minute deadline. Privileged signing checks the deadline and session epoch at actual use; alarms are only a supplementary cleanup mechanism. Dapp traffic cannot extend the deadline. A terminated background starts locked and never reconstructs an unlocked session from storage. Pending approvals are memory-only and are invalidated on loss of their context. A mint session's signing deadline is the earlier of its approved duration and this unlock deadline, fixed at approval; re-entering the password does not extend it.
+Unlocking establishes an absolute fifteen-minute deadline. Privileged signing checks the deadline and session epoch at actual use; alarms are only a supplementary cleanup mechanism. Dapp traffic cannot extend the deadline. While unlocked, the background keeps itself awake with a trivial extension call every 20 seconds, so the browser's idle shutdown does not end the session early; this stops at lock and never extends the deadline. A terminated background starts locked and never reconstructs an unlocked session from storage. Pending approvals are memory-only and are invalidated on loss of their context. A mint session's signing deadline is the earlier of its approved duration and this unlock deadline, fixed at approval; re-entering the password does not extend it.
 
 A mutex serializes transaction preparation/signing for the account. Saved unresolved transactions prevent the next nonce. One exception exists: a running mint session may sign its next lot payment while its previous payment is in a block but not final, only after the wallet proves that payment's block on the ancestry of the block the next payment is born at, from headers that hash to the hash both witnesses attest for that block, with the account nonce there past it, and only when both witnesses attest, at that block, the account's token balance the session expects. A session never signs while one of its payments is outside a block or its outcome is not yet verified, and after it ends each of its payments that may have been sent blocks the account under this rule until history shows it final or expired, whatever the session recorded for it. The wallet computes and persists the signed transaction hash, intent, nonce and mortal validity boundary before network submission. It then persists an uncertain-broadcast state before touching the submission API. Neither restart nor a lost response automatically signs or pays again. Public history reconciles against the configured service. The wallet does not treat a lost reply as proof of submission failure. A never-broadcast record can be cancelled safely; an ambiguous record needs observed finality or validity expiry before a new operation. This conservative design favors blocking over duplicate payment.
 
@@ -55,6 +59,68 @@ invalid. Right before signing the context must still be X. A lot taken in betwee
 before signing when the API's live view shows it; one taken after signing makes the transaction
 fail on chain before its payment, so only the network fee is spent.
 Mint sessions take each lot from fresh tip attestations without a lot expectation: the next lot is whatever attested state names, within the approved terms. A payment's outcome comes from attested state at its inclusion block: minted (the right is anchored at the payment, the minted amount advanced and the account received the lot), lost race (the right was used before the payment, by another buyer's mint or a transaction that only used it, and the account received nothing), or anything else, which stops the session. The last lot leaves no right to place its use at the payment's position, and the wallet does not take its node's word for whose use it was, so a session never counts the last lot itself: it ends `unverified` with that payment held at its worst case, and the wallet's history (Activity) gives its result. A lost race beyond the retries the terms allow (`maxAttempts - maxLots`) ends the session (`race-lost`), so with no retry the first one does. No outcome uses the position the wallet's node reports for a payment until the wallet proves it from a block both witnesses attested: each header down to the inclusion block hashes (Poseidon2) to the hash its child names, the block's body matches its header's extrinsics root exactly, and the payment's signed bytes are the extrinsic at that index. Node data that fails a check ends the session `unverified` for good, a node that does not answer ends it `unavailable`, and neither falls back to the node's word, so a misreported position cannot turn another buyer's settlement into a counted lot or admit another signature. Account nonces and balances, the best and finalized blocks and canonical hashes remain the node's claims, used only to stop or wait; the lot and spend caps still rest only on attested balances and on the fixed fee of each signed payment. A recorded inclusion that leaves the node's chain ends a running session. Neither a reorganization nor the service's reported status can add authority: when one contradicts what the session recorded (an inclusion that left the chain, or a final status in the wallet's history that differs from the recorded outcome), the payments it can affect are put in doubt for good. The verdict that admitted the next signature is kept and admission never reads the doubt; the doubted payments only leave the verified counts and show as unresolved, then settled once final in history, whose Activity entry gives their result, and their Qlyphs fees and tickets stay reserved until then. The stored ledger check refuses a record whose doubt and reorganized flag disagree or that reserved a payment after its retries were used up (only for a running record saved under the lost-race rule: an ended record never signs again, and wallets before the rule signed until maxAttempts, so ended records are not held to the retry count, and a running record without doubt flags, cut off under such a wallet, loads and is ended like any record no controller owns), and it checks the caps both with the doubt and as if nothing were in doubt.
+Display-only reads never reach a review. Token logos come from the Qlyphs app (`platform` in
+`BUILD.json`, one of the dapp origins): the background fetches `/api/token-logo/<asset>` without
+credentials or redirects, keeps only a PNG, JPEG or WebP of at most 128 KB whose leading bytes match
+the declared type, and gives the page a `data:` URL, so `img-src` stays `'self' data:`. The page also
+refuses any logo value that is not such a URL. A logo is a recognition aid beside a token name; reviews
+still show the full asset identifier. A token's profile comes the same way (`/api/token-profile?asset=`,
+at most 8 KB, refused when it names another asset): the background keeps a description of at most 280
+characters stripped of control and direction-override characters, an https website without
+credentials, and X and Telegram handles that match their formats, and drops anything else. The page
+renders them as text only; a link opens in a new tab and shows its destination. The Explore catalogue and points are read from the indexer
+already in use and are display data only. So is a token's price on its page: the background reads that
+token's latest sales (`/api/sales?asset=`) and accepted mints (`/api/asset-activity?asset=`) from the
+same indexer, keeps well-formed entries about that asset only, and the page draws the price per whole
+token, its change and a chart from them. A price never reaches a review, a fee check or a signature.
+The send screen's recipient list holds the wallet's other accounts and the addresses this account sent
+to, from its own history; choosing one only fills the field, and the review shows the full address.
+
+The QTC price in US dollars comes from CoinGecko's public API (`https://api.coingecko.com`, the
+`quantus` coin): its spot price and 24-hour change, and a chart per period. The background reads it
+without credentials, redirects or referrer, caps each answer at 1 MiB, keeps only finite positive
+prices, and asks at most once a minute for the price and every five minutes per chart (the last answer
+stands in for half an hour when CoinGecko refuses). The API answers any origin, so the wallet holds no
+host permission for it; the host is in `connect-src` only. The requests name no address and no token,
+but CoinGecko sees the user's IP address, so Settings → Advanced → Show prices in US dollars turns them
+off. On a test network, dollar values use the mainnet price, and the QTC page says test QTC have no
+value. A dollar figure never reaches a review, a fee check or a signature: reviews keep pricing fees
+from the on-chain reference rate.
+
+Activity shows what a creation, deploy or mint cost: the Qlyphs fee and native charges its review
+showed, recorded with the transaction, plus the network fee estimate. For an entry recorded before the
+wallet kept them, the Qlyphs fee of a successful operation is derived from the fixed mint fee or from
+the indexer's public fee schedule (`/api/fee-schedule`) at its block, and left out wherever that
+schedule cannot say which fee applied. Display only. Settings → Advanced → Clear activity removes the
+account's finished entries from this browser; entries still unresolved, which gate the next operation,
+and those a mint session counts on stay.
+
+Collection items (the Qlyphs collection standard, a convention over Quarks) are read from the same app,
+by the background, without credentials or redirects: `/api/collections`, then
+`/api/collection-items?symbol=&owner=` for at most 40 collections, each answer capped at 2 MiB. The
+page passes the Quarks the indexer lists for the account, and an item is kept only when its Quark is
+one of them and the app names the account as its owner: the app can name, number and draw a held
+Quark, never add an item or move one into the account. Names and traits are bounded plain text, the
+art goes through the Quark renderer (`data:` images, escaped text), and a link opens
+`/collections/<symbol>/<edition>` on the app. Where the app answers 404 the tab says collections are
+not open. Explore lists collections from `/api/collections` alone (at most 40, with the same text bounds,
+and a cover only when it is a checked hex Quark content); a row only links to the app's page. A Quark being inscribed whose own bytes are a collection document (`qlyphs-collection`
+JSON or a layers part) is titled from those bytes in its review (Mint from SYMBOL, Create collection
+SYMBOL); the site never supplies that label, and the review says the collection's rules decide whether
+a mint counts.
+
+A development build lets the user replace its endpoints in Settings → Network (README, Custom
+endpoints). This is the one reason its CSP's `connect-src` includes `https:` and loopback beyond the
+compiled origins: the CSP cannot list hosts chosen at run time. A build with mainnet (mainnet,
+switchable or store) has no custom endpoints, no optional host permission, and a `connect-src` limited
+to its compiled hosts, so script running in its pages cannot reach any other host; endpoints stored by
+a development build are ignored there. In a development build, endpoints are set only from the
+wallet's own pages, with the wallet unlocked, never by a site, after the user grants the exact host
+through `optional_host_permissions` in the Save click; the background refuses an endpoint whose host
+is not granted, and checks stored endpoints again when it reads them. New endpoints are probed
+directly, without switching other reads or submissions to them before they are kept. Logos, scripts
+and fonts are unaffected: `img-src`, `script-src` and `font-src` stay as they were.
+
 The extension background owns the random challenge, fixed aggregation endpoint, public trust pins
 and IndexedDB high-water cursor. It verifies signatures, network/activation/rules/runtime, bounded
 lifetime, same finalized snapshot, rollback/equivocation rules and exact purchase bytes before

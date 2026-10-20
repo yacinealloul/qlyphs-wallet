@@ -16,3 +16,6 @@ export function parseTip(value: unknown): bigint {
   requireThat(tip <= MAX_TIP, 'tip above the 10 QTC limit');
   return tip;
 }
+
+/** Creations and inscriptions are priced from one attested block: they take no tip. */
+export const NO_TIP_ERROR = 'A priority tip is not offered on creations and inscriptions';

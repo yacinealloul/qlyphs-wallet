@@ -6,9 +6,9 @@ export interface Port {
   onMessage: Event<(message: unknown) => void>; onDisconnect: Event<()=>void>;
 }
 export interface ExtensionAPI {
-  action?: {setPopup(options:{popup:string}):Promise<void>};
+  action?: {setPopup(options:{popup:string}):Promise<void>;openPopup?():Promise<void>};
   sidePanel?: {setPanelBehavior(options:{openPanelOnActionClick:boolean}):Promise<void>;open(options:{windowId:number}):Promise<void>};
-  permissions?: {onAdded?:Event<(permissions:{permissions?:string[]})=>void>;contains(options:{permissions:string[]}):Promise<boolean>;request(options:{permissions:string[]}):Promise<boolean>;remove(options:{permissions:string[]}):Promise<boolean>};
+  permissions?: {onAdded?:Event<(permissions:{permissions?:string[];origins?:string[]})=>void>;contains(options:{permissions?:string[];origins?:string[]}):Promise<boolean>;request(options:{permissions?:string[];origins?:string[]}):Promise<boolean>;remove(options:{permissions?:string[];origins?:string[]}):Promise<boolean>};
   notifications?: {create(id:string,options:{type:'basic';iconUrl:string;title:string;message:string}):Promise<string>;getPermissionLevel():Promise<'granted'|'denied'>;onClicked:Event<(id:string)=>void>};
   runtime: {
     id: string; getURL(path: string): string; reload?:()=>void;

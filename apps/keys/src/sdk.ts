@@ -476,7 +476,7 @@ function make(keys: string, eager: boolean, declared?: KeysNetwork): QlyphsProvi
       // A session read changes nothing, so its refusal names no outcome, whatever the reply says:
       // the popup refuses some requests itself, and an older wallet may still name one.
       pending.reject(
-        SESSION_READS.has(pending.method) ? new QlyphsError(error.code, error.message) : error,
+        SESSION_READS.has(pending.method) ? new QlyphsError(error.code, error.message, undefined, error.reason) : error,
       );
       return;
     }

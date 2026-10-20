@@ -5,9 +5,14 @@ export * from './identifiers.ts';
 export * from './tracking.ts';
 export * from './fees.ts';
 export * from './inscriptions.ts';
+export * from './solana-vault.ts';
 export {
   QlyphsError,
   PUBLIC_ERROR_CODES,
+  FAILURE_REASONS,
+  FAILURE_REASON_CODES,
+  failureReason,
+  reasonText,
   MINT_SESSION_PROFILE,
   MINT_SESSION_LIMITS,
   MAX_FEE_PER_LOT,
@@ -18,6 +23,18 @@ export {
   encodeSiteSessionChallenge,
   parseSiteSessionChallenge,
   parseSiteSessionProof,
+  SOLANA_VAULT_CONTEXT,
+  SOLANA_VAULT_DEPLOYMENTS,
+  SOLANA_VAULT_DOMAIN,
+  SOLANA_VAULT_MESSAGE_BYTES,
+  SOLANA_VAULT_METHODS,
+  SOLANA_VAULT_PUBLIC_KEY_BYTES,
+  SOLANA_VAULT_REDEEM_DECIMALS,
+  SOLANA_VAULT_SIGNATURE_BYTES,
+  MAX_SOLANA_VAULT_LIFETIME_SLOTS,
+  parseSolanaVaultAuthorization,
+  solanaVaultAddress,
+  base58,
 } from '../../provider/src/index.ts';
 export type {
   MintSessionLimits,
@@ -30,12 +47,18 @@ export type {
   MintSessionSnapshot,
   SiteSessionChallenge,
   SiteSessionProof,
+  SolanaVaultAuthorization,
+  SolanaVaultDeployment,
+  SolanaVaultKey,
+  SolanaVaultSignature,
   QlyphsProvider,
   ProviderState,
   WalletAccount,
   WalletEventMap,
   WalletCapabilities,
   PublicErrorCode,
+  FailureReason,
+  ReasonRetry,
   RequestOptions,
   WriteOutcome,
 } from '../../provider/src/index.ts';

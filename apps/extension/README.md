@@ -2,7 +2,7 @@
 
 Non-custodial browser extension (Chrome MV3, Firefox) for Quantus: it holds ML-DSA-87 keys, sends QTC and
 signs Qlyphs operations (Quarks, fair-mint tokens, bilateral token sales) for the Qlyphs app. Version
-**0.8.0**. A Qlyphs product, not an official Quantus wallet. QLYP-v1 assets are an indexed token overlay,
+**0.9.0**. A Qlyphs product, not an official Quantus wallet. QLYP-v1 assets are an indexed token overlay,
 not runtime-native `pallet_assets` balances; the bilateral market is not an AMM or open-taker order book.
 
 Mainnet builds require reviewed network pins. Purchases, token creation, inscriptions, lot mints and
@@ -70,7 +70,8 @@ Wallet", carries no development `key` (the store assigns the Chrome ID) and uses
 A mainnet build accepts `NATIVE_PQ_POLICY_FILE` only when the policy matches the pins and the reviewed
 mainnet rules (`rulesHash`), and refuses the rules inputs `NATIVE_PROGRESSIVE_FROM`,
 `NATIVE_PROGRESSIVE_V2_FROM` and `NATIVE_FEE_SCHEDULE`. Without a policy it refuses purchases, lot
-mints, token creation and inscriptions. Switchable builds reject `NATIVE_PQ_POLICY_FILE`.
+mints, token creation and inscriptions. A switchable build takes `NATIVE_PQ_POLICY_FILE` only for a
+public testnet (below).
 
 **Development** (no env): the default build, unchanged. It accepts only loopback HTTP origins, defaults
 to API `http://127.0.0.1:4400`, RPC `http://127.0.0.1:9955` and explorer `http://localhost:3000/explorer`,
@@ -102,8 +103,9 @@ QLYPHS_EXTENSION_NETWORK=switchable QLYPHS_EXTENSION_PINS=/path/to/pins.json \
   pnpm --filter @qotc/wallet-extension build
 ```
 
-It opens on mainnet. The user switches in Settings, on the welcome screen, or next to a connection
-error; no page can switch it. Both networks share one wallet: the same accounts, password, passkey
+It opens on mainnet. The other network stays out of sight until the user turns on **Show test
+networks** in Settings → Network (remembered per browser); then the user switches there, on the
+welcome screen, or next to a connection error. No page can switch it. Both networks share one wallet: the same accounts, password, passkey
 and unlocked session. Switching changes only where the wallet reads and submits. It cancels pending
 requests, ends mint sessions and disconnects every site, which reconnect against the new network's
 dapp list; the wallet does not lock.
@@ -137,7 +139,50 @@ extension origin.
 
 Such a build may carry the test network's witness policy (`NATIVE_PQ_POLICY_FILE`, with the
 witnesses' `NATIVE_PROGRESSIVE_FROM` / `NATIVE_PROGRESSIVE_V2_FROM`). It is checked against the
-development rules and used on the testnet only: on mainnet, purchases and lot mints stay disabled.
+development rules and used on the testnet only: on mainnet, purchases and lot mints stay disabled,
+unless the build is a store build (below).
+
+### Store build
+
+The Chrome Web Store build is a switchable build with the public testnet, under the store identity:
+
+```sh
+QLYPHS_EXTENSION_STORE=1 QLYPHS_EXTENSION_NETWORK=switchable QLYPHS_EXTENSION_PINS=/path/to/pins.json \
+QLYPHS_EXTENSION_TESTNET_API=… QLYPHS_EXTENSION_TESTNET_RPC=… \
+QLYPHS_EXTENSION_TESTNET_EXPLORER=… QLYPHS_EXTENSION_TESTNET_DAPP_ORIGINS='[…]' \
+NATIVE_PQ_POLICY_FILE=/path/to/testnet/witness-policy.json \
+NATIVE_PQ_POLICY_FILE_MAINNET=/path/to/mainnet/witness-policy.json \
+  pnpm --filter @qotc/wallet-extension build
+```
+
+`QLYPHS_EXTENSION_STORE=1` requires a switchable build with a public testnet. The manifest is named
+"Qlyphs Wallet" with no development `key` (the store assigns the Chrome ID) and the Firefox ID
+`wallet@qlyphs.com`, as in a mainnet build. It carries one witness policy per network:
+`NATIVE_PQ_POLICY_FILE_MAINNET` is checked against the pins and the mainnet rules like a mainnet
+build's policy, `NATIVE_PQ_POLICY_FILE` against the development rules. The wallet uses the policy of
+the active network and changes it with the network, so a testnet policy never verifies a mainnet
+attestation. `package.py` packages it like a mainnet build. Both networks' services must accept the
+store extension's origin.
+
+Loaded unpacked, a build without a `key` gets an ID from its folder path, which no service accepts:
+for a local test of a store build, add the public development `key` to the unpacked copy's manifest
+(never to the store package).
+
+## Custom endpoints
+
+Development builds only (`QLYPHS_EXTENSION_NETWORK=development`). Settings → Network shows the
+endpoints in use; **Edit**, available once the wallet is unlocked, replaces the node, indexer and
+explorer, and **Reset** returns to the compiled ones. Every address must be an HTTPS origin or a
+loopback HTTP one (the explorer may have a path), without credentials, query or fragment.
+
+The browser asks the user for each new host (`optional_host_permissions`) inside the Save click; the
+wallet then proves the node and indexer answer for the same network before keeping them. The proof
+reads the new endpoints directly; until they are kept, every other read and submission still goes to
+the ones in use. A new node or indexer may be another chain with the same genesis, so its pin and
+history start again. The CSP cannot list hosts chosen at run time, so a development build's
+`connect-src` includes `https:` and loopback. A build with mainnet (mainnet, switchable or store) has
+no custom endpoints and keeps `connect-src` to its compiled hosts; endpoints a development build stored
+are ignored there.
 
 ## Development network
 
@@ -174,7 +219,7 @@ Open an allowed dapp and click **Connect wallet**. If Qlyphs is locked, the exte
 
 A connected site can ask you to sign in, so that a service it works with knows requests come from your account, for at most 15 minutes. The review names the site (as the browser reports it), how long the sign-in lasts, what the site says it allows, the account and the network. Signing in moves no funds and signs no transaction: the wallet signs only a fixed challenge format, under a signing context of its own, and refuses a challenge for another site, account or network, or one that lasts longer than 15 minutes ([Site sign-in](../../docs/extension/PROVIDER.md#site-sign-in)).
 
-A five-minute absolute unlock deadline is not extended by dapp messages. Browser suspension or a background restart locks the wallet sooner. After a restart, reopen the wallet, unlock explicitly, reload/reconnect the dapp if necessary, and inspect saved history. Unknown submission outcomes must not be treated as failures or retried with a new nonce. A mint session stops signing when this deadline passes.
+A fifteen-minute absolute unlock deadline is not extended by dapp messages. While unlocked, the wallet keeps its background awake until that deadline, so an idle browser does not lock it after a few seconds; browser suspension or a background restart still locks the wallet sooner. After a restart, reopen the wallet, unlock explicitly, reload/reconnect the dapp if necessary, and inspect saved history. Unknown submission outcomes must not be treated as failures or retried with a new nonce. A mint session stops signing when this deadline passes.
 
 ## Post-quantum purchase and lot-mint verification
 
@@ -189,6 +234,11 @@ match it exactly. It signs with an era born at that block, so the payment can on
 the attested right exists. A tip attestation never moves the high-water checkpoint. A dapp cannot supply keys, an
 endpoint, a policy or a `verified` flag. The signing session is checked again after asynchronous
 verification.
+
+When a check refuses, the confirmation window says why in plain words and ends with a reason code
+(`Code: witness-unavailable.`, for example) that you can quote when asking for help. The site
+receives the same code as `reason`, never the wallet's internal message
+([Failure reasons](../../docs/extension/PROVIDER.md#failure-reasons)).
 
 **Without a compiled witness policy, purchases and lot mints are refused.** That is any mainnet or
 development build made without one, and the mainnet side of every switchable build: a switchable
@@ -205,18 +255,30 @@ another deploy) shows "Qlyphs fee kept".
 
 ### Priority tip
 
-The review of a single lot mint offers a priority tip: Normal (none), Fast 0.01 QTC, Turbo 0.1 QTC,
-Max 1 QTC, or a custom amount up to 10 QTC (`packages/native/src/tip.ts`). Nodes order pending
-transactions by tip, so a tipped mint is included before untipped ones racing for the same lot. The
-tip is paid even when the mint fails because someone took the lot first; the review says so.
+Every review except a creation or an inscription offers a priority tip, as other wallets let you
+raise the fee: its Network fee row shows the estimate (three significant digits, rounded up) and the
+level, and opens a sheet of Low (no tip), Normal (+0.01 QTC) and High (+0.1 QTC), each with the
+network fee it leads to, applied at once, then a custom tip field, applied with Enter or Done, up to
+10 QTC (`packages/native/src/tip.ts`). Nodes order pending transactions by tip, so a tipped
+transaction is included before untipped ones; for a lot mint, before untipped mints racing for the
+same lot. The tip is paid with the network fee, even when a mint fails because someone took the lot
+first; the review says so. Creations and inscriptions are priced from one attested block and keep
+tip 0.
 
-Choosing a tip prepares the lot again: the wallet attests the next lot once more and gets a new
-review, whose digest binds the tip. The service still prepares the intent with tip 0 and the wallet
-refuses any other; the wallet adds the tip only to the context it signs, counts it in the balance
-check, and checks after signing that the extrinsic carries exactly that tip. The service relays only
-untipped transactions, so a tipped lot mint is broadcast through the wallet's own node
-(`author_submitExtrinsic`), which must answer the extrinsic's hash; the indexer then follows it like
-any other transaction. Every other operation, and every mint session, still signs with tip 0.
+Choosing a tip prepares the operation again (a lot mint is attested again) and gets a new review,
+whose digest binds the tip. The service still prepares the intent with tip 0 and the wallet refuses
+any other; the wallet adds the tip only to the context it signs, counts it in the balance check and
+the estimated total, and checks after signing that the extrinsic carries exactly that tip. The
+service relays only untipped transactions, so a tipped one is broadcast through the wallet's own
+node (`author_submitExtrinsic`), which must answer the extrinsic's hash; the indexer then follows it
+like any other transaction.
+
+A mint session's review offers the same tip, chosen once for every payment of the session, retries
+after a lost lot included. Choosing one reviews the session again (new id and digest). The approved
+record keeps the tip; each payment is signed with it and checked to carry exactly it, its worst case
+reserves it on top of the network fee's margin, its spent network estimate counts it, and it goes to
+the node. The service's quote must still carry tip 0: a service that writes any tip into it ends the
+session unverified before anything is signed.
 
 ### Mint sessions
 
@@ -327,13 +389,42 @@ Changing/revoking trusted keys needs a reviewed rebuilt extension and trusted up
 Old clients do not learn new revocations automatically. Clearing the browser profile clears
 its high-water history but never permits a key supplied by the API to become trusted.
 
+## Solana vault authorizations (development build only)
+
+The default development build also signs payments out of an ML-DSA-87 vault on Solana devnet, for a
+connected site: `solanaVaultPublicKey` returns the active account's public key and vault, and
+`signSolanaVaultAuthorization` signs a 296-byte authorization after a review in the wallet's own
+window ("Solana devnet · Quantum vault payment": vault, asset, amount, recipient, nonce, expiry slot,
+site). The wallet refuses, before any window opens, a message for another program or network, with
+nonzero padding, a zero amount, a lifetime above 1,500 slots, or a vault that is not the active
+account's. It signs under the context `qlyphs/solana-vault/v1`, verifies locally and wipes the key;
+the site submits the signature. Mainnet, switchable and testnet builds have no such methods, and
+`BUILD.json` of a build that has them lists `developmentFeatures: ["solanaVault"]`. To try it with a
+local page, add its origin at build time:
+
+```sh
+QLYPHS_EXTENSION_DAPP_ORIGINS='["http://127.0.0.1:4400","http://127.0.0.1:8793"]' \
+  pnpm --filter @qotc/wallet-extension build
+```
+
+A development build can also sign for a wQTC program on Solana devnet: wQTC payments and redeems
+(action 2, wQTC burned for QTC sent to a Quantus address, reviewed as "Redeem N wQTC → QTC to qz…").
+Name its program id and mint, base58, at build time; both or neither, development builds only:
+
+```sh
+QLYPHS_EXTENSION_WQTC_PROGRAM=<program id> QLYPHS_EXTENSION_WQTC_MINT=<mint> \
+  pnpm --filter @qotc/wallet-extension build
+```
+
+Contract, checks and errors: [provider](../../docs/extension/PROVIDER.md#solana-vault-authorizations-development-builds).
+
 ## Recovery and migration
 
-The exact legacy account is **ML-DSA-87, `m/44'/189189'/0'/0'/0'`**, using the locked official `@quantus-network/wasm@0.3.1`. Existing web-wallet version-1 backups retain their original AES-GCM authenticated metadata and PBKDF2-SHA256/310,000-iteration decoding. Successful restoration rewrites an authenticated version-2 vault with a fresh salt/IV and PBKDF2-SHA256/600,000 iterations; identity is checked before accepting it. The original backup is not modified. Version-2 backups are for this extension; the older web wallet does not yet read them.
+The exact legacy account is **ML-DSA-87, `m/44'/189189'/0'/0'/0'`**, using the locked official `@quantus-network/wasm@1.0.0`. Version 1.0.0 derives the same keys and addresses as 0.3.1 (checked on 440 phrase, path and passphrase combinations before the upgrade) and signs in hedged mode: each signature mixes in fresh randomness, so signing the same transaction twice never gives the same extrinsic hash. Existing web-wallet version-1 backups retain their original AES-GCM authenticated metadata and PBKDF2-SHA256/310,000-iteration decoding. Successful restoration rewrites an authenticated version-2 vault with a fresh salt/IV and PBKDF2-SHA256/600,000 iterations; identity is checked before accepting it. The original backup is not modified. Version-2 backups are for this extension; the older web wallet does not yet read them.
 
 An encrypted backup **and its password**, or the correct mnemonic on the same network/schema/path, are needed. Browser uninstall/profile deletion can remove local storage. Keep recovery material outside the browser. Do not export a phrase into the dapp or attach it to a bug report. The extension cannot reset a forgotten password without recovery material.
 
-For a single locked wallet, **Forgot password? Start fresh** downloads its encrypted backup and requires acknowledgement before resetting. The reset archives the full encrypted wallet state in local extension storage and starts creation of a different wallet; it does not recover the old password, identity or assets. A failed archive/reset write keeps the active wallet unchanged. The action is unavailable while unlocked, from confirmation windows, during transaction approval, or when multiple wallets are saved.
+For a single locked wallet, **Forgot password?** offers its encrypted backup and requires acknowledgement before resetting. The reset archives the full encrypted wallet state in local extension storage, then offers to restore a wallet from its recovery phrase or backup, or to create a new one; it does not recover the old password. A failed archive/reset write keeps the active wallet unchanged. The action is unavailable while unlocked, from confirmation windows, during transaction approval, or when several accounts are saved: the backup it offers covers one wallet only.
 
 ## Local verification
 
@@ -355,17 +446,17 @@ See the [provider contract](../../docs/extension/PROVIDER.md), [security model](
 
 ## Wallet UI
 
-The 0.4.0 layout adapts [Metamask Clone (Crypto Wallet) (Community)](https://www.figma.com/design/EF6iqylcMYhf3UFN9rfFBv/Metamask-Clone--Crypto-Wallet---Community-?node-id=6008-20): AccountInfo (`6008:5`), Tabs (`6120:1423`), unlock (`6217:4315`) and transaction request (`6218:7198`). The reference contains extension approval/unlock components; the dashboard is an adaptation for Qlyphs. Qlyphs colors, fonts, mark and existing icons are retained. No MetaMask/Ethereum branding, new UI dependency, external asset request or unsupported wallet action is introduced. Reviews use a plain transaction heading and amount, a full recipient address with Copy, exact fee estimates and an estimated QTC total for native sends. Zero-value ancillary fees, signing-account details and the raw payload use explicit disclosures; nonzero fees and deposits stay visible. No decorative trust badge is shown. Reject/Approve remain outside the internally scrolling details at every supported size.
+The 0.9.0 layout is a wallet app, not a page. The header holds the account (avatar, name, network), copy address, refresh and, in the popup or side panel, a control that moves the wallet to the other surface (the toolbar icon then keeps opening it). The avatar opens a drawer of accounts with Add account, manage and Settings. Settings fills the panel, without the wallet header, as a list of pages, each with its own back control, and ends with Open in a tab and **Lock wallet**. Activity opens with the account's Qlyphs level: an XP hexagon whose six sides fill towards the next level, then the level and the XP against the next level's (`236 / 400 XP`; opens the points page). A bottom navigation leads to Home, Explore and Activity. Home shows the balance, Send, Receive and Mint, then Tokens and Collectibles as two tabs: QTC carries the Quantus symbol, every token its creator's logo from the Qlyphs app over the same drawn emblem the app shows, and a token's value in QTC when it has a last sale. A token opens a detail with Send, Receive, its price, what its creator wrote on Qlyphs (a short description and links to its website, X and Telegram, checked as docs/extension/SECURITY.md describes) and its page on Qlyphs: the price per whole token of its latest trade on Qlyphs (sales and lot mints, as the Qlyphs app counts them), its change over 1D, 1W, 1M or all trades (the shortest period with two trades first) and a step chart, read from the indexer; the token's value in QTC then uses that price. QTC's page shows its market price in US dollars from CoinGecko, with its change and chart over 1D, 1W, 1M or 1Y. The total balance is then in dollars, QTC and every token with a price together, with its change over 24 hours; each holding shows its value in dollars and its change (on a test network, at the mainnet price of QTC). Without the price the total reads in QTC. The eye hides balances and shows itself struck through while they are hidden. A token page lists its asset ID shortened, with Copy, instead of under the balance; a Quark or an item has Send as its one action. Settings → Advanced → **Show prices in US dollars** turns CoinGecko off. Collectibles holds everything that is not a token. A Quark stands alone (1 of 1); a collection is a set of numbered items. So Collectibles shows Collections first: one card per collection the account holds items of or created, with a mosaic of four items (or its one item, or the collection's cover), how many it holds or Created by you, as the Qlyphs app names, numbers and draws them. Quarks follow: those that belong to no collection. A card opens the collection's page (what the account holds of its supply, then each item by number and rarity rank, and the collection on Qlyphs), or its item when it holds one. An item opens the same detail as a Quark, as `#7 of 500` with its Quark number, its traits as cards, its rarity rank and its page on Qlyphs; Back returns to the collection, and Send names the item and the Quark that moves. A Quark that is a collection document but not an item (a mint the collection has not counted yet, because it is not final or its rules refused it, or a creator's deploy, list or art) is listed on its collection's page under Quarks of this collection, by its role instead of raw JSON; a creator without items yet gets Mint on Qlyphs there. Explore also lists the collections on Qlyphs, busiest first, with minted against supply (or the count of an open edition); one opens its page on Qlyphs. Only Quarks the indexer lists for the account are shown there (docs/extension/SECURITY.md). Explore lists the five busiest Qlyphs tokens still minting and the five busiest collections, ranked, with See all for the rest (a search lists every match). Each token is one line, read from the indexer: the share minted, the lot price and, near a price step, when and by how much it rises; a line opens the token's page on Qlyphs to mint. Activity is grouped by day, with the amount and status of each operation on the right (for a creation, deploy or mint, what it cost as its review showed it: the Qlyphs fee, native charges and the network fee estimate, itemised on its page; none once it failed; for one recorded before the wallet kept its charges, the Qlyphs fee comes from the fixed mint fee or the indexer's public fee schedule at its block); Settings → Advanced → **Clear activity** removes the account's finished operations from this browser, after a confirmation; an operation shows its token's mark (a mint recorded before 0.9.0 is matched to its token by symbol in the Explore catalogue) and opens a page of its own, as other wallets show it: its picture (the Quark a creation made, with a link to it), the amount and its dollar value, then cards for the details (where it stands, the date, recipient and sender, the network), the fees (Qlyphs fee, native charges, network fee estimate and total, rounded up to six decimals) and the chain (its block, located by the indexer, and the transaction ID), and the explorer. A refusal shows its reason. Send and Receive open as full screens with a back control. Every size comes from one set of tokens (4 px spacing grid, 16 px gutter, 44 px fields, 48 px actions, 11 px minimum text) shared by every screen. Reviews use a plain transaction heading and amount, a full recipient address with Copy, exact fee estimates and an estimated QTC total for native sends. Reviews show the essentials: the token's mark, what is done, nonzero fees and deposits, and the signing account by name and short address; zero-value ancillary fees fold away. A mint session review shows only its lots, its maximum cost (Qlyphs fees and native tickets, an exact cap), its network fee estimate including tips (the fee sheet's row), a countdown to when signing stops and the account. Settings → Advanced → **Show transaction details** (off by default, per browser) adds the token's full ID, the signing account's full address and genesis, every session limit and rule, the review's expiry and the raw payload. A session's progress shows the current payment, the spend and the stop time, with the counts under Details. In Activity a mint is named by its token (Mint GLYPH); its lot and amount are in its detail sheet. Reject/Approve remain outside the internally scrolling details at every supported size.
 
 Network identity comparison is independent of JSON key order, including after Chrome reloads persisted storage. Real changes to genesis, runtime or activation remain blocked. A mismatch triggers an automatic read-only comparison of saved and connected genesis, runtime and activation. If the saved network is available again, balances must pass another pinned-network check before the alert clears. Otherwise the warning distinguishes a different chain from changed runtime/configuration, with full details available. Diagnostics validate the local services without repinning the wallet; genuine mismatches remain blocked. Verification errors retain their sanitised cause and failing stage. The UI compares its version with the background worker, flags partial updates, and offers Reload extension without deleting storage or replacing the saved network; reloading locks the wallet.
 
-Chrome opens a native side panel by default, keeping the wallet visible when switching web tabs. Settings → Open wallet in switches between the side panel and the popup, and persists across browser worker restarts. Chrome controls the resizable panel width; the layout adapts to the available width and full browser height. Firefox retains the popup.
+Chrome opens a native side panel by default, keeping the wallet visible when switching web tabs. While the panel shows the wallet in the window of the asking site, a site's request (connect, transaction, sign-in or mint session) opens in the panel, which returns to the wallet once it is answered; closing the panel during a mint session stops signing. Otherwise the request opens in its own small window at the top right of the browser window (see [SECURITY.md](../../docs/extension/SECURITY.md)). Settings → Open wallet in switches between the side panel and the popup, and persists across browser worker restarts. Chrome controls the resizable panel width; the layout adapts to the available width and full browser height. Firefox retains the popup.
 
-The popup requests 360 × 600 pixels and fits the height Chrome actually provides on smaller screens. The outer shell stays fixed: each active view scrolls internally, while the header and wallet navigation remain visible. The preview also fits the browser viewport without page scrolling. Across Assets, Activity and Settings, the balance and quick actions scroll away naturally while the navigation stays pinned with a soft edge fade. All three share a viewport capped at the available panel height, so long lists remain scrollable without growing the popup or adding nested scroll areas; the expand button opens a dedicated wallet tab. It uses Qlyphs / Quantus Void & Flare colors and bundled Geist fonts. The unlock screen uses a static rounded Qlyphs emblem and a compact password form. Onboarding separates wallet choice, creation, phrase import and encrypted-backup restoration into compact screens with a fixed bottom action. Recovery starts with a privacy reminder, shows 12 numbered words per page, then asks for explicit acknowledgement. Core steps fit 360 × 498 and 360 × 600 popups without scrolling; content-only scrolling remains available for zoom and unusually short panels. Back navigation preserves drafts within a method and clears secrets when leaving it. Pointer transitions are subtle and interruptible; keyboard and reduced-motion navigation are immediate. No media, font or artwork is fetched remotely.
+The popup requests 360 × 600 pixels and fits the height Chrome actually provides on smaller screens. The outer shell stays fixed: the header and the bottom navigation never move, and only the content between them scrolls, with no visible scrollbar. In the side panel the wallet uses the full panel width on the same gutter. Opened in a tab (Settings → Open in a tab, or keys.qlyphs.com), the wallet is a centered, device-sized card; it fills the screen on phones. It uses Qlyphs / Quantus Void & Flare colors and bundled Geist fonts. Onboarding separates wallet choice, creation, phrase import and encrypted-backup restoration into compact screens with a fixed bottom action. Recovery starts with a privacy reminder, shows 12 numbered words per page, then asks for explicit acknowledgement. Core steps fit 360 × 498 and 360 × 600 popups without scrolling; content-only scrolling remains available for zoom and unusually short panels. Back navigation preserves drafts within a method and clears secrets when leaving it. Pointer transitions are subtle and interruptible; keyboard and reduced-motion navigation are immediate. No media, font or artwork is fetched remotely.
 
-Activity includes an **Explorer** button and per-transaction links to the configured external web explorer. Transaction links include the selected network and full transaction hash. The menu opens that explorer with a network filter. These pages provide public chain information and never approve wallet requests.
+Activity includes an **Explorer** button and per-transaction links to the configured external web explorer. Transaction links include the selected network and full transaction hash. These pages provide public chain information and never approve wallet requests.
 
-Transfer and receive screens use mobile-sized layouts: 44 px fields, 48 px primary actions, compact headings and a fixed bottom action. Only the form content scrolls when errors or a short viewport need extra room. Send offers one asset selector: native QTC and held assets are distinguished by their identifiers. The Swap shortcut is disabled and labelled Coming soon until an exchange flow is implemented. Asset rows preselect their token; changing assets clears the amount while preserving the recipient. The selected symbol, available balance, token decimals and exact command stay consistent through the approval screen, which shows the full asset ID for tokens and fees in QTC. An asset that disappears on refresh remains explicitly unavailable instead of silently switching to QTC. Full addresses, exact quantities and the approval step remain intact. Sidebar wallet content is capped at 420 px.
+Transfer and receive screens use mobile-sized layouts: 44 px fields, 48 px primary actions, a centered title and a fixed bottom action. Only the form content scrolls when errors or a short viewport need extra room. Send offers one asset selector: native QTC and held assets are distinguished by their identifiers. The book in the recipient field lists the wallet's other accounts and the addresses this account sent to, with a search; choosing one fills the field, and an address of one of the wallet's accounts is named under it. Token rows and Quark tiles open Send with their asset preselected; changing assets clears the amount while preserving the recipient. The selected symbol, available balance, token decimals and exact command stay consistent through the approval screen, which shows the full asset ID for tokens and fees in QTC. An asset that disappears on refresh remains explicitly unavailable instead of silently switching to QTC. Full addresses, exact quantities and the approval step remain intact.
 
 The wallet displays native/token balances rounded to at most three decimal places, with exact values on hover and positive dust shown as <0.001. Transfer entry and transaction reviews retain full precision. It includes session-local balance hiding, a receive QR encoding the full address, dedicated send/transfer views, activity status, site permissions, backup/recovery, and readable transaction approvals. Public metadata is always inserted as text. Private recovery words are removed when acknowledged, locked or the page closes. Passkey and notification controls are available only to the extension interface; dapps gain no new signing or key-access capability.
 
@@ -377,7 +468,7 @@ Platform references: [Chrome popup sizing](https://developer.chrome.com/docs/ext
 
 Display references: [MetaMask display modes](https://support.metamask.io/configure/wallet/language-settings-and-display/) and [Chrome Side Panel API](https://developer.chrome.com/docs/extensions/reference/api/sidePanel).
 
-Motion: tabs update immediately with a retargetable, critically damped selection indicator and a short content fade. Keyboard navigation and reduced motion skip these animations. Balances and navigation stay fixed. Slow actions show local progress after 150 ms; fast actions avoid spinner flashes, and navigation remains available during reads. Copy confirmation appears on its control without covering balances. Native disclosures animate only where the browser supports intrinsic-size transitions.
+Motion: destinations change immediately, with a short content fade; the selected destination is marked by its icon color. Keyboard navigation and reduced motion skip these animations; turning reduced motion on also stops cues already playing. The header and navigation stay fixed. Slow actions show local progress after 150 ms; fast actions avoid spinner flashes, and navigation remains available during reads. Copy confirmation appears on its control without covering balances. Native disclosures animate only where the browser supports intrinsic-size transitions.
 
 Hover states use one palette per control, enabled only for fine pointers with hover support. Asset rows keep the same padding on hover and press; selected options retain their accent. Focus and disabled states take precedence.
 
@@ -387,7 +478,7 @@ Onboarding uses short, keyboard-accessible screens, local BIP39 validation and b
 
 ### Wallets and derived accounts
 
-The account name opens management while unlocked. **Add account** derives the next ML-DSA-87 account at `m/44'/189189'/account'/0'/0'` with the pinned official Quantus SDK. It reuses the wallet's encrypted root phrase and password, without generating or displaying another recovery phrase. Accounts are grouped by wallet and retain separate site grants and history. **Add another wallet** creates or imports an independent recovery phrase. Its password protects its portable backup file; local access uses the installation’s common unlock. The installation limit is 20 accounts in total.
+The account name opens management while unlocked. **Add account** derives the next ML-DSA-87 account at `m/44'/189189'/account'/0'/0'` with the pinned official Quantus SDK. It reuses the wallet's encrypted root phrase and password, without generating or displaying another recovery phrase. Accounts are grouped by wallet and retain separate site grants and history. The installation limit is 20 accounts in total. One installation holds one recovery phrase: to use another, choose **Forgot password** on the unlock screen (it archives the current wallet) and create or import the other one. Installations that already hold several independent wallets from earlier versions keep them; the rules below still apply to them.
 
 Legacy accounts keep index 0 and their exact address. Independent wallets keep their identities, backups, site grants and transaction histories. Storage becomes version 3 when derived accounts are added. A single password or passkey unlocks the installation, regardless of the selected account. Switching accounts or independent wallets verifies the target identity and cancels pending reviews without locking or extending the absolute deadline. In-flight signing/key operations block switching. Signing uses the selected account's derivation index and verifies the resulting signer before submission. Privileged UI requests carry the expected account.
 

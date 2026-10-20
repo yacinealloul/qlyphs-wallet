@@ -27,7 +27,9 @@ names/envelopes remain supported. `capabilities` and `state` are additive. `requ
 `mintSession`, `stopMintSession` and the `mintSessionChanged` event are additive too, on builds
 that can run sessions (see [Mint sessions](#mint-sessions)), mainnet included. `signSessionChallenge`
 is additive on every network (see [Site sign-in](#site-sign-in)); wallets older than it do not list
-it in `capabilities`. Old providers
+it in `capabilities`. `solanaVaultPublicKey` and `signSolanaVaultAuthorization` exist in fixed
+development builds only (see [Solana vault authorizations](#solana-vault-authorizations-development-builds)).
+Old providers
 without protocolVersion/events work with explicit SDK `refresh` calls; they are not
 claimed to provide events or reliable cancellation. Do not branch on error text.
 
@@ -42,7 +44,8 @@ Qlyphs fees and native tickets, a signature count and at most five minutes insid
 
 For the injected extension provider, `connect` explicitly requests disclosure of the current account for this origin.
 An existing compatible grant can return without another connect confirmation, but
-never authorizes a signature. `accounts` exposes only the current authorized account,
+never authorizes a signature. Before any wallet exists, `connect` rejects with `UNAUTHORIZED` and the
+extension opens its setup page (at most once a minute, however often a site asks). `accounts` exposes only the current authorized account,
 or `[]` when unapproved, locked, unconfigured or disconnected. Hidden accounts, names,
 HD paths, counts, session deadlines and grant lists are never sent. `network` returns
 the pinned public manifest (`network: 'development' | 'mainnet'`) or null, never an endpoint-selection mechanism.
@@ -313,7 +316,7 @@ first of `completed`, `sold-out`, `race-lost`, `attempt-limit`, then the deadlin
 context changed.
 
 **Limits.** N is at most 25, signatures at most `N + min(N, 10)`, and the duration 30 to 300 seconds.
-The signing deadline is the earlier of the approved duration and the absolute five-minute unlock
+The signing deadline is the earlier of the approved duration and the absolute fifteen-minute unlock
 deadline, fixed at approval; nothing extends it, and approval is refused when less than 30 seconds of
 it remain. History must have room for `maxLots + maxAttempts` entries. While a session runs it holds
 the wallet: other requests get `BUSY`, and only one session runs at a time.
@@ -411,6 +414,69 @@ it, and end the session at `expiresAt`. The sign-in moves no funds and has no wr
 reply is lost, the site may ask again with a fresh challenge. `requestTransaction` and mint sessions do not
 depend on it.
 
+## Solana vault authorizations (development builds)
+
+A vault program on Solana devnet holds funds in a program-derived account that pays only against an
+ML-DSA-87 signature by one key. These two methods let a connected site use the wallet's account key
+for it. They exist only in the fixed development build (`QLYPHS_EXTENSION_NETWORK` unset): mainnet,
+switchable and testnet builds neither list them in `capabilities` nor forward or serve them
+(`UNSUPPORTED_METHOD`).
+
+```ts
+const key = await window.qlyphs.request({ method: 'solanaVaultPublicKey' });
+// { address, publicKey, vault }: the account's wallet address, its ML-DSA-87 public key
+// (0x hex, 2,592 bytes) and its vault on Solana devnet (base58)
+const proof = await window.qlyphs.request({
+  method: 'signSolanaVaultAuthorization',
+  params: { message }, // 0x + 592 lowercase hex: the 296-byte authorization
+});
+// { publicKey, signature }: 0x hex, 2,592 and 4,627 bytes
+```
+
+`solanaVaultPublicKey` needs a connected site and an unlocked wallet (`UNAUTHORIZED` otherwise, with
+reason `not-connected` or `wallet-locked`) and opens no window. The wallet derives the key from the active account as it
+does to sign, and wipes the secret key at once.
+
+**Message.** 296 bytes, little-endian, defined with its parser in
+[`packages/provider/src/solana-vault.ts`](../../packages/provider/src/solana-vault.ts): magic
+`QLYP87V2`, domain SHA-256(`Qlyphs ML-DSA-87 vault authorization v2`), program id, vault, nonce, expiry
+slot, action (0 SOL, 1 SPL token, 2 redeem), decimals, mint, source token account, destination,
+amount, padding, cluster genesis and issue slot.
+
+**What the wallet checks.** Before any window opens, the wallet refuses (`INVALID_REQUEST`) a message
+that is not exactly this format and spelling; whose genesis and program are not the one allowlisted
+deployment (Solana devnet, program `5HHKbr5NpRdY9gHU5jAkjPNAT5Z65CFWdhBJf3fGkJW8`); whose action is
+unknown; whose padding is not zero; a SOL payment with decimals, a mint or a source; a token payment
+without a mint or source; no destination; a zero amount; an issue slot not below the expiry, or more
+than 1,500 slots below it; and a vault that is not
+`find_program_address(["qp87v2", genesis, SHA-256(public key)], program)` for the active account's
+key. The review window then shows the network, the vault, the asset (SOL, or the token mint and
+decimals), the amount with its decimals, the recipient, the vault nonce, the expiry slot and the
+requesting site. On approval the wallet checks everything again, signs the 296 bytes with ML-DSA-87
+under the FIPS 204 context `qlyphs/solana-vault/v1`, verifies the signature locally and wipes the
+secret key. Rejecting answers `USER_REJECTED`. Nothing is broadcast: the site submits the signature
+to the vault program, which checks the slot window and the nonce itself.
+
+**wQTC (development builds given a wQTC program).** A development build made with
+`QLYPHS_EXTENSION_WQTC_PROGRAM` and `QLYPHS_EXTENSION_WQTC_MINT` (both base58) also signs for that
+program on Solana devnet: a second allowlist entry, same genesis, whose vaults use the same seeds under
+its own program id. Its token payments (action 1) are reviewed as before, with the amount in wQTC when
+the mint is the wQTC mint and the decimals 9. It also accepts action 2, a redeem: the wQTC in the
+vault's token account is burned so that the same amount of QTC is released on Quantus. A redeem names
+the wQTC mint, a source token account and decimals 9, its destination is the 32-byte Quantus account id
+that receives the QTC, and its amount is above zero; anything else is refused, and so is action 2 for
+the vault program `5HHK…`, which has no redeem. The review reads "Redeem 1.5 wQTC → QTC to qz…", with
+the destination in the wallet's Quantus address format (SS58, prefix 189) and "(your account)" when it
+is the signing account. The program and mint are listed in `BUILD.json` as `solanaWqtc`; without the
+two variables the build has no second entry, and other builds refuse them. A site checking a message
+with `parseSolanaVaultAuthorization` passes the deployments it signs for as its second argument.
+
+Errors carry no write outcome; where the wallet knows why, they carry a public `reason` code as
+other requests do (`wallet-busy`, `wallet-locked`, `not-connected`, `signing-failed`; `not-available`
+on builds without these methods). As for other requests, one operation runs at a time (`BUSY`), the
+review expires after two minutes, and `timeoutMs` and `signal` cancel the request (`TIMEOUT`,
+`ABORTED`), which also closes the review for approval.
+
 ## Lifecycle, limits and cancellation
 
 Browser-supplied origin/tab/top-frame/live document and port bindings remain mandatory;
@@ -455,7 +521,7 @@ seconds; the Keys web provider defaults to ten minutes for `connect`. This addit
 setup time never extends an approval after it has opened. The SDK caps discovery at
 three seconds and the public-state refresh after connection at 135 seconds.
 `requestMintSession` keeps the 135-second maximum: it resolves when the session is approved.
-The memory-only unlock lifetime remains an absolute five minutes. Applications cannot
+The memory-only unlock lifetime remains an absolute fifteen minutes. Applications cannot
 extend it. Abort/timeout sends a best-effort cancellation bound to the original live
 document request. It can invalidate an unapproved request but cannot roll back a
 signature or transaction already in progress. Writes stopped after dispatch therefore
@@ -473,8 +539,59 @@ refusals before it sends a request (an unsupported method, an invalid `timeoutMs
 dispatch, too many pending requests or an oversized request) say `not-submitted` for every method,
 session reads included.
 `VERIFICATION_FAILED` can represent a private runtime/fee/PQ/setup check without
-revealing its internals; inspect the extension's private visible state. Mint sessions add no
-error code: why a session ended is the closed `end` value of its snapshot.
+revealing its internals. Mint sessions add no error code: why a session ended is the closed `end`
+value of its snapshot.
+
+### Failure reasons
+
+A wallet refusal may also carry `reason`, one code from the fixed list `FAILURE_REASONS`
+(`packages/provider/src/reasons.ts`), and `retryable`. The wallet picks the reason from its own local
+checks; neither field ever carries text from a service or from the request, and a provider or SDK
+drops any `reason` that is not on the list. `retryable` is not read from the wire: it is derived from
+the reason and the outcome, and it is never true when `outcome` is `unknown`. It means a new request
+can succeed, possibly after the user does what the reason's text says; the SDK still never retries a
+write by itself. When a reason is known, `message` is `Qlyphs: ` followed by its sentence
+(`reasonText(reason)`), and for an `unknown` outcome a last sentence saying the write may already
+have been sent. Wallets older than reasons send neither field: show the code's wording then.
+
+| Reason | When | Retry |
+| --- | --- | --- |
+| `wallet-outdated` | the wallet window or worker runs an older build than the one now live | after closing its windows |
+| `rules-mismatch` | the witnesses signed under other protocol rules, or the indexer runs another protocol version | no |
+| `network-mismatch` | another genesis, runtime, activation or checkpoint than the wallet's network | no |
+| `witness-unavailable` | the attestation service answered with an error status | yes |
+| `witness-invalid` | an attestation bundle failed verification (signature, key, state, size) | no |
+| `policy-expired` | the compiled witness policy or its keys expired | no |
+| `clock-skew` | an attestation looks stale or from the future on this device's clock | after fixing the clock |
+| `attestation-rollback` | witnesses attest an older state than this wallet already recorded | no |
+| `attestation-storage` | the wallet could not read or write its attestation record in browser storage | after allowing storage |
+| `reservation-unconfirmed` | the reservation is not finalized for this buyer in attested state, or about to expire | yes, a few blocks later |
+| `reservation-closed` | the reservation was cancelled or settled | no |
+| `reservation-mismatch` | the purchase is not the one the attested reservation allows | no |
+| `not-final` | the lot's mint right is not final yet | yes, a few blocks later |
+| `previous-pending` | an earlier transaction of this account is not final | yes, once it is |
+| `wallet-busy` | another request holds the wallet | yes |
+| `network-catching-up` | the indexer is behind the node | yes |
+| `service-error` | a service answered with an error status or an unreadable body | yes |
+| `unreachable` | a service could not be reached | yes |
+| `timeout` | a service did not answer in time | yes |
+| `state-changed` | nonce, sequence, block, reservation or call changed during the review | yes, review again |
+| `review-expired` | the review or request expired | yes |
+| `cancelled` | the request was cancelled | yes |
+| `insufficient-funds` | not enough available QTC | after funding |
+| `fee-changed` | the fee no longer matches the review | yes, review again |
+| `wallet-locked` | the wallet is locked | after unlocking |
+| `not-connected` | the site is not connected to this account | after connecting |
+| `backup-required` | the recovery phrase is not backed up yet | after the backup |
+| `window-blocked` | the review window could not open | after allowing pop-ups |
+| `history-full` | the wallet's history is full | after archiving |
+| `signing-failed` | local signing failed | no |
+| `not-available` | this build cannot do this on this network | no |
+
+The wallet window shows the same sentence followed by `Code: <reason>.`, so a user can quote it. A
+refusal the wallet cannot name has no reason: the site sees the code alone and the wallet window its
+generic text. Any page script can post a reply to the page-side provider, so treat `reason` as wording
+help, never as proof of what the wallet did: the outcome rules above still decide.
 
 For follow-up inspect transaction status and the configured explorer for the selected network. Inclusion,
 native success, protocol acceptance, finalized settlement and uncertain outcomes remain
@@ -488,7 +605,7 @@ The extension's default provider origins are:
 | Build | Exact allowed origins |
 | --- | --- |
 | Development | the compiled API origin (default `http://127.0.0.1:4400`), `http://127.0.0.1:4401`, `http://127.0.0.1:4402`, `http://127.0.0.1:4403`, `http://localhost:3001`, `http://localhost:3101` |
-| Mainnet | `https://app.qlyphs.com`, `https://otc.qlyphs.com` |
+| Mainnet | `https://app.qlyphs.com`, `https://otc.qlyphs.com`, `https://qlyphs.com`, `https://www.qlyphs.com`, `https://street.qlyphs.com`, `https://city.qlyphs.com`, `https://docs.qlyphs.com`, `https://reserve.qlyphs.com`, `https://graduation.qlyphs.com` |
 | Switchable | both sets; only the selected network's origins may connect |
 
 `QLYPHS_EXTENSION_DAPP_ORIGINS` accepts 1–16 distinct exact origins at build time: loopback HTTP in

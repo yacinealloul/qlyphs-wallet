@@ -103,6 +103,8 @@ export interface MintSessionReview {
   capacity: { remaining: number; needed: number; records: number };
   policy: { version: number; rulesHash: string; runtimeHash: string };
   horizonBlocks: number;
+  /** The priority tip each payment carries, planck; present only above zero, bound by the digest. */
+  tip?: string;
   digest: string;
 }
 
@@ -285,7 +287,37 @@ function clockLeft(ms: number) {
 }
 
 export function reviewTitle(review: MintSessionReview) {
-  return `Mint up to ${review.terms.maxLots} lots`;
+  return `Mint ${review.asset.symbol}`;
+}
+
+/** An estimate in QTC rounded for reading: three significant digits, rounded up so an estimate
+ * never reads lower than it is (0.00012, 0.0021, 0.102). */
+export function roughQtc(planck: bigint) {
+  if (planck <= 0n) return '0 QTC';
+  const step = 10n ** BigInt(Math.max(0, planck.toString().length - 3));
+  return formatUnits(((planck + step - 1n) / step) * step, 12) + ' QTC';
+}
+
+/** Time left to sign, as a countdown: what the review shows by default. */
+export function timeLimit(review: MintSessionReview, now: number, unlockDeadline: number) {
+  const { m, s } = clockLeft(signingDeadline(review.terms, now, unlockDeadline) - now);
+  return `${m}:${String(s).padStart(2, '0')} · or until you press Stop`;
+}
+
+/** The rows a review shows by default: how many lots, the most it can cost and how long it may
+ * sign. Every other limit is in `reviewRows`, shown when the user asks for transaction details. */
+export function essentialRows(review: MintSessionReview, now: number, unlockDeadline: number): Row[] {
+  const t = review.terms,
+    n = t.maxLots;
+  const network = BigInt(t.maxAttempts) * (BigInt(review.costs.networkFee) + BigInt(review.tip ?? '0'));
+  return [
+    ['Lots', `${n === 1 ? '1' : `Up to ${n}`} · next is lot ${review.start.lot} of 1000`],
+    // Everything the session may spend: Qlyphs fees and native tickets up to maxSpend, plus the
+    // network fee and tip of every signature it may make, paid even on a lot it loses.
+    ['Max cost', '≈ ' + roughQtc(BigInt(t.maxSpend) + network)],
+    ['Network fee', '≈ ' + roughQtc(network) + (review.tip ? ' incl. tips' : '')],
+    ['Time limit', timeLimit(review, now, unlockDeadline)],
+  ];
 }
 
 /** The token amount the session may mint at most, as quantity and currency. */
@@ -313,6 +345,8 @@ export const PRICE_SCHEDULE = 'progressive-1000-v2 · 0.01 to 0.44 QTC per lot';
 export const LIMIT_ROWS =
   /^(Lots|Signatures|Qlyphs fee per lot|Maximum protocol spend|Signing stops|After Stop|History space)$/;
 export const DETAIL_ROWS = /^(Price schedule|Next lot|Lots it may pay for)$/;
+/** The session rows a review shows first: what it can cost, the next lot and when signing stops. */
+export const SESSION_KEY_ROWS = /^(Lots|Maximum protocol spend|Network fee|Next lot|Signing stops)$/;
 
 /** Every review row in display order, apart from the account and network rows. */
 export function reviewRows(
@@ -354,10 +388,11 @@ export function reviewRows(
     ],
     ['Attested at block', String(review.start.block.height)],
     ['Network fee estimate', `${qtc(review.costs.networkFee)} per signature`],
+    ...(review.tip ? ([['Priority tip', `${qtc(review.tip)} per signature, paid even on a lost lot`]] as Row[]) : []),
     ['Native ticket per lot', `${qtc(review.costs.ticket)} · charged only for a lot you receive`],
     [
       'Network fees for this session',
-      `Up to about ${qtc(BigInt(s) * BigInt(review.costs.networkFee))} · estimate`,
+      `Up to about ${qtc(BigInt(s) * (BigInt(review.costs.networkFee) + BigInt(review.tip ?? '0')))} · estimate`,
     ],
   ];
 }

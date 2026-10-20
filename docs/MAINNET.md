@@ -38,7 +38,9 @@ and a rebuilt release. Do not substitute unreviewed values merely to bypass a mi
 
 Default mainnet endpoints are `https://indexer.qlyphs.com` for public asset data,
 `https://rpc1-mainnet.quantus.com` for RPC, and `https://qlyphs.com/explorer` for external explorer
-links. Endpoint overrides change the build bytes and must be reviewed with the pins. The wallet
+links. Build-time endpoint overrides change the build bytes and must be reviewed with the pins. A
+user may also point mainnet at another HTTPS node in Settings → Network; the indexer and explorer
+stay the compiled ones, and every read through that node is still checked against the pins. The wallet
 trusts the configured services for public views; it does not run a full node or a consensus light client.
 
 ## Witness policy, fees and identity limits
@@ -46,7 +48,8 @@ trusts the configured services for public views; it does not run a full node or 
 [`deploy/mainnet/witness-policy.json`](../deploy/mainnet/witness-policy.json) is the reviewed mainnet
 witness policy: the public keys of the two witnesses, bound to the pins and to the mainnet rules of
 this release (`rulesHash`). A mainnet build accepts `NATIVE_PQ_POLICY_FILE` only when the policy
-matches both; switchable builds reject it. With the policy, a token purchase needs attestations from
+matches both; switchable builds reject it, except the store build, which takes it as
+`NATIVE_PQ_POLICY_FILE_MAINNET` beside the testnet's policy and uses each on its own network. With the policy, a token purchase needs attestations from
 both witnesses, at any height. A mainnet build without it refuses purchases, progressive lot mints,
 token creation and inscriptions. Mint sessions run on mainnet with the same limits as on
 development builds, only in builds with the witness policy and the reviewed activation.

@@ -20,8 +20,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/native
       '@quantus-network/wasm':
-        specifier: ^0.3.1
-        version: 0.3.1
+        specifier: 1.0.0
+        version: 1.0.0
       '@scure/bip39':
         specifier: ^2.4.0
         version: 2.4.0
@@ -117,8 +117,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
       '@quantus-network/wasm':
-        specifier: ^0.3.1
-        version: 0.3.1
+        specifier: 1.0.0
+        version: 1.0.0
       '@scure/bip39':
         specifier: ^2.4.0
         version: 2.4.0
@@ -789,6 +789,10 @@ packages:
 
   '@quantus-network/wasm@0.3.1':
     resolution: {integrity: sha512-w1wpAeDTWY2QXO+c2XtGfEDCcXvueCD+UFcozB5ij5v0Wh2WYo96j2FdyKlguDqZgKXLhnc0DQodfO7YRXWbXA==}
+    engines: {node: '>=18'}
+
+  '@quantus-network/wasm@1.0.0':
+    resolution: {integrity: sha512-NThBxLaowiNbQGOmKm30YORQpZRsVefBLxNgHQ+38HR91pHL9fp+SZOVkp27bZ2cD+hWX/raGGs+IQ+74Ft7PA==}
     engines: {node: '>=18'}
 
   '@rolldown/binding-android-arm-eabi@1.2.9':
@@ -2248,6 +2252,8 @@ snapshots:
       - utf-8-validate
 
   '@quantus-network/wasm@0.3.1': {}
+
+  '@quantus-network/wasm@1.0.0': {}
 
   '@rolldown/binding-android-arm-eabi@1.2.9':
     optional: true

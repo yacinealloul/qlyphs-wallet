@@ -2,7 +2,8 @@
 import { ALL_DAPPS } from '../../extension/src/config.ts';
 import { boot } from './host.ts';
 import type { HostPort } from './host.ts';
-import type { PublicErrorCode } from '../../../packages/provider/src/index.ts';
+import type { FailureReason, PublicErrorCode } from '../../../packages/provider/src/index.ts';
+import { newerBuildLive } from './release.ts';
 import { KEYS_CHANNEL, MAX_MESSAGE, REQUEST_CHANNEL, RESPONSE_CHANNEL } from './protocol.ts';
 import type { PopupReady } from './protocol.ts';
 
@@ -11,6 +12,13 @@ const status = (text: string) => ($('status').textContent = text);
 const origin = new URL(location.href).searchParams.get('origin');
 const opener = window.opener as Window | null;
 const REQUEST_ID = /^[A-Za-z0-9_-]{16,80}$/;
+/** Requests that sign: before one runs in a window open for a while, the window checks that its
+ * build is still the live one. */
+const WRITES = new Set(['requestTransaction', 'requestMintSession', 'signSessionChallenge']);
+/** A window younger than this was loaded from the live build, or close enough. */
+const FRESH_MS = 60_000;
+/** How long one answer about the live build is reused. */
+const CHECKED_MS = 30_000;
 
 async function start(origin: string, opener: Window) {
   const host = await boot();
@@ -54,11 +62,36 @@ async function start(origin: string, opener: Window) {
     outstanding.delete(pending.id);
     pending.close();
   };
-  const fail = (id: string, code: PublicErrorCode, message: string) => {
+  const fail = (id: string, code: PublicErrorCode, message: string, reason?: FailureReason) => {
     outstanding.delete(id);
-    post({ id, error: { code, message, outcome: 'not-submitted' } });
+    post({ id, error: { code, message, outcome: 'not-submitted', ...(reason ? { reason } : {}) } });
     settle();
   };
+  // This window can stay open across a release: the dapp reuses it (sdk.ts openPopup), and it keeps
+  // running the code it loaded, with the policy and rules that code pins. Such a window reloads into
+  // the live build once nothing is in progress in it, and refuses to sign meanwhile.
+  const born = Date.now();
+  let checked: { at: number; stale: Promise<boolean> } | null = null;
+  // A young window answers at once: it was loaded from the live build, or close enough.
+  const stale = (): false | Promise<boolean> => {
+    if (Date.now() - born < FRESH_MS) return false;
+    if (!checked || Date.now() - checked.at > CHECKED_MS)
+      checked = { at: Date.now(), stale: newerBuildLive() };
+    return checked.stale;
+  };
+  const idle = () => !outstanding.size && !host.overlays() && !running && !setup;
+  let reloading = false;
+  const reloadWhenIdle = () => {
+    if (reloading) return;
+    if (!idle()) {
+      status('Qlyphs Keys was updated. Close this window when you are done, then try again.');
+      return;
+    }
+    reloading = true;
+    location.reload();
+  };
+  // Write requests waiting for the build check, so that a cancel arriving meanwhile still applies.
+  const gated = new Set<string>();
   const settle = () => {
     if (!served || outstanding.size || host.overlays()) return;
     setTimeout(() => active && served && !outstanding.size && !host.overlays() && window.close(), 300);
@@ -89,6 +122,7 @@ async function start(origin: string, opener: Window) {
       bootstrap = undefined;
       stopSetup();
       outstanding.clear();
+      gated.clear();
       post({ reset: true });
       settle();
     });
@@ -154,7 +188,16 @@ async function start(origin: string, opener: Window) {
     // A page of the opener that has not seen this document announce itself, such as one reloaded
     // while this window stayed open, asks for the announcement.
     if (data.channel === KEYS_CHANNEL && data.type === 'hello') {
-      announce();
+      const check = idle() && stale();
+      if (!check) {
+        announce();
+        return;
+      }
+      void check.then((old) => {
+        if (!active) return;
+        if (old && idle()) reloadWhenIdle();
+        else announce();
+      });
       return;
     }
     if (data.channel !== REQUEST_CHANNEL) return;
@@ -171,11 +214,17 @@ async function start(origin: string, opener: Window) {
         bootstrap = undefined;
         p?.close();
         outstanding.clear();
+        gated.clear();
         post({ reset: true });
         settle();
         return;
       }
       if (request.method === 'cancelRequest' && request.target === setup?.id) stopSetup();
+      if (request.method === 'cancelRequest' && typeof request.target === 'string' &&
+          gated.delete(request.target)) {
+        fail(request.target, 'ABORTED', 'Request cancelled.', 'cancelled');
+        return;
+      }
       if (request.method === 'disconnect' && setup) {
         const id = setup.id;
         stopSetup();
@@ -193,6 +242,25 @@ async function start(origin: string, opener: Window) {
       if (request.method === 'connect' && typeof request.id === 'string' &&
           REQUEST_ID.test(request.id) && Object.keys(request).length === 2) {
         connect({ id: request.id, method: 'connect' }, p);
+      } else if (typeof request.id === 'string' && typeof request.method === 'string' &&
+          WRITES.has(request.method)) {
+        const id = request.id;
+        const check = stale();
+        if (!check) {
+          p.post(request);
+          return;
+        }
+        gated.add(id);
+        void check.then((old) => {
+          if (!gated.delete(id) || !active) return;
+          if (!old) {
+            if (port === p) p.post(request);
+            else fail(id, 'CONTEXT_CHANGED', 'The wallet channel closed. Try again.');
+            return;
+          }
+          fail(id, 'UNAVAILABLE', 'Qlyphs Keys was updated. Try again.', 'wallet-outdated');
+          reloadWhenIdle();
+        });
       } else {
         p.post(request);
       }

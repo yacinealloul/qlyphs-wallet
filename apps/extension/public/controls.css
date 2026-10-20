@@ -2,7 +2,7 @@
   /* Shared interaction recipes. A control keeps its foreground and border through
    rest, hover and press. Solid surfaces never turn transparent on interaction. */
   :root {
-    --control-accent: #ff946e;
+    --control-accent: var(--flare, #ff946e);
     --control-neutral: #242629;
     --control-neutral-hover: #2c2e32;
     --control-neutral-press: #34363a;
@@ -51,12 +51,15 @@
     .header-account,
     .account-choice,
     .account-menu-action,
-    .asset-row,
-    .setting-toggle
+    .drawer-account,
+    .picker-option,
+    .explore-row,
+    .quark-tile,
+    .collection-card,
+    .item-tile,
+    .setting-toggle,
+    .setting-link
   ),
-  .wallet-menu-nav > button,
-  .wallet-menu-secondary > button,
-  .wallet-menu-footer > button,
   body[data-app='explorer'] .history-row {
     --rest: transparent;
     --hover: var(--control-ghost-hover);
@@ -78,7 +81,22 @@
     --press: #ffffff18;
     --ink: var(--text);
   }
-  button:is(.backup-reminder, .ecosystem) {
+  /* Tiles sit on the page as cards: a solid neutral surface that lifts slightly on hover. */
+  button.activity-item {
+    --rest: transparent;
+    --hover: var(--control-ghost-hover);
+    --press: var(--control-ghost-press);
+    --ink: var(--text);
+    --edge: transparent;
+  }
+  button:is(.round, .asset-row, .points-card, .asset-picker) {
+    --rest: var(--card, #191a1c);
+    --hover: #1f2023;
+    --press: var(--control-neutral);
+    --ink: var(--text);
+    --edge: var(--line, #2e3033);
+  }
+  button.backup-reminder {
     --rest: #211e1c;
     --hover: #292521;
     --press: #312c27;
@@ -99,6 +117,24 @@
     --ink: var(--text);
     --edge: var(--control-edge);
   }
+  /* A destructive-looking action that stays calm: red ink and edge on the neutral surface. */
+  button.danger-button {
+    --rest: #2a1a18;
+    --hover: #34201d;
+    --press: #3e2622;
+    --ink: #ff9c8d;
+    --edge: #61382f;
+  }
+  button.choice {
+    --rest: var(--card, #191a1c);
+    --hover: #1f2023;
+    --press: var(--control-neutral);
+    --ink: var(--text);
+    --edge: var(--line, #2e3033);
+  }
+  button.choice[aria-pressed='true'] {
+    --edge: var(--control-accent);
+  }
   .display-options button[aria-pressed='true'] {
     --rest: #30241f;
     --hover: #382b25;
@@ -106,16 +142,10 @@
     --ink: #ffc2a9;
     --edge: var(--control-accent);
   }
-  .wallet-menu-nav > button[aria-current='page'],
   body[data-app='explorer'] .history-row[aria-current='true'] {
     --rest: #ff946e0a;
     --hover: #ff946e14;
     --press: #ff946e20;
-  }
-  .wallet-menu-footer > button {
-    --hover: #ff946e0c;
-    --press: #ff946e18;
-    --ink: var(--control-accent);
   }
   .input-icon[aria-pressed='true'] {
     --ink: var(--control-accent);
@@ -132,20 +162,13 @@
   button[role='tab'][aria-selected='true'] {
     --ink: var(--control-accent);
   }
-  button.round {
-    --rest: transparent;
+  /* Home's asset tabs read as headings: the selected one is plain text over its accent line. */
+  .home-tabs button[role='tab'] {
     --hover: transparent;
     --press: transparent;
+  }
+  .home-tabs button[role='tab'][aria-selected='true'] {
     --ink: var(--text);
-  }
-  .round > span {
-    background-color: var(--control-neutral);
-    border-color: var(--control-edge);
-    transition: background-color 120ms ease-out;
-  }
-  .round:first-child > span {
-    background-color: var(--control-accent);
-    border-color: transparent;
   }
   body[data-app='explorer'] .search-row button {
     --rest: var(--control-accent);
@@ -161,12 +184,6 @@
   @media (hover: hover) and (pointer: fine) {
     button:hover:not(:disabled) {
       background-color: var(--hover);
-    }
-    .round:hover:not(:disabled) > span {
-      background-color: var(--control-neutral-hover);
-    }
-    .round:first-child:hover:not(:disabled) > span {
-      background-color: #ffa17f;
     }
     summary:hover {
       background-color: var(--control-ghost-hover);
@@ -184,13 +201,6 @@
     transform: none;
     transition-duration: 60ms;
   }
-  .round:active:not(:disabled) > span {
-    background-color: var(--control-neutral-press);
-    transform: none;
-  }
-  .round:first-child:active:not(:disabled) > span {
-    background-color: #ffac8e;
-  }
   summary:active {
     background-color: var(--control-ghost-press);
   }
@@ -198,7 +208,7 @@
     outline: 2px solid var(--control-focus);
     outline-offset: 2px;
   }
-  :is(.tabs, #wallet-menu, .account-menu) button:focus-visible {
+  :is(.tabs, .account-menu) button:focus-visible {
     outline-offset: -2px;
   }
   :is(input, textarea, select):not([type='checkbox']),
@@ -246,14 +256,27 @@
     summary,
     input,
     textarea,
-    select,
-    .round > span {
+    select {
       transition: none;
     }
   }
 }
 
 @layer controls {
+  /* A collectible's one action, Send, is the page's main button. */
+  .quick[data-single] button.round {
+    --rest: var(--control-accent);
+    --hover: #ffa17f;
+    --press: #ffac8e;
+    --ink: #101112;
+    --edge: transparent;
+  }
+  /* The chosen chart period reads as selected, the others as quiet pills. */
+  button.market-range[aria-pressed='true'] {
+    --rest: var(--raised, #242527);
+    --hover: #2c2d30;
+    --ink: var(--text);
+  }
   /* The tracker is a quiet card that opens Activity, not a call to action. */
   button.tx-tracker {
     --rest: var(--card);
@@ -276,8 +299,7 @@
     --edge: color-mix(in srgb, var(--danger) 45%, var(--line));
   }
   /* While stopping, Stop keeps keyboard focus but ignores clicks (aria-disabled): it reads as
-     :disabled. The coming-soon actions carry aria-disabled too but answer a click: they keep
-     their own look. */
+     :disabled. */
   button#mint-session-stop[aria-disabled='true'] {
     cursor: not-allowed;
     opacity: 0.45;
@@ -298,18 +320,6 @@
   }
 }
 
-/* Announced actions (Swap, Qlyphs) keep a quiet, see-through surface in every state. */
-@layer controls {
-  button.round[data-soon] {
-    --ink: var(--muted);
-  }
-  .round[data-soon] > span,
-  .round[data-soon]:hover > span,
-  .round[data-soon]:active > span {
-    background-color: transparent;
-  }
-}
-
 @layer controls {
   /* Tip levels sit on the track: the sliding thumb, not the button, marks the choice. */
   .tip-options button {
@@ -324,5 +334,33 @@
     --hover: transparent;
     --press: transparent;
     --ink: var(--text);
+  }
+}
+
+@layer controls {
+  /* A review's section heading is text, not a button: under the pointer it brightens, without a
+     background that would end at the gutter. */
+  .review-disclosure > summary:is(:hover, :active) {
+    background-color: transparent;
+    color: var(--text);
+  }
+}
+
+@layer controls {
+  /* The fee row and its sheet's levels are rows of the review, not standalone buttons. */
+  button.fee-row,
+  button.fee-option {
+    --rest: transparent;
+    --hover: var(--control-ghost-hover);
+    --press: var(--control-ghost-press);
+    --ink: var(--text);
+    --edge: transparent;
+  }
+  button.fee-option {
+    --edge: var(--line);
+  }
+  button.fee-option[aria-checked='true'] {
+    --rest: color-mix(in srgb, var(--flare) 8%, transparent);
+    --edge: var(--flare);
   }
 }

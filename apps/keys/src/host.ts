@@ -1,6 +1,7 @@
 /** A top-level Keys page: keeps the wallet worker alive and hosts setup and confirmations. */
 import { KEYS_CHANNEL } from './protocol.ts';
 import type { HostToHub, HubToHost } from './hub.ts';
+import { RELEASE } from './release.ts';
 
 export interface HostPort {
   post(message: unknown): void;
@@ -158,13 +159,14 @@ export async function boot(): Promise<Host> {
     };
   });
   port.start();
-  // The version lets an older worker learn that a newer release is live, so it can stop a running
-  // mint session before the user reloads into the new code.
-  send({ type: 'hello', hostId, lock, url: location.href, documentId: crypto.randomUUID(), version: QLYPHS_VERSION });
+  // The release (version and build id) lets an older worker learn that a newer build is live, so it
+  // can stop a running mint session before the user reloads into the new code. Builds of one
+  // version differ by their build id alone.
+  send({ type: 'hello', hostId, lock, url: location.href, documentId: crypto.randomUUID(), version: RELEASE });
   // The wallet worker is shared by every keys page and lives until the last one closes, so after a
   // release an open tab can keep an older worker running. Talking to it would fail on every call;
   // say what to do instead. Never stop the older worker from here: it may be mid-submission.
-  if ((await welcome) !== QLYPHS_VERSION) {
+  if ((await welcome) !== RELEASE) {
     outdated();
     throw Error('Qlyphs Keys was updated; close its other tabs and windows');
   }

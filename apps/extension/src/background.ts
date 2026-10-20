@@ -29,27 +29,46 @@ import { notificationOutcome, notificationText, notificationCandidates } from '.
  * phrase, password, signed extrinsic or a general-purpose signing capability. */
 import { browser } from './browser.ts';
 import { uiError } from './errors.ts';
+import { reasonOf } from './reasons.ts';
 import type { Port, Sender } from './browser.ts';
 import {
   ALL_DAPPS,
   API,
   DAPPS,
+  PLATFORM,
+  customEndpoints,
+  defaultEndpoints,
+  setEndpoints,
+  probeEndpoints,
+  CUSTOM_ENDPOINTS,
   loadNetwork,
   NETWORK,
   PROFILE,
   RPC,
+  SOLANA_VAULT,
   SWITCHABLE,
   switchNetwork,
   VERSION,
+  LOCAL_NETWORK,
 } from './config.ts';
-import { api, digestOf, network, prepare, recheck, signingContext, submitToNode, tipBlock } from './network.ts';
-import { qlyphNumbers } from './qlyphs.ts';
+import { api, digestOf, network, prepare, recheck, rpc, signingContext, submitToNode, tipBlock } from './network.ts';
+import { parseInscription, qlyphSummaries } from './qlyphs.ts';
+import type { PublicInscriptionSummary } from '../../../packages/native/src/public.ts';
 import { submitOnce } from './submission.ts';
 import type { Manifest, Review, View } from './network.ts';
+import { ASSET_ID, catalog, logoCache, pointsView, readTokenLogo, readTokenProfile, type TokenProfile } from './platform.ts';
+import { readCollections, readHoldings } from './collections.ts';
+import { readTrades } from './market.ts';
+import type { Trade } from './market.ts';
+import type { CollectionSummary, Holdings } from './collections.ts';
+import { checkEndpoints, hostPatterns } from './endpoints.ts';
+import type { CatalogToken } from './platform.ts';
 import { SecretSession, encryptVault, decryptVault, validateVault } from './vault.ts';
 import type { Vault } from './vault.ts';
 import { identity, wasm } from './signer.ts';
 import { reviewSignIn, signSignIn } from './site-session.ts';
+import { publicKeyOf, reviewSolanaVault, signSolanaVault } from './solana-vault.ts';
+import type { SolanaVaultReview } from './solana-vault.ts';
 import type { SiteSessionChallenge } from '../../../packages/provider/src/site-session.ts';
 import { parseRequest, exact, pageOrigin, sameExtensionPage, Requests } from './requests.ts';
 import type { BoundDocument, Request } from './requests.ts';
@@ -88,7 +107,9 @@ import { generateMnemonic, requireMnemonic } from '../../../packages/chain/src/b
 import { fromHex, hex, requireThat, assetId } from '../../../packages/native/src/codec.ts';
 import { mainnetReviewed } from '../../../packages/native/src/protocol.ts';
 import { isRateDerived } from '../../../packages/native/src/fee-schedule.ts';
-import { feeRulesFor, FEES_UNVERIFIED_ERROR, MAINNET_FEES_OFF, quoteFees } from './fees.ts';
+import { feeRulesFor, FEES_UNVERIFIED_ERROR, MAINNET_FEES_OFF, quoteFees, scheduledQlyphsFee } from './fees.ts';
+import { readQtcChart, readQtcPrice, USD_RANGES } from './qtc-price.ts';
+import type { QtcPrice, UsdRange } from './qtc-price.ts';
 import type { FeeQuote } from './fees.ts';
 import { feeKept } from './fee-copy.ts';
 import {
@@ -102,7 +123,7 @@ import {
 } from '../../../packages/chain/src/codec/extrinsic.ts';
 import { parseCommand, json } from '../../native/src/commands.ts';
 import type { Command } from '../../native/src/commands.ts';
-import { parseTip } from '../../../packages/native/src/tip.ts';
+import { NO_TIP_ERROR, parseTip } from '../../../packages/native/src/tip.ts';
 import {
   attestationPolicy,
   attestedAsset,
@@ -110,13 +131,20 @@ import {
   attestedLot,
   authorizePurchase,
   pqConfigured as policyBundled,
+  policyPerNetwork,
+  usePolicy,
 } from '../../native/web/pq-guard.ts';
 import type { AttestedAsset } from '../../native/web/pq-guard.ts';
 import {
+  base58,
   capabilities,
   MINT_SESSION_LIMITS,
   QlyphsError,
   publicError,
+  wireError,
+  solanaVaultAddress,
+  solanaVaultBytes,
+  SOLANA_VAULT_METHODS,
 } from '../../../packages/provider/src/index.ts';
 import type {
   MintSessionSnapshot,
@@ -151,9 +179,17 @@ interface Transaction {
   to?: string;
   symbol?: string;
   decimals?: number;
+  /** The token it moves or mints, for its mark in Activity; display only. */
+  asset?: string;
   /** The mint session that signed it, and its lot; display and linkage only. */
   session?: string;
   lot?: number;
+  /** The network fee estimate the review showed plus the chosen tip (planck); display only. */
+  fee?: string;
+  /** The Qlyphs fee and the native charges (non-refundable charge plus deposit) the review
+   * showed, in planck, when above zero; display only. */
+  qlyphsFee?: string;
+  charges?: string;
 }
 interface Stored extends AccountBook {
   access?: WalletAccess;
@@ -179,8 +215,10 @@ interface Connection extends BoundDocument {
   mint?: MintRun;
   mintSnapshot?: string;
 }
+/** A UI message's sender, with the side panel request key the message carried (see onMessage). */
+type UISender = Sender & { panelKey?: string };
 interface Job {
-  kind: 'connect' | 'transaction' | 'session' | 'signin';
+  kind: 'connect' | 'transaction' | 'session' | 'signin' | 'vault';
   owner: string;
   genesis: string;
   epoch: number;
@@ -191,8 +229,19 @@ interface Job {
   mintReview?: MintSessionReview;
   /** A site sign-in: the challenge as the site sent it, its decoded fields and the review digest. */
   signIn?: { challenge: string; fields: SiteSessionChallenge; digest: string };
+  /** A Solana vault authorization: the message as sent, the key its vault was checked against. */
+  solanaVault?: {
+    message: string;
+    publicKey: Uint8Array;
+    review: SolanaVaultReview;
+    digest: string;
+  };
   windowId?: number;
   windowReady?: Promise<void>;
+  /** Shown in the side panel of window `windowId` instead of its own window. */
+  panel?: boolean;
+  /** The key handed to the one panel page that shows this request; its messages must carry it. */
+  panelKey?: string;
   expires?: number;
   cancelled: boolean;
   phase: 'review' | 'signing';
@@ -209,6 +258,8 @@ interface MintBinding {
   revision: number;
   requestId: string;
   windowId: number;
+  /** For a session shown in the side panel: the key of the panel page that approved it. */
+  panelKey?: string;
   documentId?: string;
   page: string;
   epoch: number;
@@ -233,7 +284,9 @@ interface PasskeyAttempt {
   credentialId?: string;
 }
 const passkeyAttempts = new Requests<PasskeyAttempt>();
-const session = new SecretSession();
+// The session wipes its secret itself at its deadline; the rest of the lock follows in a microtask,
+// so that no caller that happened to read the session first sees the wallet half locked.
+const session = new SecretSession(undefined, undefined, (epoch) => queueMicrotask(() => ended(epoch)));
 let accessReady = false;
 const requests = new Requests<Job>(),
   jobs = new Map<string, Job>(),
@@ -247,7 +300,7 @@ const mintWindows = new Map<string, MintRun>();
 const mintSettling = new Set<MintSessionController>();
 /** Session approvals that their window reloaded or left before the session started, by request id,
  * until the review would have expired: the window's next page is told that nothing started. */
-const abandonedStarts = new Map<string, { windowId: number; expires: number }>();
+const abandonedStarts = new Map<string, { windowId: number; panelKey?: string; expires: number }>();
 const FINAL_STATUSES = ['finalized', 'expired', 'cancelled-before-broadcast'];
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 /** Journal entries the wallet keeps; it never prunes them. */
@@ -389,6 +442,7 @@ async function pinNetwork(): Promise<void> {
 const loaded = (async () => {
   // A switchable build learns its network first: it picks that network's pin.
   await loadNetwork();
+  usePolicy(PROFILE.network);
   await browser.storage.local.setAccessLevel?.({
     accessLevel: 'TRUSTED_CONTEXTS',
   });
@@ -419,6 +473,10 @@ function unlinkedWallets() {
 }
 function isUnlocked(): boolean {
   return session.unlocked && accessReady && unlinkedWallets().length === 0;
+}
+/** Refuses once the unlock `epoch` belongs to has ended, without decoding the phrase into a string. */
+function stillUnlocked(epoch: number): void {
+  requireThat(session.unlocked && session.epoch === epoch, 'Wallet locked; approve again');
 }
 async function walletClear(
   vault: Vault,
@@ -462,7 +520,7 @@ async function addWalletLink(
     rootBytes = new TextEncoder().encode(session.phrase(epoch));
   try {
     const linked = await linkWallet(rootBytes, clear, anchor, vault, root.replace(/\/$/, ''));
-    session.phrase(epoch);
+    stillUnlocked(epoch);
     return {
       owner: anchor.owner,
       wallets: { ...state.access?.wallets, [vault.owner]: linked },
@@ -502,9 +560,25 @@ function transferDisplay(review: Review): Partial<Transaction> {
         ? `Quark #${review.asset.qlyph.number}`
         : review.asset.definition.symbol,
       decimals: review.asset.definition.decimals,
+      ...(review.asset.qlyph ? {} : { asset: String(c.asset) }),
     };
-  if (c.kind === 'inscribe') return { symbol: 'Quark' };
+  // The Quark or token it creates, so Activity can show it (a token by its logo).
+  if (c.kind === 'inscribe') return { symbol: 'Quark', asset: assetId(review.intent.owner, BigInt(review.intent.sequence)) };
+  if (c.kind === 'deploy' || c.kind === 'deployProgressive' || c.kind === 'deployProgressiveV2')
+    return { symbol: String(c.symbol), asset: assetId(review.intent.owner, BigInt(review.intent.sequence)) };
+  // A mint names its token in Activity; what it minted is in the transaction's detail.
+  if ((c.kind === 'mint' || c.kind === 'mintProgressive') && review.asset)
+    return { symbol: review.asset.definition.symbol, asset: String(c.asset) };
   return {};
+}
+/** What the operation pays besides the network fee, as reviewed, for Activity. */
+function reviewedCharges(review: Review): Partial<Transaction> {
+  const c = review.intent.costs;
+  const native = BigInt(c.nativeFee) + BigInt(c.deposit);
+  return {
+    ...(BigInt(c.platformFee) > 0n ? { qlyphsFee: String(BigInt(c.platformFee)) } : {}),
+    ...(native > 0n ? { charges: String(native) } : {}),
+  };
 }
 function accountTransactions(owner = state.vault && state.manifest ? account().owner : undefined): Transaction[] {
   return state.transactions.filter(
@@ -548,13 +622,8 @@ function projected(c: Connection): ProviderState {
   return { accounts, network: state.manifest ?? null, connected: accounts.length !== 0 };
 }
 function publishStates(): void {
-  const before = session.epoch;
+  // Past the deadline this read locks the session, and `ended` runs once, right after.
   void isUnlocked();
-  if (session.epoch !== before) {
-    // The absolute unlock deadline passed: the wallet just locked itself.
-    stopMintSessions('locked');
-    invalidate(() => true);
-  }
   for (const c of connections) {
     if (!c.alive || !c.subscribed) continue;
     const snapshot = projected(c),
@@ -607,18 +676,7 @@ function send(c: Connection, id: string, value: unknown): void {
     try {
       const payload = value as { result?: unknown; error?: unknown };
       const error = payload.error ? publicError(payload.error, 'VERIFICATION_FAILED') : null;
-      c.port.postMessage(
-        error
-          ? {
-              id,
-              error: {
-                code: error.code,
-                message: error.message,
-                ...(error.outcome ? { outcome: error.outcome } : {}),
-              },
-            }
-          : { id, ...payload },
-      );
+      c.port.postMessage(error ? { id, error: wireError(error) } : { id, ...payload });
     } catch {
       c.alive = false;
     }
@@ -645,12 +703,53 @@ function cancel(id: string, code: PublicErrorCode = 'CONTEXT_CHANGED'): void {
 function invalidate(predicate: (j: Job) => boolean): void {
   for (const [id, j] of jobs) if (predicate(j)) cancel(id);
 }
+// Chrome stops an idle extension service worker after about 30 seconds, which would drop an
+// unlocked session long before its fifteen-minute deadline. While unlocked, a trivial extension API
+// call every 20 seconds keeps the worker alive. This is a usability choice, not a security one: an
+// evicted worker loses the phrase sooner, which is safe, but an unlock would then last only until
+// the person's first half-minute pause, typically before the site they unlocked for asks. What
+// bounds how long the phrase is held is the deadline, which this never extends: its own timer reads
+// the session there, which ends it (see `session`), whatever the keep-alive's phase after a second
+// unlock moved the deadline.
+let awake: ReturnType<typeof setInterval> | undefined,
+  expiry: ReturnType<typeof setTimeout> | undefined;
+/** Called after every `session.install`: (re)arms the deadline for the current unlock. */
+function stayAwake(): void {
+  if (expiry !== undefined) clearTimeout(expiry);
+  const deadline = session.deadline;
+  // The callback only reads the session: one that fires late, after a new unlock, re-arms for that
+  // unlock and ends nothing. One that fires early re-arms for what is left.
+  expiry = deadline
+    ? setTimeout(() => void (session.unlocked && stayAwake()), Math.max(0, deadline - Date.now()))
+    : undefined;
+  (expiry as { unref?: () => void } | undefined)?.unref?.();
+  if (awake !== undefined) return;
+  awake = setInterval(() => {
+    if (session.unlocked) void browser.runtime.getPlatformInfo?.();
+  }, 20_000);
+  // Outside a browser (the test runner), the timer must not keep the process alive.
+  (awake as { unref?: () => void }).unref?.();
+}
 function lock(): void {
-  stopMintSessions('locked');
-  accessReady = false;
   session.lock();
   passkeyAttempts.invalidate(() => true);
-  invalidate(() => true);
+  ended(session.epoch);
+}
+/**
+ * Everything a lock ends besides the secret, which the session wipes itself: run once per lock, by
+ * lock() or after the session reached its deadline. Work bound to an epoch before `epoch` stops;
+ * an unlock begun since keeps its own (passkey attempts of the ended unlock fail on their epoch).
+ */
+function ended(epoch: number): void {
+  if (!session.unlocked) {
+    if (awake !== undefined) clearInterval(awake);
+    if (expiry !== undefined) clearTimeout(expiry);
+    awake = expiry = undefined;
+    accessReady = false;
+  }
+  if (vaultKey && vaultKey.epoch < epoch) vaultKey = null;
+  stopMintSessions('locked', (b) => b.epoch < epoch);
+  invalidate((j) => j.epoch < epoch);
   publishStates();
 }
 function current(job: Job): void {
@@ -779,9 +878,72 @@ async function syncHistory(): Promise<Transaction[]> {
   }
   // Ended mint sessions take history's final verdict for the payments they still count as open.
   if (resolveFromJournal(state.mintSessions ?? [], state.transactions)) changed = true;
+  if (await fillCharges().catch(() => false)) changed = true;
   if (changed) await save();
   await notifyHistory().catch(() => undefined);
   return state.transactions;
+}
+/** Creations and mints recorded before the wallet kept the reviewed Qlyphs fee get it once they
+ * succeeded in a block, from the fixed mint fee or the indexer's public fee schedule
+ * (scheduledQlyphsFee). Display only, asked once per entry and worker. */
+const chargesAsked = new Set<string>();
+async function fillCharges(): Promise<boolean> {
+  const missing = state.transactions.filter(
+    (tx) =>
+      tx.genesis === state.manifest?.genesis &&
+      tx.qlyphsFee === undefined &&
+      (tx.label === 'mint' || isRateDerived(tx.label)) &&
+      tx.status === 'finalized' &&
+      tx.nativeSuccess === true &&
+      !tx.verdict?.startsWith('rejected') &&
+      Number.isSafeInteger(tx.height) &&
+      !chargesAsked.has(tx.hash),
+  );
+  if (!missing.length) return false;
+  for (const tx of missing) chargesAsked.add(tx.hash);
+  let schedule: unknown = null;
+  if (missing.some((tx) => tx.label !== 'mint'))
+    try {
+      schedule = await api<unknown>('/api/fee-schedule');
+    } catch {
+      for (const tx of missing) chargesAsked.delete(tx.hash);
+      return false;
+    }
+  let changed = false;
+  for (const tx of missing) {
+    const fee = scheduledQlyphsFee(tx.label, tx.height!, schedule);
+    if (fee === null || tx.qlyphsFee !== undefined) continue;
+    tx.qlyphsFee = String(fee);
+    changed = true;
+  }
+  return changed;
+}
+/** CoinGecko answers few requests per address: a price a minute and a chart per period every five
+ * minutes are enough. When it refuses, the last answer stands in for half an hour; a refusal with
+ * none is kept 30 s so the wallet does not insist. */
+interface PriceRead<T> {
+  at: number;
+  value: Promise<T>;
+  last?: { at: number; value: T };
+}
+const priceReads = new Map<string, PriceRead<unknown>>();
+function priceRead<T>(key: string, fresh: number, read: () => Promise<T>): Promise<T> {
+  const known = priceReads.get(key) as PriceRead<T> | undefined;
+  if (known && Date.now() - known.at < fresh) return known.value;
+  const entry: PriceRead<T> = { at: Date.now(), value: Promise.resolve() as Promise<T>, last: known?.last };
+  entry.value = read().then(
+    (value) => {
+      entry.last = { at: Date.now(), value };
+      return value;
+    },
+    (error: unknown) => {
+      if (entry.last && Date.now() - entry.last.at < 30 * 60_000) return entry.last.value;
+      entry.at = Date.now() - fresh + 30_000;
+      throw error;
+    },
+  );
+  priceReads.set(key, entry as PriceRead<unknown>);
+  return entry.value;
 }
 /** The generic finality gate: nothing this account signed is unresolved in history. A running mint
  * session replaces it only for its own next lot (it holds the wallet meanwhile); every other
@@ -793,6 +955,17 @@ function requireSettledAccount(a: Account): void {
     ),
     'Wait for the previous operation to finalize. Unknown submissions are never recreated',
   );
+}
+const NO_WALLET_ERROR = 'Create or import a wallet in Qlyphs Wallet, then connect again.';
+let setupShownAt = -Infinity;
+/** A site asking to connect before any wallet exists gets UNAUTHORIZED and the wallet opens its setup
+ * page, at most once a minute so that a page cannot open tabs in a loop. */
+function showSetup(): void {
+  if (Date.now() - setupShownAt < 60_000) return;
+  setupShownAt = Date.now();
+  void Promise.resolve()
+    .then(() => browser.tabs.create({ url: browser.runtime.getURL('ui.html?surface=tab') }))
+    .catch(() => undefined);
 }
 async function createJob(
   kind: Job['kind'],
@@ -844,6 +1017,16 @@ async function createJob(
         fields,
         digest: await digestOf({ origin: connection.origin, owner: a.owner, challenge }),
       };
+    } else if (kind === 'vault') {
+      requireThat(connection, 'Vault authorizations start from a connected site');
+      const message = input as string;
+      const publicKey = await siteVaultKey(a);
+      job.solanaVault = {
+        message,
+        publicKey,
+        review: await reviewSolanaVault(message, publicKey, a.owner),
+        digest: await digestOf({ origin: connection.origin, owner: a.owner, message }),
+      };
     } else if (kind === 'session') {
       requireThat(connection, 'Mint sessions start from a connected site');
       await history();
@@ -892,13 +1075,19 @@ async function createJob(
     // A new extension page may message us before windows.create() resolves.
     // Bind the authoritative window ID before serving any review/approval.
     // Keys opens a site's review in that site's own popup, never in another site's.
-    job.windowReady = (
-      connection && browser.windows.openFor
+    job.windowReady = (async () => {
+      const panel = connection ? await offerPanel(connection.tabId, p.id) : undefined;
+      if (panel !== undefined) {
+        bound.panel = true;
+        return { id: panel };
+      }
+      return connection && browser.windows.openFor
         ? browser.windows.openFor(connection.tabId, url)
-        : openReview(url, connection?.tabId)
-    ).then((w) => {
+        : openReview(url, connection?.tabId);
+    })().then((w) => {
       requireThat(w.id !== undefined, 'Confirmation window could not be opened');
       bound.windowId = w.id;
+      if (bound.panel) void handPanelKey(p.id);
     });
     await job.windowReady;
     return p.id;
@@ -945,7 +1134,9 @@ async function reviewPlacement(tabId?: number): Promise<{ width: number; height:
 }
 /** Whether the active network has trusted witnesses. A switchable build only bundles a development
  * policy (build.mjs), so its mainnet side has none. */
-const pqConfigured = (): boolean => policyBundled && !(SWITCHABLE && NETWORK === 'mainnet');
+// A single policy is the test network's: mainnet never uses it. A policy per network applies to its own.
+const pqConfigured = (): boolean =>
+  policyBundled() && (policyPerNetwork || !(SWITCHABLE && NETWORK === 'mainnet'));
 /** The wallet's own price of a create or inscribe. With a fee schedule, only from both witnesses'
  * attestation of the best block, which the signature's era is then born at. */
 async function quoteFor(a: Account, command: Parameters<typeof quoteFees>[0]): Promise<FeeQuote> {
@@ -1027,7 +1218,9 @@ async function reviewMintSession(
   a: Account,
   origin: string,
   terms: MintSessionTerms,
+  tip = '0',
 ): Promise<MintSessionReview> {
+  parseTip(tip);
   requireThat(mintSessionsAvailable(), 'Mint sessions are not available on this network');
   const ticket = ticketCharge(PROFILE.runtime.codeHash);
   const pinned = attestationPolicy();
@@ -1074,6 +1267,8 @@ async function reviewMintSession(
       profile: PROGRESSIVE_MINT_PROFILE_V2,
     },
     attestedTerms(view, next),
+    undefined,
+    tip,
   );
   requireThat(
     quote.intent.costs.nativeFee === String(ticket),
@@ -1126,10 +1321,23 @@ async function reviewMintSession(
     capacity,
     policy,
     horizonBlocks,
+    ...(tip !== '0' ? { tip } : {}),
   });
-  return { id, terms, asset, start, range, costs, capacity, policy, horizonBlocks, digest };
+  return {
+    id,
+    terms,
+    asset,
+    start,
+    range,
+    costs,
+    capacity,
+    policy,
+    horizonBlocks,
+    ...(tip !== '0' ? { tip } : {}),
+    digest,
+  };
 }
-async function reviewSender(sender: Sender, id: string): Promise<Job> {
+async function reviewSender(sender: UISender, id: string): Promise<Job> {
   requireThat(
     sameExtensionPage(sender.url, root, '/ui.html') &&
       new URL(sender.url!).searchParams.get('request') === id,
@@ -1139,7 +1347,14 @@ async function reviewSender(sender: Sender, id: string): Promise<Job> {
   await j.windowReady;
   requireThat(requests.get(id).value === j, 'Request context changed');
   current(j);
-  if (sender.tab?.windowId !== undefined)
+  const fromPanel = new URL(sender.url!).searchParams.get('surface') === 'sidebar';
+  requireThat(fromPanel === !!j.panel, 'Wrong confirmation window');
+  if (j.panel)
+    requireThat(
+      sender.tab === undefined && !!j.panelKey && sender.panelKey === j.panelKey,
+      'Wrong confirmation window',
+    );
+  else if (sender.tab?.windowId !== undefined)
     requireThat(j.windowId === sender.tab.windowId, 'Wrong confirmation window');
   return j;
 }
@@ -1147,17 +1362,32 @@ async function reviewSender(sender: Sender, id: string): Promise<Job> {
 function attestLot(a: Account, command: Extract<Command, { kind: 'mintProgressive' }>) {
   return attestedLot(a.owner, a.genesis, command.asset, command.lot, tipBlock, API + '/api/attestations/tip');
 }
-/** Prepare a lot mint again with the priority tip the user picked in its review window. The lot is
- * attested again, so the new review has a new digest: an approval of the old one is refused. */
-async function retip(id: string, tip: string, sender: Sender): Promise<Review> {
+/** Review a mint session again with the tip every payment will carry: the next lot is attested
+ * again and the new review has its own id and digest, so an approval of the old one is refused. */
+async function retipSession(job: Job, tip: string): Promise<MintSessionReview> {
+  requireThat(job.phase === 'review' && job.mintReview && job.connection, 'Invalid request');
+  parseTip(tip);
+  const turn = ++job.retips;
+  const review = await reviewMintSession(account(), job.connection!.origin, job.mintReview!.terms, tip);
+  current(job);
+  requireThat(job.phase === 'review' && turn === job.retips, 'Review changed; approve the new request');
+  job.mintReview = review;
+  return review;
+}
+/** Prepare an operation again with the priority tip the user picked in its review: a new review
+ * with a new digest, so an approval of the old one is refused. */
+async function retip(id: string, tip: string, sender: Sender): Promise<Review | MintSessionReview> {
   const job = await reviewSender(sender, id);
+  if (job.kind === 'session') return retipSession(job, tip);
   requireThat(job.kind === 'transaction' && job.phase === 'review' && job.review, 'Invalid request');
   const command = parseCommand(job.review!.command);
-  requireThat(command.kind === 'mintProgressive', 'A priority tip is offered on lot mints only');
+  requireThat(!isRateDerived(command.kind), NO_TIP_ERROR);
   parseTip(tip);
   const a = account();
   const turn = ++job.retips;
-  const review = await prepare(state.manifest!, a.owner, command, await attestLot(a, command), undefined, tip);
+  // A lot mint is attested again; any other operation is prepared again from its command.
+  const attested = command.kind === 'mintProgressive' ? await attestLot(a, command) : undefined;
+  const review = await prepare(state.manifest!, a.owner, command, attested, undefined, tip);
   current(job);
   // A newer choice, or an approval that started meanwhile, wins over this one.
   requireThat(job.phase === 'review' && turn === job.retips, 'Review changed; approve the new request');
@@ -1171,10 +1401,15 @@ async function approve(
   page?: unknown,
 ): Promise<unknown> {
   const job = await reviewSender(sender, id);
+  // Two approvals of one review both get past the await above. Only the first claims it (each
+  // handler below reaches `phase = 'signing'` before its own first await); a second is refused
+  // here, before it could answer the site or release the mutex the first one still holds.
+  requireThat(jobs.get(id) === job && job.phase === 'review', 'Request already approved');
   // A session keeps the wallet mutex after its approval: it never reaches the finally below.
   if (job.kind === 'session') return approveSession(job, id, digest, page, sender);
   requireThat(page === undefined, 'Invalid approval');
   if (job.kind === 'signin') return approveSignIn(job, id, digest);
+  if (job.kind === 'vault') return approveSolanaVault(job, id, digest);
   if (job.kind === 'connect') {
     requireThat(isUnlocked() && session.epoch === job.epoch, 'Unlock wallet first');
     requireThat(digest === 'connect', 'Invalid connection approval');
@@ -1238,7 +1473,7 @@ async function approve(
     } finally {
       selectedClear.fill(0);
     }
-    session.phrase(job.epoch);
+    stillUnlocked(job.epoch);
     current(job);
     requireThat(Date.now() < review.intent.expiresAt, 'Review expired during verification');
     // Synchronous signing: no asynchronous boundary between the last authorization
@@ -1277,6 +1512,8 @@ async function approve(
       status: 'signed-not-submitted',
       validUntil: review.intent.context.blockNumber + review.intent.context.period,
       ...transferDisplay(review),
+      fee: String(BigInt(review.intent.costs.networkFee) + BigInt(review.tip ?? '0')),
+      ...reviewedCharges(review),
     };
     requireThat(
       state.transactions.length < 200,
@@ -1286,12 +1523,12 @@ async function approve(
     // Persist identity/hash before any broadcast. Never persist the phrase or raw signature.
     await save();
     current(job);
-    session.phrase(job.epoch);
+    stillUnlocked(job.epoch);
     tx.status = 'broadcast-uncertain';
     await save();
     current(job);
-    session.phrase(job.epoch);
-    // A tipped lot mint goes to the node itself: the service relays only tip 0.
+    stillUnlocked(job.epoch);
+    // A tipped transaction goes to the node itself: the service relays only tip 0.
     const submitted = await submitOnce(hash, () =>
       review.tip
         ? submitToNode(hex(signed), hash)
@@ -1318,11 +1555,14 @@ async function approve(
       tx.status = 'cancelled-before-broadcast';
       await save();
     }
+    // The site learns why as a public reason code only; the outcome is this wallet's own record,
+    // whatever the error says.
     finish(id, {
       error: publicError(
         null,
         'VERIFICATION_FAILED',
         tx && tx.status !== 'cancelled-before-broadcast' ? 'unknown' : 'not-submitted',
+        reasonOf(error),
       ),
     });
     throw Error(uiError(error), { cause: error });
@@ -1354,7 +1594,7 @@ async function approveSignIn(job: Job, id: string, digest: string): Promise<unkn
     } finally {
       selectedClear.fill(0);
     }
-    session.phrase(job.epoch);
+    stillUnlocked(job.epoch);
     current(job);
     // Checked again at signing time: the review may have stayed open while the session ran out.
     const fields = reviewSignIn(review.challenge, {
@@ -1368,7 +1608,109 @@ async function approveSignIn(job: Job, id: string, digest: string): Promise<unkn
     finish(id, { result: proof });
     return { signedIn: true };
   } catch (error) {
-    finish(id, { error: publicError(null, 'VERIFICATION_FAILED') });
+    finish(id, { error: publicError(null, 'VERIFICATION_FAILED', undefined, reasonOf(error)) });
+    throw Error(uiError(error), { cause: error });
+  } finally {
+    walletBusy = false;
+  }
+}
+/**
+ * The active account's Solana vault public key, derived only on the person's own action: unlock,
+ * account switch, backup acknowledgement (rememberVaultKey). A site's request only reads it: deriving
+ * it then would open the recovery phrase on a site's word. It counts for its account and epoch only,
+ * which every lock, expiry and account switch moves (and `ended` drops it). Public data.
+ */
+let vaultKey: { owner: string; epoch: number; key: Uint8Array } | null = null;
+/** The derivation the last of those actions started; it never rejects. A site's request that
+ * arrives meanwhile waits for it rather than being refused, and never starts one itself. */
+let vaultKeyPending: Promise<void> = Promise.resolve();
+/** Starts deriving and keeping the vault key of the active account, in a build serving the vault
+ * methods, once the wallet is unlocked and backed up. Called from the extension's own handlers only,
+ * which do not wait for it: the derivation opens its own copy of the phrase, so theirs is wiped at
+ * once. A failure keeps no key: a site asking for it is told to unlock again. */
+function rememberVaultKey(): void {
+  vaultKeyPending = deriveVaultKey();
+}
+async function deriveVaultKey(): Promise<void> {
+  try {
+    if (!SOLANA_VAULT || !state.backed || !isUnlocked()) return;
+    const a = account(),
+      epoch = session.epoch,
+      index = state.derived?.index ?? 0;
+    const signer = await wasm();
+    const clear = await walletClear(state.vault!, epoch);
+    let phrase: string;
+    try {
+      phrase = new TextDecoder().decode(clear);
+    } finally {
+      clear.fill(0);
+    }
+    if (session.epoch !== epoch || account().owner !== a.owner) return;
+    const key = publicKeyOf(signer.accountFromMnemonic(requireMnemonic(phrase), index, 0, 0), a.owner);
+    if (isUnlocked() && session.epoch === epoch) vaultKey = { owner: a.owner, epoch, key };
+  } catch {
+    /* no key kept */
+  }
+}
+/** Installs an unlock the person just proved (password, passkey, a new wallet) and derives the
+ * vault key on that same action. */
+function installUnlock(clear: Uint8Array, epoch: number, ready: boolean): void {
+  session.install(clear, epoch);
+  stayAwake();
+  accessReady = ready;
+  rememberVaultKey();
+}
+/** The vault key for a site's request, which has checked the unlock: the one kept for this account
+ * and unlock, or a refusal that names the person's next step. */
+async function siteVaultKey(a: Account): Promise<Uint8Array> {
+  if (!state.backed)
+    throw new QlyphsError('UNAUTHORIZED', 'Save and acknowledge your recovery backup first');
+  // Until no newer derivation has started: one begun while this waited is the one that counts.
+  for (let p = vaultKeyPending; ; p = vaultKeyPending) {
+    await p;
+    if (p === vaultKeyPending) break;
+  }
+  if (!vaultKey || vaultKey.owner !== a.owner || vaultKey.epoch !== session.epoch || !isUnlocked())
+    throw new QlyphsError('UNAUTHORIZED', 'Unlock wallet first', undefined, 'wallet-locked');
+  return vaultKey.key.slice();
+}
+/**
+ * Signs an approved Solana vault authorization and answers its site with the signature. Nothing is
+ * broadcast here: the site submits it. A failure has no outcome to report beyond the refusal.
+ */
+async function approveSolanaVault(job: Job, id: string, digest: string): Promise<unknown> {
+  try {
+    const review = job.solanaVault!;
+    requireThat(review.digest === digest, 'Review changed; approve the new request');
+    requireThat(
+      isUnlocked() && session.epoch === job.epoch,
+      'Wallet locked; unlock and request a new review',
+    );
+    requests.consume(id);
+    job.phase = 'signing';
+    current(job);
+    // Checked again at approval, against the same key: nothing the review showed has changed. The
+    // phrase is opened only after this network read, so the unlock deadline is read after it.
+    await reviewSolanaVault(review.message, review.publicKey, job.owner);
+    current(job);
+    const signer = await wasm();
+    current(job);
+    const selectedClear = await walletClear(state.vault!, job.epoch);
+    let phrase: string;
+    try {
+      phrase = new TextDecoder().decode(selectedClear);
+    } finally {
+      selectedClear.fill(0);
+    }
+    // From here to the signature nothing awaits.
+    stillUnlocked(job.epoch);
+    current(job);
+    const key = signer.accountFromMnemonic(requireMnemonic(phrase), state.derived?.index ?? 0, 0, 0);
+    const signature = signSolanaVault(key, job.owner, review.publicKey, review.message);
+    finish(id, { result: signature });
+    return { signed: true };
+  } catch (error) {
+    finish(id, { error: publicError(null, 'VERIFICATION_FAILED', undefined, reasonOf(error)) });
     throw Error(uiError(error), { cause: error });
   } finally {
     walletBusy = false;
@@ -1389,7 +1731,7 @@ async function approveSession(
 ): Promise<unknown> {
   const review = job.mintReview!;
   const refuse = (code: PublicErrorCode, error: unknown): never => {
-    finish(id, { error: publicError(null, code, 'not-submitted') });
+    finish(id, { error: publicError(null, code, 'not-submitted', reasonOf(error)) });
     walletBusy = false;
     publishStates();
     throw error instanceof Error ? error : Error('Request cancelled or session changed');
@@ -1441,6 +1783,7 @@ async function approveSession(
     runtime,
     ticket: String(ticket),
     margin: NETWORK_FEE_MARGIN,
+    ...(review.tip ? { tip: review.tip } : {}),
     symbol: review.asset.symbol,
     decimals: review.asset.decimals,
     approvedAt,
@@ -1474,6 +1817,7 @@ async function approveSession(
     revision: job.connectionRevision!,
     requestId: id,
     windowId: job.windowId!,
+    panelKey: job.panelKey,
     documentId: sender.documentId,
     page,
     epoch: job.epoch,
@@ -1564,6 +1908,9 @@ function mintDeps(b: MintBinding, record: MintSessionRecord): SessionDeps {
           profile: PROGRESSIVE_MINT_PROFILE_V2,
         },
         attestedTerms(view, next),
+        undefined,
+        // The recheck then counts the tip in the payer's balance; the context stays the service's.
+        record.tip ?? '0',
       );
       const i = review.intent;
       return {
@@ -1589,7 +1936,7 @@ function mintDeps(b: MintBinding, record: MintSessionRecord): SessionDeps {
         clear.fill(0);
       }
       // Refuses once the wallet locked during the linked-wallet await.
-      session.phrase(b.epoch);
+      stillUnlocked(b.epoch);
       const index = state.derived?.index ?? 0;
       return (callHex, context) =>
         signer.signCallFromMnemonic(phrase, fromHex(callHex), context, index, 0, 0);
@@ -1608,8 +1955,12 @@ function mintDeps(b: MintBinding, record: MintSessionRecord): SessionDeps {
     },
     era,
     // Exactly one transport call, never raced: a lost answer leaves the payment uncertain.
-    submit: async (intentId, hash, bytes) =>
-      (await submitOnce(hash, () => api('/api/submit', { id: intentId, raw: hex(bytes) }))).status,
+    submit: async (intentId, hash, bytes, tipped) =>
+      (
+        await submitOnce(hash, () =>
+          tipped ? submitToNode(hex(bytes), hash) : api('/api/submit', { id: intentId, raw: hex(bytes) }),
+        )
+      ).status,
     journalFull: () => state.transactions.length >= JOURNAL_CAPACITY,
     journalAdd: (entry) => void state.transactions.unshift({ ...entry }),
     journalStatus(hash, status) {
@@ -1695,12 +2046,18 @@ const confirmationPage = (sender: Sender, request: unknown, page: unknown): bool
   SESSION_ID.test(page) &&
   sameExtensionPage(sender.url, root, '/ui.html') &&
   new URL(sender.url!).searchParams.get('request') === request;
+/** Whether a UI message comes from the surface a request or session is bound to: its window, or in
+ * the side panel, the panel page that holds its key. */
+function fromBoundSurface(sender: UISender, bound: { windowId?: number; panelKey?: string }): boolean {
+  if (bound.panelKey !== undefined) return sender.tab === undefined && sender.panelKey === bound.panelKey;
+  return sender.tab?.windowId !== undefined && sender.tab.windowId === bound.windowId;
+}
 /** The session a progress window follows: the sender must be the window its approval came from. */
-function mintWindow(sender: Sender, request: unknown, page: unknown): MintRun {
+function mintWindow(sender: UISender, request: unknown, page: unknown): MintRun {
   requireThat(confirmationPage(sender, request, page), NO_SESSION);
   const run = mintWindows.get(request as string);
   requireThat(
-    run && sender.tab?.windowId !== undefined && sender.tab.windowId === run.binding.windowId,
+    run && fromBoundSurface(sender, run.binding),
     NO_SESSION,
   );
   const ended = run!.controller.record.endedAt;
@@ -1724,23 +2081,26 @@ const approvedPage = (
  * session, or when a page of its window leaves. The approval then refuses once the save completes,
  * so nothing is signed, and the window's next page learns why.
  */
-function abandonStart(sender: Sender, request: unknown, page: unknown, leaving: boolean): void {
+function abandonStart(sender: UISender, request: unknown, page: unknown, leaving: boolean): void {
   if (!confirmationPage(sender, request, page)) return;
   const job = jobs.get(request as string);
-  if (!job?.approval || sender.tab?.windowId === undefined || sender.tab.windowId !== job.windowId)
-    return;
+  if (!job?.approval || !fromBoundSurface(sender, job)) return;
   if (!leaving && approvedPage(job.approval, sender, page)) return;
   job.cancelled = true;
   const now = Date.now();
   for (const [id, a] of abandonedStarts) if (now >= a.expires) abandonedStarts.delete(id);
-  abandonedStarts.set(request as string, { windowId: job.windowId, expires: job.expires ?? 0 });
+  abandonedStarts.set(request as string, {
+    windowId: job.windowId!,
+    panelKey: job.panelKey,
+    expires: job.expires ?? 0,
+  });
 }
 /** Whether this window abandoned its approval of `request` before the session started. */
-function startAbandoned(sender: Sender, request: unknown, page: unknown): boolean {
+function startAbandoned(sender: UISender, request: unknown, page: unknown): boolean {
   const a = confirmationPage(sender, request, page)
     ? abandonedStarts.get(request as string)
     : undefined;
-  return !!a && Date.now() < a.expires && sender.tab?.windowId === a.windowId;
+  return !!a && Date.now() < a.expires && fromBoundSurface(sender, a);
 }
 /** The selected account's running session, else its latest ended one whose payments are not all
  * final in history: what the wallet's tracker follows. */
@@ -1824,12 +2184,15 @@ async function handlePage(c: Connection, input: unknown): Promise<void> {
         'Mint sessions are not available on this network',
         r.method === 'requestMintSession' ? 'not-submitted' : undefined,
       );
+    if (!SOLANA_VAULT && (SOLANA_VAULT_METHODS as readonly string[]).includes(r.method))
+      throw new QlyphsError('UNSUPPORTED_METHOD', 'Unsupported wallet method', undefined, 'not-available');
     switch (r.method) {
       case 'capabilities':
         send(c, r.id, {
           result: capabilities(
             PROFILE.network,
             mintSessionsAvailable() ? MINT_SESSION_LIMITS : null,
+            SOLANA_VAULT,
           ),
         });
         break;
@@ -1858,6 +2221,10 @@ async function handlePage(c: Connection, input: unknown): Promise<void> {
         send(c, r.id, { result: true });
         break;
       case 'connect':
+        if (!state.vault || !state.manifest) {
+          showSetup();
+          throw new QlyphsError('UNAUTHORIZED', NO_WALLET_ERROR);
+        }
         if (permitted(c) && isUnlocked()) send(c, r.id, { result: [account()] });
         else await createJob('connect', c, r.id);
         break;
@@ -1908,6 +2275,40 @@ async function handlePage(c: Connection, input: unknown): Promise<void> {
         await createJob('signin', c, r.id, r.params.challenge);
         break;
       }
+      case 'solanaVaultPublicKey': {
+        const a = state.vault && state.manifest ? account() : null;
+        if (!a || !permitted(c))
+          throw new QlyphsError('UNAUTHORIZED', 'Wrong account, network or permission');
+        if (!isUnlocked()) throw new QlyphsError('UNAUTHORIZED', 'Unlock wallet first');
+        const publicKey = await siteVaultKey(a);
+        const vault = base58(solanaVaultBytes(await solanaVaultAddress(publicKey), 32));
+        // The account may have changed while the address was hashed: answer only for the one asked.
+        if (!c.alive || !permitted(c) || account().owner !== a.owner)
+          throw new QlyphsError('CONTEXT_CHANGED', 'Account context changed');
+        send(c, r.id, { result: { address: a.address, publicKey: hex(publicKey), vault } });
+        break;
+      }
+      case 'signSolanaVaultAuthorization': {
+        const a = state.vault && state.manifest ? account() : null;
+        if (!a || !permitted(c))
+          throw new QlyphsError('UNAUTHORIZED', 'Wrong account, network or permission');
+        if (!isUnlocked()) throw new QlyphsError('UNAUTHORIZED', 'Unlock wallet first');
+        if (walletBusy) throw new QlyphsError('BUSY', 'Another operation is pending');
+        if (!state.backed)
+          throw new QlyphsError('UNAUTHORIZED', 'Save and acknowledge your recovery backup first');
+        // Refused before any window opens: a message for another program, network, vault or
+        // lifetime never reaches the person.
+        const publicKey = await siteVaultKey(a);
+        try {
+          await reviewSolanaVault(r.params.message, publicKey, a.owner);
+        } catch {
+          throw new QlyphsError('INVALID_REQUEST', 'Invalid vault authorization');
+        }
+        // Another request may have taken the mutex while the slot was read.
+        if (walletBusy) throw new QlyphsError('BUSY', 'Another operation is pending');
+        await createJob('vault', c, r.id, r.params.message);
+        break;
+      }
       case 'mintSession':
         send(c, r.id, { result: mintProjection(c) });
         break;
@@ -1924,7 +2325,7 @@ async function handlePage(c: Connection, input: unknown): Promise<void> {
     }
   } catch (error) {
     const candidate = r?.id ?? (input as { id?: unknown } | null)?.id;
-    const failure = publicError(error, 'VERIFICATION_FAILED', 'not-submitted');
+    const failure = publicError(error, 'VERIFICATION_FAILED', 'not-submitted', reasonOf(error));
     // Session reads change nothing: their errors carry no write outcome, whatever refused them,
     // including a refusal before or while parsing. So the method comes from the input itself.
     const method = (input as { method?: unknown } | null)?.method;
@@ -1935,7 +2336,133 @@ async function handlePage(c: Connection, input: unknown): Promise<void> {
     publishStates();
   }
 }
+/**
+ * The wallet's side panels. A request from a site whose window shows the panel opens there instead
+ * of in a new window. The panel takes it only on its home view; then the page that shows the review
+ * keeps a channel open, and closing or leaving it cancels the review, as closing a window does.
+ */
+interface Panel {
+  port: Port;
+  /** The panel's window, as the panel reports it once it connects. Chrome gives a panel shown in
+   * every tab no window of its own, and its messages no document id, so the panel says where it is. */
+  window: Promise<number | undefined>;
+  /** The request this panel document shows, from its own URL. */
+  request: string | null;
+  /** The key this page received for that request. */
+  key?: string;
+  offer?: (accepted: boolean) => void;
+}
+const panels = new Set<Panel>();
+/** Requests a panel took whose review page has not connected yet. */
+const panelHandoffs = new Map<string, ReturnType<typeof setTimeout>>();
+const PANEL_ANSWER_MS = 1500,
+  PANEL_LOAD_MS = 10_000;
+/** Offers a request to the side panel of the asking tab's window: the window id once its home view
+ * took it, else undefined and the request opens in its own window. */
+async function offerPanel(tabId: number, request: string): Promise<number | undefined> {
+  if (panels.size === 0) return undefined;
+  let windowId: number | undefined;
+  try {
+    windowId = (await browser.tabs.get(tabId)).windowId;
+  } catch {
+    return undefined;
+  }
+  if (windowId === undefined) return undefined;
+  // Every panel's window is read at once: a panel that never says where it is delays no other.
+  const all = [...panels];
+  const windows = await Promise.all(all.map((panel) => panel.window));
+  for (const [i, panel] of all.entries()) {
+    if (windows[i] !== windowId || !panels.has(panel) || panel.request !== null || panel.offer) continue;
+    const accepted = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), PANEL_ANSWER_MS);
+      panel.offer = (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      };
+      try {
+        panel.port.postMessage({ action: 'open-request', request });
+      } catch {
+        resolve(false);
+      }
+    });
+    panel.offer = undefined;
+    if (!accepted) continue;
+    panelHandoffs.set(
+      request,
+      setTimeout(() => {
+        panelHandoffs.delete(request);
+        cancel(request);
+      }, PANEL_LOAD_MS),
+    );
+    return windowId;
+  }
+  return undefined;
+}
+/** Gives a panel request's key to the first page that shows it in the panel that took it, once both
+ * that page is connected and the request is bound to the panel's window. */
+async function handPanelKey(request: string): Promise<void> {
+  for (const panel of panels) {
+    if (panel.request !== request) continue;
+    const windowId = await panel.window;
+    const job = jobs.get(request);
+    if (!job?.panel || job.panelKey || !panelHandoffs.has(request) || job.windowId === undefined) return;
+    if (windowId !== job.windowId) continue;
+    clearTimeout(panelHandoffs.get(request));
+    panelHandoffs.delete(request);
+    job.panelKey = panel.key = crypto.randomUUID();
+    panel.port.postMessage({ key: job.panelKey });
+    return;
+  }
+}
+function connectPanel(port: Port): void {
+  const s = port.sender;
+  requireThat(
+    s?.id === browser.runtime.id &&
+      s.tab === undefined &&
+      sameExtensionPage(s.url, root, '/ui.html') &&
+      new URL(s.url!).searchParams.get('surface') === 'sidebar',
+    'Invalid channel',
+  );
+  const request = new URL(s!.url!).searchParams.get('request');
+  let located: (windowId: number | undefined) => void = () => undefined;
+  const panel: Panel = {
+    port,
+    window: new Promise((resolve) => {
+      located = resolve;
+      setTimeout(() => resolve(undefined), PANEL_ANSWER_MS);
+    }),
+    request,
+  };
+  panels.add(panel);
+  if (request !== null) void handPanelKey(request);
+  port.onMessage.addListener((message) => {
+    const m = message as { accepted?: unknown; window?: unknown };
+    if (Number.isSafeInteger(m?.window) && (m.window as number) >= 0) located(m.window as number);
+    if (panel.offer && typeof m?.accepted === 'boolean') panel.offer(m.accepted);
+  });
+  port.onDisconnect.addListener(() => {
+    panels.delete(panel);
+    panel.offer?.(false);
+    if (request !== null && jobs.get(request)?.panel) cancel(request);
+    // Closing or leaving the panel page of a session ends its signing, as closing its window does.
+    if (panel.key)
+      for (const [id, run] of mintWindows)
+        if (run.binding.panelKey === panel.key) {
+          run.binding.windowGone = true;
+          run.controller.stop('window');
+          mintWindows.delete(id);
+        }
+  });
+}
 browser.runtime.onConnect.addListener((port) => {
+  if (port.name === 'qlyphs-panel') {
+    try {
+      connectPanel(port);
+    } catch {
+      port.disconnect();
+    }
+    return;
+  }
   try {
     const s = port.sender;
     requireThat(
@@ -2062,7 +2589,7 @@ browser.runtime.onInstalled.addListener((details) => {
       url: browser.runtime.getURL('ui.html?surface=tab'),
     });
 });
-async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
+async function handleUI(message: unknown, sender: UISender): Promise<unknown> {
   // The explorer gets public history only; it cannot use wallet/signing actions.
   if (sender.id === browser.runtime.id && sameExtensionPage(sender.url, root, '/explorer.html')) {
     requireThat(message && typeof message === 'object', 'Invalid UI request');
@@ -2153,6 +2680,16 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
         network: {
           active: PROFILE.network,
           switchable: SWITCHABLE,
+        },
+        // What Settings → Network shows and edits: the active network's endpoints, and which
+        // of them the user set. Editing needs the browser's permission API (the extension).
+        endpoints: {
+          rpc: RPC,
+          api: API,
+          explorer: EXPLORER,
+          defaults: defaultEndpoints(),
+          custom: customEndpoints(),
+          editable: CUSTOM_ENDPOINTS && !!browser.permissions && (!state.vault || isUnlocked()),
         },
         extensionOrigin: root.replace(/\/$/, ''),
       };
@@ -2297,8 +2834,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
             identity,
           );
           if (!unlinkedWallets().length) await verifyInstallation(clear);
-          session.install(clear, a.epoch);
-          accessReady = !unlinkedWallets().length;
+          installUnlock(clear, a.epoch, !unlinkedWallets().length);
         }
         return true;
       } finally {
@@ -2385,8 +2921,11 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
         } catch (error) {
           activate(state, previous);
           state.otherAccounts = others;
+          // The switch moved the epoch: the restored account's key is derived again for it.
+          rememberVaultKey();
           throw error;
         }
+        rememberVaultKey();
         return true;
       } finally {
         clear?.fill(0);
@@ -2454,8 +2993,10 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
           activate(state, previous);
           state.otherAccounts = others;
           state.version = version;
+          rememberVaultKey();
           throw error;
         }
+        rememberVaultKey();
         return { account: account() };
       } finally {
         clear?.fill(0);
@@ -2574,10 +3115,8 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
           Object.assign(state, previous);
           throw error;
         }
-        if (!additional) {
-          session.install(clear, nextEpoch);
-          accessReady = true;
-        }
+        if (!additional) installUnlock(clear, nextEpoch, true);
+        else rememberVaultKey();
         return {
           account: account(),
           ...(action === 'create' ? { phrase } : {}),
@@ -2612,13 +3151,14 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
             state.access = previous;
             throw error;
           }
-          session.phrase(epoch);
+          stillUnlocked(epoch);
           if (!unlinkedWallets().length) {
             const rootBytes = new TextEncoder().encode(session.phrase(epoch));
             try {
               await verifyInstallation(rootBytes);
-              session.phrase(epoch);
+              stillUnlocked(epoch);
               accessReady = true;
+              rememberVaultKey();
             } catch (error) {
               lock();
               throw error;
@@ -2679,8 +3219,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
           replaceRoot(oldVault);
           throw error;
         }
-        session.install(clear, epoch);
-        accessReady = !unlinkedWallets().length;
+        installUnlock(clear, epoch, !unlinkedWallets().length);
         return true;
       } finally {
         clear?.fill(0);
@@ -2701,7 +3240,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       requireThat(SWITCHABLE, 'This wallet has a single network');
       requireThat(m.network === 'development' || m.network === 'mainnet', 'Unknown network');
       if (m.network !== NETWORK) {
-        // No session runs on a switchable build; stopping first still keeps the reason exact.
+        // Sessions are bound to the network they started on: they end before it changes.
         stopMintSessions('network');
         abortMintSettling();
       }
@@ -2713,12 +3252,14 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       const move = (async () => {
         await writes;
         await switchNetwork(m.network as 'development' | 'mainnet');
+        usePolicy(PROFILE.network);
         placeManifests(state);
         // The first visit pins the network, which needs it to answer; otherwise stay where we were.
         try {
           await pinNetwork();
         } catch (error) {
           await switchNetwork(from);
+          usePolicy(PROFILE.network);
           placeManifests(state);
           throw error;
         }
@@ -2745,10 +3286,78 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
       }
       return true;
     }
+    case 'set-endpoints': {
+      // Settings → Network → Edit, the extension's own pages only (this handler). Mainnet takes a
+      // node, proven against the compiled pins before it is kept; a test network also takes an
+      // indexer and an explorer. A different test node or indexer may be another chain with the
+      // same genesis: its pin and history start again, so nothing from one shows on the other.
+      exact(m, ['action', 'network', 'endpoints']);
+      // Where the wallet reads and submits is the wallet's to change, not whoever has the browser.
+      requireThat(!state.vault || isUnlocked(), 'Unlock wallet first');
+      const name = m.network;
+      requireThat(name === 'mainnet' || name === 'development', 'Unknown network');
+      requireThat(SWITCHABLE || name === PROFILE.network, 'Unknown network');
+      requireThat(CUSTOM_ENDPOINTS && browser.permissions, 'This wallet cannot change its endpoints');
+      const next = m.endpoints === null ? null : checkEndpoints(name, m.endpoints, LOCAL_NETWORK);
+      requireThat(!walletBusy && !keyBusy && !switching, 'Finish the current operation first');
+      const hosts = next ? hostPatterns(next) : [];
+      requireThat(
+        !hosts.length || (await browser.permissions!.contains({ origins: hosts })),
+        'Allow Qlyphs to reach this address first',
+      );
+      const before = customEndpoints(name);
+      const newChain =
+        name === 'development' && ((next?.api ?? '') !== (before.api ?? '') || (next?.rpc ?? '') !== (before.rpc ?? ''));
+      const active = PROFILE.network === name;
+      if (active) {
+        // Prove the endpoints answer for this network before keeping them. The probe reads them
+        // directly: until they are kept, everything else still goes to the endpoints in use.
+        await network(newChain ? undefined : state.manifest, probeEndpoints(name, next));
+        requireThat(!walletBusy && !keyBusy && !switching, 'Finish the current operation first');
+        stopMintSessions('network');
+        abortMintSettling();
+        invalidate(() => true);
+      }
+      await writes;
+      await setEndpoints(name, next);
+      if (newChain) {
+        const pin = active ? state.manifest : state.parked?.network === name ? state.parked : undefined;
+        if (pin) state.transactions = state.transactions.filter((t) => t.genesis !== pin.genesis);
+        if (active) delete state.manifest;
+        else if (state.parked?.network === name) delete state.parked;
+      }
+      // Only the active network's history and sessions are bound to the endpoints that changed.
+      if (active) {
+        historyPending = undefined;
+        mintWindows.clear();
+      }
+      await save();
+      if (active) {
+        // The new chain pins as a first visit does (pinNetwork covers switchable builds).
+        if (SWITCHABLE) await pinNetwork();
+        else if (state.vault && !state.manifest) {
+          state.manifest = (await network()).manifest;
+          await save();
+        }
+        for (const c of [...connections]) {
+          c.alive = false;
+          invalidate((j) => j.connection === c);
+          try {
+            c.port.disconnect();
+          } catch {
+            /* gone */
+          }
+          connections.delete(c);
+        }
+      }
+      return true;
+    }
     case 'ack':
       exact(m, ['action']);
       requireThat(state.vault && isUnlocked(), 'Unlock wallet first');
       state.backed = true;
+      // Started before the save: a site asking meanwhile waits for this key, not for a refusal.
+      rememberVaultKey();
       await save();
       return true;
     case 'locked-backup':
@@ -2765,6 +3374,7 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
           records(state).length === 1 &&
           !walletBusy &&
           m.confirmation === 'START_NEW_WALLET',
+        // The backup the reset asks for covers one wallet; with more, each is removed on its own.
         'Reset requires one locked wallet and explicit confirmation',
       );
       resetting = true;
@@ -2850,16 +3460,23 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
         (x) => x.definition.policy === 'inscription' && BigInt(x.available) > 0n,
       );
       const numbers = held.length
-        ? await qlyphNumbers(
+        ? await qlyphSummaries(
             a.owner,
             held.map((x) => x.id),
             (path) => api<unknown>(path),
             // Numbers are display only: balances still load if the list cannot be read.
-          ).catch(() => new Map<string, number>())
-        : new Map<string, number>();
-      const assets = view.assets.map((x) =>
-        numbers.has(x.id) ? { ...x, qlyph: { number: numbers.get(x.id)! } } : x,
-      );
+          ).catch(() => new Map<string, PublicInscriptionSummary>())
+        : new Map<string, PublicInscriptionSummary>();
+      // And their content: the Quark tiles draw it, and a collection's mint or document is told
+      // apart by it.
+      await readQlyphContents([...numbers.keys()]);
+      const assets = view.assets.map((x) => {
+        if (!numbers.has(x.id)) return x;
+        const read = qlyphContents.get(API + ' ' + x.id);
+        const s = numbers.get(x.id)!;
+        // The height and creator let Activity show which Quark a past creation made.
+        return { ...x, qlyph: { number: s.number, height: s.height, creator: s.creator, ...read } };
+      });
       await history();
       requireThat(
         state.vault && account().owner === a.owner,
@@ -2874,6 +3491,105 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
         // Display only: lets the UI count down to finality.
         chain: { head: chain.head, finalized: chain.finalized, at: Date.now() },
       };
+    }
+    case 'token-logo': {
+      exact(m, ['action', 'asset']);
+      requireThat(typeof m.asset === 'string' && ASSET_ID.test(m.asset), 'Invalid asset');
+      // The cache is per app origin: a switchable build never shows one network's logo on the other.
+      return await logos(PLATFORM)(m.asset);
+    }
+    case 'token-profile': {
+      exact(m, ['action', 'asset']);
+      requireThat(typeof m.asset === 'string' && ASSET_ID.test(m.asset), 'Invalid asset');
+      return await profiles(PLATFORM)(m.asset);
+    }
+    case 'discover': {
+      exact(m, ['action']);
+      return await discover();
+    }
+    case 'qtc-price': {
+      exact(m, ['action']);
+      return await priceRead<QtcPrice>('price', 60_000, () => readQtcPrice());
+    }
+    case 'qtc-chart': {
+      exact(m, ['action', 'range']);
+      requireThat(USD_RANGES.some(([r]) => r === m.range), 'Invalid range');
+      const range = m.range as UsdRange;
+      return await priceRead<[number, number][]>('chart ' + range, 5 * 60_000, () => readQtcChart(range));
+    }
+    case 'clear-history': {
+      exact(m, ['action']);
+      requireThat(state.vault && isUnlocked(), 'Unlock wallet first');
+      requireThat(
+        !keyBusy && ![...jobs.values()].some((job) => job.phase === 'signing'),
+        'Finish the current operation first',
+      );
+      const a = account();
+      // Unresolved entries gate the next operation, and mint sessions keep theirs: both stay.
+      const sessions = state.mintSessions ?? [];
+      const held = new Set(sessions.flatMap((r) => r.attempts.map((x) => x.hash)));
+      const previous = state.transactions;
+      state.transactions = previous.filter(
+        (t) =>
+          t.owner !== a.owner ||
+          t.genesis !== a.genesis ||
+          !FINAL_STATUSES.includes(t.status) ||
+          held.has(t.hash) ||
+          (t.session !== undefined && sessions.some((r) => r.id === t.session)),
+      );
+      const removed = previous.length - state.transactions.length;
+      if (removed)
+        try {
+          await save();
+        } catch (error) {
+          state.transactions = previous;
+          throw error;
+        }
+      return { removed };
+    }
+    case 'token-market': {
+      exact(m, ['action', 'asset']);
+      requireThat(typeof m.asset === 'string' && ASSET_ID.test(m.asset), 'Invalid asset');
+      return await tokenTrades(m.asset);
+    }
+    case 'collections': {
+      // The page passes the Quarks the indexer listed for this account (its balances view): the app
+      // is asked about those only, and can name or draw them, never add one.
+      exact(m, ['action', 'quarks']);
+      requireThat(
+        Array.isArray(m.quarks) &&
+          m.quarks.length <= 1000 &&
+          m.quarks.every((q: unknown) => typeof q === 'string' && ASSET_ID.test(q)),
+        'Invalid Quarks',
+      );
+      return await holdings(account().owner, m.quarks as string[]);
+    }
+    case 'discover-collections': {
+      exact(m, ['action']);
+      return await discoverCollections();
+    }
+    case 'tx-detail': {
+      // Where one of this account's transactions landed: its block, as the indexer locates it and
+      // the node names it. Display only; the transaction's status still comes from the history.
+      exact(m, ['action', 'hash']);
+      requireThat(typeof m.hash === 'string' && /^0x[0-9a-f]{64}$/.test(m.hash), 'Invalid transaction');
+      requireThat(accountTransactions().some((tx) => tx.hash === m.hash), 'Unknown transaction');
+      const found = await api<{ hash?: string; status?: string; height?: number; index?: number }>(
+        '/api/transactions/' + m.hash,
+      );
+      if (found.hash !== m.hash || !Number.isSafeInteger(found.height) || found.height! < 0) return null;
+      const blockHash = await rpc<string>('chain_getBlockHash', [found.height]);
+      requireThat(typeof blockHash === 'string' && /^0x[0-9a-f]{64}$/.test(blockHash), 'Invalid block');
+      return {
+        height: found.height,
+        index: Number.isSafeInteger(found.index) ? found.index : null,
+        blockHash,
+      };
+    }
+    case 'points': {
+      exact(m, ['action']);
+      const owner = account().owner;
+      return pointsView(await api<unknown>('/api/points?account=' + owner));
     }
     case 'request-state': {
       // Lets the wallet stop waiting when a review it opened is rejected or expires.
@@ -2905,6 +3621,18 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
             expiresAt: j.signIn!.fields.expiresAt,
           },
           digest: j.signIn!.digest,
+          unlocked: isUnlocked(),
+        };
+      if (j.kind === 'vault')
+        return {
+          id: m.id,
+          kind: j.kind,
+          origin: j.connection!.origin,
+          account: account(),
+          expires: requests.get(m.id).expires,
+          review: null,
+          solanaVault: j.solanaVault!.review,
+          digest: j.solanaVault!.digest,
           unlocked: isUnlocked(),
         };
       if (j.kind === 'session')
@@ -2989,10 +3717,17 @@ async function handleUI(message: unknown, sender: Sender): Promise<unknown> {
   }
 }
 browser.runtime.onMessage.addListener((message, sender, respond) => {
+  // A side panel's request key travels beside the message, never inside what handleUI checks.
+  let from: UISender = sender;
+  if (message && typeof message === 'object' && 'panelKey' in message) {
+    const { panelKey, ...rest } = message as { panelKey: unknown };
+    message = rest;
+    from = { ...sender, panelKey: typeof panelKey === 'string' ? panelKey : undefined };
+  }
   // Chrome runtime messages use JSON, unlike Firefox's structured clone. Keep
   // BigInt amounts exact as decimal strings on the UI wire; signing retains the
   // original typed review in this worker.
-  void handleUI(message, sender)
+  void handleUI(message, from)
     .then((result) => {
       publishStates();
       respond(JSON.parse(json({ result })));
@@ -3005,3 +3740,96 @@ browser.runtime.onMessage.addListener((message, sender, respond) => {
   // Chrome rollout of Promise-returning onMessage listeners.
   return true;
 });
+
+/** Quark contents by indexer and id. Content never changes once inscribed, so each is read once;
+ * display only (reviews read it again). */
+const qlyphContents = new Map<string, { contentType: string; size: number; content: string }>();
+async function readQlyphContents(ids: readonly string[]): Promise<void> {
+  const base = API;
+  const missing = ids.filter((id) => !qlyphContents.has(base + ' ' + id)).slice(0, 60);
+  for (let at = 0; at < missing.length; at += 6)
+    await Promise.all(
+      missing.slice(at, at + 6).map(async (id) => {
+        try {
+          const q = parseInscription(await api<unknown>('/api/inscription?id=' + encodeURIComponent(id)), id);
+          if (qlyphContents.size >= 2000) qlyphContents.delete(qlyphContents.keys().next().value!);
+          qlyphContents.set(base + ' ' + id, { contentType: q.contentType, size: q.size, content: q.content });
+        } catch {
+          // Shown by its number until a later refresh reads it.
+        }
+      }),
+    );
+}
+/** Logo readers by app origin (display only, see platform.ts). */
+const logoReaders = new Map<string, (asset: string) => Promise<string | null>>();
+function logos(base: string) {
+  let reader = logoReaders.get(base);
+  if (!reader) logoReaders.set(base, (reader = logoCache((asset) => readTokenLogo(base, asset))));
+  return reader;
+}
+/** Profile readers by app origin, like logos. */
+const profileReaders = new Map<string, (asset: string) => Promise<TokenProfile | null>>();
+function profiles(base: string) {
+  let reader = profileReaders.get(base);
+  if (!reader) profileReaders.set(base, (reader = logoCache((asset) => readTokenProfile(base, asset))));
+  return reader;
+}
+/** The account's collection items, from the app, for 30 s per account and set of Quarks. */
+let held: { key: string; at: number; value: Promise<Holdings> } | undefined;
+function holdings(owner: string, quarks: readonly string[]) {
+  const base = PLATFORM;
+  const key = [base, owner, ...[...quarks].sort()].join(' ');
+  if (held && held.key === key && Date.now() - held.at < 30_000) return held.value;
+  const value = readHoldings(base, owner, new Set(quarks));
+  held = { key, at: Date.now(), value };
+  value.catch(() => {
+    if (held?.value === value) held = undefined;
+  });
+  return value;
+}
+/** The collections Explore lists, from the app, for 30 s. */
+let collectionList: { base: string; at: number; value: Promise<{ open: boolean; collections: CollectionSummary[] }> } | undefined;
+function discoverCollections() {
+  const base = PLATFORM;
+  if (collectionList && collectionList.base === base && Date.now() - collectionList.at < 30_000)
+    return collectionList.value;
+  const value = readCollections(base);
+  collectionList = { base, at: Date.now(), value };
+  value.catch(() => {
+    if (collectionList?.value === value) collectionList = undefined;
+  });
+  return value;
+}
+/** The Explore catalogue: the indexer's first page of tokens with their statistics, for 30 s. */
+/** A token's recent trades for its price chart, kept 30 s per indexer and token. */
+const trades = new Map<string, { at: number; value: Promise<Trade[]> }>();
+function tokenTrades(asset: string): Promise<Trade[]> {
+  const key = API + ' ' + asset;
+  const known = trades.get(key);
+  if (known && Date.now() - known.at < 30_000) return known.value;
+  const value = Promise.all([
+    api<unknown>('/api/sales?asset=' + asset),
+    api<unknown>('/api/asset-activity?asset=' + asset).catch(() => null),
+  ]).then(([sales, activity]) => readTrades(asset, sales, activity));
+  trades.delete(key);
+  trades.set(key, { at: Date.now(), value });
+  while (trades.size > 50) trades.delete(trades.keys().next().value!);
+  value.catch(() => {
+    if (trades.get(key)?.value === value) trades.delete(key);
+  });
+  return value;
+}
+let catalogue: { api: string; at: number; value: Promise<{ tokens: CatalogToken[]; more: boolean }> } | undefined;
+function discover() {
+  const base = PLATFORM;
+  if (catalogue && catalogue.api === base && Date.now() - catalogue.at < 30_000) return catalogue.value;
+  const value = Promise.all([
+    api<View & { assets: Parameters<typeof catalog>[0] }>('/api/state'),
+    api<{ stats: Parameters<typeof catalog>[1] }>('/api/asset-stats').catch(() => ({ stats: [] })),
+  ]).then(([view, stats]) => ({ tokens: catalog(view.assets, stats.stats), more: !!view.more }));
+  catalogue = { api: base, at: Date.now(), value };
+  value.catch(() => {
+    if (catalogue?.value === value) catalogue = undefined;
+  });
+  return value;
+}

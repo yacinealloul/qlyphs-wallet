@@ -16,9 +16,18 @@ newer ones; the current version knows the end value `race-lost`, the payment sta
 and `attempts.unresolved`. `signSessionChallenge` asks the wallet to sign a site sign-in challenge; its
 canonical encoding, parser and signing context are exported from `site-session.ts`
 (`encodeSiteSessionChallenge`, `parseSiteSessionChallenge`, `parseSiteSessionProof`,
-`SITE_SESSION_CONTEXT`), see [Site sign-in](../../docs/extension/PROVIDER.md#site-sign-in). Build with `pnpm --filter @qlyphs/provider build`. The package emits ESM JavaScript and declarations.
+`SITE_SESSION_CONTEXT`), see [Site sign-in](../../docs/extension/PROVIDER.md#site-sign-in).
+Development wallet builds also list `solanaVaultPublicKey` and `signSolanaVaultAuthorization`; the
+296-byte vault authorization format, its parser, the allowlisted deployment and the vault derivation
+are in `solana-vault.ts`, see
+[Solana vault authorizations](../../docs/extension/PROVIDER.md#solana-vault-authorizations-development-builds). Build with `pnpm --filter @qlyphs/provider build`. The package emits ESM JavaScript and declarations.
 For the web wallet, use [`createKeysProvider` or `openKeysProvider`](../../apps/keys/README.md#for-dapps).
 Keys read methods expose a cached public snapshot; unlike live extension state, it may remain connected
 after the wallet locks or its popup closes. This cache never grants signing authority. See
 [Keys popup state](../../docs/extension/PROVIDER.md#keys-popup-state).
 For extension requests, follow the [provider contract](../../docs/extension/PROVIDER.md).
+
+A refusal may name why in `reason`, a code from `FAILURE_REASONS` (`reasons.ts`), with `retryable`.
+`publicError` keeps a reason only when it is on that list and derives `retryable` itself;
+`reasonText(reason)` gives its sentence. See
+[Failure reasons](../../docs/extension/PROVIDER.md#failure-reasons).

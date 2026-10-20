@@ -4,10 +4,6 @@ import { fromHex, requireThat } from '../../../packages/native/src/codec.ts';
 import { parseMintSessionTerms } from '../../../packages/provider/src/mint-session.ts';
 import type { MintSessionParams } from '../../../packages/provider/src/mint-session.ts';
 import { parseSiteSessionChallenge } from '../../../packages/provider/src/site-session.ts';
-import {
-  SOLANA_VAULT_MESSAGE_BYTES,
-  solanaVaultBytes,
-} from '../../../packages/provider/src/solana-vault.ts';
 export const VERSION = 1;
 export const MAX_PENDING = 8;
 export interface TransactionParams {
@@ -24,15 +20,13 @@ export type Request = { id: string } & (
         | 'disconnect'
         | 'capabilities'
         | 'state'
-        | 'mintSession'
-        | 'solanaVaultPublicKey';
+        | 'mintSession';
     }
   | { method: 'cancelRequest'; target: string }
   | { method: 'requestTransaction'; params: TransactionParams }
   | { method: 'requestMintSession'; params: MintSessionParams }
   | { method: 'stopMintSession'; params: { session: string } }
   | { method: 'signSessionChallenge'; params: { challenge: string } }
-  | { method: 'signSolanaVaultAuthorization'; params: { message: string } }
 );
 const METHODS = [
   'connect',
@@ -47,16 +41,12 @@ const METHODS = [
   'mintSession',
   'stopMintSession',
   'signSessionChallenge',
-  // Development builds only: the background refuses both elsewhere, before parsing.
-  'solanaVaultPublicKey',
-  'signSolanaVaultAuthorization',
 ];
 const WITH_PARAMS = [
   'requestTransaction',
   'requestMintSession',
   'stopMintSession',
   'signSessionChallenge',
-  'signSolanaVaultAuthorization',
 ];
 /** A mint session id: the UUID the wallet generated for its review. */
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -124,11 +114,6 @@ export function parseRequest(input: unknown): Request {
     exact(r.params, ['challenge']);
     // Only the one fixed format, in its one canonical spelling; the wallet checks its fields later.
     parseSiteSessionChallenge(r.params.challenge as string);
-  }
-  if (r.method === 'signSolanaVaultAuthorization') {
-    exact(r.params, ['message']);
-    // The canonical spelling only; the wallet decodes and checks every field before any review.
-    solanaVaultBytes(r.params.message, SOLANA_VAULT_MESSAGE_BYTES);
   }
   return structuredClone(r) as Request;
 }

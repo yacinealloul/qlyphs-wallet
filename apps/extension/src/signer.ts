@@ -14,7 +14,6 @@ export function wasm():Promise<QuantusWasm> {
 }
 export async function identity(phrase:string,index=0):Promise<{owner:string;address:string}> {
   const api=await wasm(), account=api.accountFromMnemonic(requireMnemonic(phrase),index,0,0);
-  // The secret key is never read here: its getter copies it out of the module (solana-vault.ts publicKeyOf).
   try { return {owner:hex(account.accountId),address:account.address}; }
-  finally { account.free(); }
+  finally { account.secretKey.fill(0); account.free(); }
 }

@@ -91,23 +91,17 @@ export async function decryptVault(input: unknown, password: string, genesis: st
   }
 }
 /** Deadline and epoch are checked after asynchronous unlock and before signing.
- * No method called by a dapp refreshes the deadline. Restart creates a locked session.
- * The session owns one copy of the phrase, `bytes`, and wipes it at every lock; the strings
- * `phrase()` returns are the caller's and cannot be wiped. */
+ * No method called by a dapp refreshes the deadline. Restart creates a locked session. */
 export class SecretSession {
   private bytes: Uint8Array | null = null;
   private until = 0;
   epoch = 0;
   private readonly now: () => number;
   private readonly ttl: number;
-  private readonly expired: (epoch: number) => void;
-  /** `expired` hears of each unlock that reached its deadline, once, with the epoch it locked at:
-   * whoever reads the session first past the deadline ends it, and the wallet's teardown follows. */
-  constructor(now: () => number = () => Date.now(), ttl = 15 * 60_000,
-    expired: (epoch: number) => void = () => {}) { this.now=now; this.ttl=ttl; this.expired=expired; }
+  constructor(now: () => number = Date.now, ttl = 300000) { this.now=now; this.ttl=ttl; }
   lock(): void { this.bytes?.fill(0); this.bytes=null; this.until=0; this.epoch++; }
   get unlocked(): boolean {
-    if (this.bytes && this.now() >= this.until) { this.lock(); this.expired(this.epoch); }
+    if (this.bytes && this.now() >= this.until) this.lock();
     return this.bytes !== null;
   }
   /** When the current unlock ends, 0 while locked. Reading it never extends anything; a mint
@@ -115,10 +109,7 @@ export class SecretSession {
   get deadline(): number { return this.unlocked ? this.until : 0; }
   /** Cancel account-bound work without extending the installation's unlock deadline. */
   invalidate(): void { void this.unlocked; this.epoch++; }
-  /** An unlock that reached its deadline while this one was being proved ends first, as at any
-   * read: its work stops and this unlock, begun under its epoch, is refused. */
   install(clear: Uint8Array, expectedEpoch: number): void {
-    void this.unlocked;
     requireThat(expectedEpoch === this.epoch,'Unlock cancelled');
     this.bytes?.fill(0); this.bytes=clear.slice(); this.until=this.now()+this.ttl;
   }

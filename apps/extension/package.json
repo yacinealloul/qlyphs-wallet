@@ -1,6 +1,6 @@
 {
   "name": "@qotc/wallet-extension",
-  "version": "0.9.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,7 +14,7 @@
     "@noble/post-quantum": "0.7.1",
     "@qotc/chain": "workspace:*",
     "@qotc/native": "workspace:*",
-    "@quantus-network/wasm": "1.0.0",
+    "@quantus-network/wasm": "^0.3.1",
     "@scure/bip39": "^2.4.0",
     "geist": "^1.7.2",
     "qrcode": "^1.5.4"

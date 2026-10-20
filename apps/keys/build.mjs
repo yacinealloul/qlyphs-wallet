@@ -169,13 +169,6 @@ const checkNetwork = (onPublic, values) => {
       );
 };
 checkList(dapps);
-// The Qlyphs app: token logos are read from it and its token pages opened. One of the dapp origins.
-const platformOf = (list, override) => {
-  const value = override ?? list.find((o) => /^https:\/\/app\./.test(o) || o === 'http://127.0.0.1:4403') ?? list[0];
-  if (!list.includes(value)) throw Error(`The Qlyphs app origin must be one of the dapp origins: ${value}`);
-  return value;
-};
-const platform = platformOf(dapps, process.env.QLYPHS_KEYS_PLATFORM);
 checkNetwork(publicEndpoints, [api, rpc, ...(rpcFallback ? [rpcFallback] : []), ...dapps]);
 // A testnet wallet stays apart from the mainnet one: its own origin, so its own storage and
 // passkeys, and none of the hosted mainnet services or dapps.
@@ -201,11 +194,10 @@ const networks = switchable
         api: DEV_DEFAULTS.api,
         rpc: DEV_DEFAULTS.rpc,
         dapps: DEV_DEFAULTS.dapps,
-        platform: platformOf(DEV_DEFAULTS.dapps),
         explorer: DEV_DEFAULTS.explorer,
         profile: DEVELOPMENT,
       },
-      mainnet: { api, rpc, ...(rpcFallback ? { rpcFallback } : {}), dapps, platform, explorer, profile: mainnetPins },
+      mainnet: { api, rpc, ...(rpcFallback ? { rpcFallback } : {}), dapps, explorer, profile: mainnetPins },
     }
   : null;
 if (networks) {
@@ -215,7 +207,6 @@ if (networks) {
 const everyApi = networks ? [networks.mainnet.api, networks.development.api] : [api];
 const everyRpc = [...(networks ? [networks.mainnet.rpc, networks.development.rpc] : [rpc]), ...(rpcFallback ? [rpcFallback] : [])];
 const everyDapp = networks ? [...new Set([...networks.mainnet.dapps, ...networks.development.dapps])] : dapps;
-const everyPlatform = networks ? [networks.mainnet.platform, networks.development.platform] : [platform];
 if (everyDapp.length > 16) throw Error('At most 16 dapp origins across networks');
 // The pages and the worker call the API and the RPC cross-origin (the extension skips CORS through
 // host_permissions; a web page cannot). A public endpoint (mainnet or testnet) that does not answer a
@@ -262,7 +253,7 @@ if (publicEndpoints) {
 }
 const sdkDir = dirname(require.resolve('@quantus-network/wasm/package.json'));
 const sdk = JSON.parse(await readFile(resolve(sdkDir, 'package.json'), 'utf8'));
-if (sdk.version !== '1.0.0')
+if (sdk.version !== '0.3.1')
   throw Error(
     'SDK changed; revalidate legacy derivation and regenerate matching glue before building',
   );
@@ -283,19 +274,13 @@ const swap = (map) => ({
     });
   },
 });
-// Every build of one version reports the same version, so pages and the shared wallet worker also
-// compare a build id: a hash of the three wallet bundles, written into them after bundling in
-// place of this marker. It depends only on the bundles, so the build stays reproducible.
-const BUILD_MARKER = 'qlyphs-build-id-pending';
 const define = {
   QLYPHS_VERSION: JSON.stringify(version),
-  QLYPHS_BUILD: JSON.stringify(BUILD_MARKER),
   QLYPHS_API: JSON.stringify(api),
   QLYPHS_RPC: JSON.stringify(rpc),
   QLYPHS_RPC_FALLBACK: JSON.stringify(rpcFallback),
   QLYPHS_DAPP_ORIGINS: JSON.stringify(dapps),
   QLYPHS_EXPLORER: JSON.stringify(explorer),
-  QLYPHS_PLATFORM: JSON.stringify(platform),
   QLYPHS_PQ_POLICY: JSON.stringify(pqPolicy),
   QLYPHS_FEE_RULES: JSON.stringify(feeRules),
   QLYPHS_KEYS_ORIGIN: JSON.stringify(keysOrigin),
@@ -339,15 +324,6 @@ for (const [name, entry, map] of bundles) {
     if (inputs.includes(resolve(ext, banned)))
       throw Error(`${name}.js must not include extension/src/${banned}`);
   metas.push(metafile);
-}
-const walletBundles = bundles.map(([name]) => resolve(out, `${name}.js`));
-const bundleHash = createHash('sha256');
-for (const file of walletBundles) bundleHash.update(await readFile(file));
-const buildId = bundleHash.digest('hex').slice(0, 16);
-for (const file of walletBundles) {
-  const source = await readFile(file, 'utf8');
-  if (!source.includes(BUILD_MARKER)) throw Error(`${relative(here, file)} does not carry the build id`);
-  await writeFile(file, source.replaceAll(BUILD_MARKER, buildId));
 }
 for (const [file, dir] of [['sdk', dist], ['sdk', demo], ['demo', demo]]) {
   const { metafile } = await build({ ...shared, entryPoints: { [file]: `src/${file}.ts` }, outdir: dir });
@@ -406,13 +382,11 @@ await writeFile(
   JSON.stringify(
     {
       version,
-      // What a Keys window compares with its own to find out that a newer build is live.
-      build: buildId,
       profile,
       network: networkName,
       ...(withMainnet ? { pins: mainnetPins } : {}),
       ...(networks ? { networks } : {}),
-      sdk: '@quantus-network/wasm@1.0.0',
+      sdk: '@quantus-network/wasm@0.3.1',
       wasmSHA256: binaryHash,
       api,
       rpc,
@@ -421,9 +395,7 @@ await writeFile(
       keysOrigin,
       dappOrigins: everyDapp,
       // Every endpoint a page may reach on any compiled network (serve.mjs CSP connect-src).
-      platform,
-      // Plus CoinGecko for the QTC price in US dollars (extension src/qtc-price.ts): display only.
-      connectOrigins: [...new Set([...everyApi, ...everyRpc, ...everyPlatform, 'https://api.coingecko.com'])],
+      connectOrigins: [...new Set([...everyApi, ...everyRpc])],
       providerProtocolVersion: 2,
       pqPolicyVersion: pqPolicy?.version ?? null,
       pqRulesHash: pqPolicy?.rulesHash ?? null,
@@ -445,5 +417,4 @@ for (const name of served)
 await writeFile(`${out}/SHA256SUMS.txt`, sums.join(''));
 const releaseHash = createHash('sha256').update(sums.join('')).digest('hex');
 console.log(`Qlyphs Keys (${profile}, ${networkName}) built for ${keysOrigin}`);
-console.log(`Build id: ${buildId}`);
 console.log(`Release hash (SHA-256 of SHA256SUMS.txt): ${releaseHash}`);

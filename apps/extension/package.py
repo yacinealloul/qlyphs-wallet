@@ -16,11 +16,9 @@ for browser in ("chrome", "firefox"):
         raise SystemExit("Build both extensions before packaging")
     manifest = json.loads((folder / "manifest.json").read_text())
     build = json.loads((folder / "BUILD.json").read_text())
-    # A store package is a mainnet build (BUILD.json network "mainnet"), or the store build of
-    # mainnet plus the public test network (BUILD.json "store": true), named by its version.
-    # Any other switchable build is for local installation only.
-    store = build.get("network") == "mainnet" or (build.get("network") == "switchable" and build.get("store") is True)
-    if manifest["name"] == "Qlyphs Wallet" and store and "key" not in manifest:
+    # A store package is a mainnet build (BUILD.json network "mainnet"), named by its version.
+    # A switchable build is for local installation only.
+    if manifest["name"] == "Qlyphs Wallet" and build.get("network") == "mainnet":
         path = output / f"qlyphs-wallet-{browser}-{manifest['version']}.zip"
     elif manifest["name"] == "Qlyphs Wallet (Development)" and "network" not in build:
         path = output / f"qlyphs-wallet-{browser}-development.zip"

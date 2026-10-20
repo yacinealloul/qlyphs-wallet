@@ -6,7 +6,6 @@ import type { ExtensionAPI, Port, Sender } from '../../extension/src/browser.ts'
 import { ALL_DAPPS } from '../../extension/src/config.ts';
 import { get, set } from './storage.ts';
 import { RUNTIME_ID } from './hub.ts';
-import { RELEASE } from './release.ts';
 import { sessionsSupported, workerFacts } from './session-browser.ts';
 import type { DocToHub, HostToHub, HubToDoc, HubToHost } from './hub.ts';
 
@@ -321,13 +320,13 @@ function accept(port: MessagePort | undefined) {
         sender: { id: RUNTIME_ID, url: extensionPageURL(m.url), origin: ORIGIN, frameId: 0, documentId: m.documentId, tab: { id: tabId, windowId } },
       };
       hosts.set(id, host);
-      port.postMessage({ type: 'welcome', tabId, windowId, version: RELEASE } satisfies HubToHost);
+      port.postMessage({ type: 'welcome', tabId, windowId, version: QLYPHS_VERSION } satisfies HubToHost);
       // Granted only once the page holding it has gone, however it went.
       void navigator.locks.request(m.lock, () => gone(id));
       // A page of another release means this worker's code is no longer the live one. Keys cannot
       // reload a shared worker, so the background only stops what is running; the page itself tells
       // the user to close the old tabs.
-      if (m.version !== undefined && m.version !== RELEASE) updateAvailable.fire({ version: m.version });
+      if (m.version !== undefined && m.version !== QLYPHS_VERSION) updateAvailable.fire({ version: m.version });
       return;
     }
     const h = host;

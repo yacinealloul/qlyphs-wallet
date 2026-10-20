@@ -139,21 +139,11 @@ export function checkQlyphCommand(command: Command): void {
 }
 /** Inscription numbers of the held Quark ids, from the owner's pages (newest first). */
 export async function qlyphNumbers(owner: string, ids: string[], get: Get): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  for (const [id, s] of await qlyphSummaries(owner, ids, get)) out.set(id, s.number);
-  return out;
-}
-/** The indexer's summary of each of these Quarks the owner holds: number, height, creator, type. */
-export async function qlyphSummaries(
-  owner: string,
-  ids: string[],
-  get: Get,
-): Promise<Map<string, PublicInscriptionSummary>> {
   const wanted = new Set(ids),
-    out = new Map<string, PublicInscriptionSummary>();
+    out = new Map<string, number>();
   for (let offset = 0; wanted.size > out.size && offset <= 1000; offset += 50) {
     const page = parseInscriptionPage(await get(`/api/inscriptions?owner=${owner}&offset=${offset}`));
-    for (const i of page.inscriptions) if (wanted.has(i.id)) out.set(i.id, i);
+    for (const i of page.inscriptions) if (wanted.has(i.id)) out.set(i.id, i.number);
     if (!page.more || !page.inscriptions.length) break;
   }
   return out;

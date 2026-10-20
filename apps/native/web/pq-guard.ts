@@ -21,23 +21,8 @@ import {
 import type { Policy, Cursor, Bundle } from '../src/pq/checkpoint.ts';
 import { boundedJson } from '../src/pq/transport.ts';
 declare const QLYPHS_PQ_POLICY: Policy | null;
-/** A build that carries mainnet and a test network may bind one policy to each (extension
- * build.mjs). Absent, the single policy above applies. */
-declare const QLYPHS_PQ_POLICIES: Partial<Record<'mainnet' | 'development', Policy>> | null | undefined;
-const byNetwork = typeof QLYPHS_PQ_POLICIES === 'undefined' || QLYPHS_PQ_POLICIES === null ? null : QLYPHS_PQ_POLICIES;
-let pins: Policy | null = byNetwork
-  ? (byNetwork.mainnet ?? null)
-  : typeof QLYPHS_PQ_POLICY === 'undefined'
-    ? null
-    : QLYPHS_PQ_POLICY;
-/** True when each network has its own policy: mainnet then never borrows the test network's. */
-export const policyPerNetwork = byNetwork !== null;
-/** Use the policy of the network now active (the background calls this on every switch). Each
- * policy names its own genesis and rules, so its cursors never meet another network's. */
-export function usePolicy(network: 'mainnet' | 'development'): void {
-  if (byNetwork) pins = byNetwork[network] ?? null;
-}
-export const pqConfigured = (): boolean => pins !== null;
+const pins: Policy | null = typeof QLYPHS_PQ_POLICY === 'undefined' ? null : QLYPHS_PQ_POLICY;
+export const pqConfigured = pins !== null;
 /** How far this device's clock may be from the witnesses' and still be corrected. */
 const CLOCK_SKEW_MS = 120_000;
 /** The witnesses' clock minus this device's, read from the latest `issuedAt` of a bundle just

@@ -7,7 +7,6 @@ export const ACCOUNT_SCOPED_ACTIONS = new Set([
   'wallet-reset',
   'recovery',
   'revoke',
-  'clear-history',
   'transact',
   'passkey-begin',
   'passkey-remove',

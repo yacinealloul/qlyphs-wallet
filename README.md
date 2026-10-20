@@ -137,9 +137,8 @@ message names the source commit it was exported from.
 
 These are stated plainly so you don't have to guess.
 
-- The extension is in the Chrome Web Store. From 0.9.0 the store build adds the Quantus testnet,
-  hidden until the user shows test networks, and lets the user choose their own HTTPS node. It is
-  not listed on Firefox Add-ons yet; there, load a build.
+- The extension is in the Chrome Web Store, mainnet only. It is not listed on Firefox Add-ons yet; there,
+  load a build.
 - On mainnet, purchases, token creation and inscriptions need the witnesses' attestations, so a
   build without the mainnet witness policy refuses them. The fee schedule and progressive tokens
   start at block 218,350; below it creation and inscriptions keep the fixed legacy fees

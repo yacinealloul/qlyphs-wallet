@@ -14,7 +14,6 @@ import type {
   MintSessionTerms,
 } from '../../../packages/provider/src/mint-session.ts';
 import type { SigningContext } from '../../../packages/native/src/network.ts';
-import { MAX_TIP } from '../../../packages/native/src/tip.ts';
 import type { AttestedAsset } from '../../native/web/pq-guard.ts';
 import type * as ChainModule from './mint-session-chain.ts';
 import type { Account, Block, ChainReads, Payment, Position } from './mint-session-chain.ts';
@@ -162,8 +161,7 @@ export interface MintAttempt {
   birth: Block;
   nonce: number;
   intentId: string;
-  /** The service's network fee estimate at birth, plus the session's tip: both are paid even when
-   * the payment loses its lot. */
+  /** The service's network fee estimate at birth. */
   networkFee: string;
   /** Worst case held until the payment resolves. */
   reserve: { network: string; protocol: string };
@@ -195,9 +193,6 @@ export interface MintSessionRecord {
   /** Native ticket charge pinned for that runtime, QTC base units. */
   ticket: string;
   margin: number;
-  /** The priority tip the user chose for every payment, planck; absent when none. The service
-   * always prepares tip 0: the wallet adds this one when it signs. */
-  tip?: string;
   symbol: string;
   decimals: number;
   approvedAt: number;
@@ -232,13 +227,6 @@ export interface JournalEntry {
   amount: string;
   symbol: string;
   decimals: number;
-  /** The network fee estimate plus the tip, planck; display only. */
-  fee: string;
-  /** The lot's attested Qlyphs fee and the native ticket charge, planck; display only. */
-  qlyphsFee: string;
-  charges: string;
-  /** The token minted, for its mark in Activity; display only. */
-  asset: string;
 }
 /** What the ledger rules read from any history entry. */
 export interface JournalLine {
@@ -307,13 +295,11 @@ export interface SessionDeps {
   inspect(bytes: Uint8Array): SignedFacts;
   /** Era bytes of a payment born at `height`. */
   era(height: number): string;
-  /** Exactly one transport call; never raced or retried. `tipped`: the service relays tip 0 only,
-   * so a tipped payment goes to the node. */
+  /** Exactly one transport call; never raced or retried. */
   submit(
     intentId: string,
     hash: string,
     bytes: Uint8Array,
-    tipped: boolean,
   ): Promise<'submitted' | 'broadcast-uncertain'>;
   journalFull(): boolean;
   journalAdd(entry: JournalEntry): void;
@@ -806,9 +792,6 @@ export function quoteMatches(
   );
 }
 
-/** The tip every payment of the session carries, planck. */
-export const sessionTip = (rec: Pick<MintSessionRecord, 'tip'>): bigint => BigInt(rec.tip ?? '0');
-
 /** Unwinds a pass with the reason the session ends. */
 class Exit {
   readonly reason: WalletEndReason;
@@ -1260,11 +1243,9 @@ export class MintSessionController {
     if (c.nonce < acct.nonce) this.transient();
     // Exact spendability where the payment executes: earlier payments are already in `free`, and
     // only this payment's worst case is subtracted.
-    const E = quote.networkFee,
-      tip = sessionTip(rec);
+    const E = quote.networkFee;
     const floor = acct.frozen > quote.existentialDeposit ? acct.frozen : quote.existentialDeposit;
-    // The tip is exact, not an estimate: it is reserved once, outside the network fee's margin.
-    if (acct.free - floor < E * BigInt(rec.margin) + tip + T + F) return 'insufficient-funds';
+    if (acct.free - floor < E * BigInt(rec.margin) + T + F) return 'insufficient-funds';
     await read(() => this.deps.recheck(quote));
     // P10: count the signature durably before the secret is touched.
     const lost10 = this.authority();
@@ -1284,8 +1265,8 @@ export class MintSessionController {
       birth: { height: B.height, hash: B.hash },
       nonce: c.nonce,
       intentId: quote.intentId,
-      networkFee: String(E + tip),
-      reserve: { network: String(E * BigInt(rec.margin) + tip), protocol: String(F + T) },
+      networkFee: String(E),
+      reserve: { network: String(E * BigInt(rec.margin)), protocol: String(F + T) },
       hash: null,
       inclusion: null,
       finalized: false,
@@ -1372,7 +1353,7 @@ export class MintSessionController {
     if (!(now < quote.expiresAt)) return this.cancel(attempt, 'unavailable');
     let bytes: Uint8Array;
     try {
-      bytes = sign(quote.callHex, { ...quote.context, tip: String(sessionTip(rec)) });
+      bytes = sign(quote.callHex, quote.context);
     } catch {
       return this.cancel(attempt, 'unverified');
     }
@@ -1385,7 +1366,7 @@ export class MintSessionController {
         facts.accountId !== rec.owner ||
         facts.callHex !== quote.callHex ||
         facts.nonce !== quote.context.nonce ||
-        facts.tip !== sessionTip(rec) ||
+        facts.tip !== 0n ||
         facts.eraHex !== this.deps.era(B.height) ||
         !HASH.test(facts.hash)
       )
@@ -1410,10 +1391,6 @@ export class MintSessionController {
       amount: rec.terms.lotAmount,
       symbol: rec.symbol,
       decimals: rec.decimals,
-      fee: attempt.networkFee,
-      qlyphsFee: attempt.fee,
-      charges: rec.ticket,
-      asset: rec.terms.asset,
     });
     attempt.hash = facts.hash;
     attempt.status = 'signed';
@@ -1438,7 +1415,7 @@ export class MintSessionController {
     this.released.add(attempt.n);
     let result: unknown;
     try {
-      result = await this.deps.submit(attempt.intentId, facts.hash, bytes, sessionTip(rec) > 0n);
+      result = await this.deps.submit(attempt.intentId, facts.hash, bytes);
     } catch {
       result = 'broadcast-uncertain';
     }
@@ -1834,10 +1811,7 @@ function checkRecord(
   transactions: readonly JournalLine[],
   raceRule: boolean,
 ): void {
-  // A record without a tip predates tips or has none: the key is present only above zero.
-  const tipped = typeof v === 'object' && v !== null && Object.hasOwn(v, 'tip');
-  const r = exact(v, tipped ? [...RECORD_KEYS, 'tip'] : RECORD_KEYS);
-  if (tipped) check(isDecimal(r.tip) && BigInt(r.tip as string) > 0n && BigInt(r.tip as string) <= MAX_TIP);
+  const r = exact(v, RECORD_KEYS);
   check(typeof r.id === 'string' && UUID.test(r.id));
   check(isOrigin(r.origin));
   check(isHash(r.owner) && isHash(r.genesis) && isHash(r.runtime) && isHash(r.digest));

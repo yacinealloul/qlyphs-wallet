@@ -502,8 +502,8 @@ Qlyphs wallets (the browser extension and Qlyphs Keys):
 
 ## 11. Front-running
 
-Qlyphs wallets sign with tip 0 unless the user gave the review a priority tip, which they offer on
-every operation but a creation or an inscription (see the extension README, Priority tip). Someone who sees a DEPLOY in the transaction pool can submit the
+Qlyphs wallets sign with tip 0, except a lot mint whose review the user gave a priority tip (see
+the extension README, Priority tip). Someone who sees a DEPLOY in the transaction pool can submit the
 same symbol with a higher tip. The victim's batch still succeeds natively and its fee is paid; the
 verdict is `rejected: symbol taken` with `feeKept: true`. Before every DEPLOY, Qlyphs wallets show:
 "If another deploy of SYMBOL is included first, even in the same block, your X QTC fee is not

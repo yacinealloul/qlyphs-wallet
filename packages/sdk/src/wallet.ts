@@ -671,7 +671,7 @@ function older(next: MintSessionSnapshot, current: MintSessionSnapshot): boolean
 /** Session reads carry no write outcome. */
 function readError(error: unknown): QlyphsError {
   const e = publicError(error, 'UNAVAILABLE');
-  return new QlyphsError(e.code, e.message, undefined, e.reason);
+  return new QlyphsError(e.code, e.message);
 }
 export const createWalletConnector = (options: ConnectorOptions = {}): WalletConnector =>
   new WalletConnector(options);

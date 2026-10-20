@@ -6,13 +6,11 @@ import { MAINNET, requireThat } from '../../../packages/native/src/codec.ts';
 import type { Id } from '../../../packages/native/src/codec.ts';
 import { feeBasis, qlyphsFee } from '../../../packages/native/src/commands.ts';
 import type { Command, FeeBasis } from '../../../packages/native/src/commands.ts';
-import { checkFeeRules, FEE_TARGETS_CENTS, feeAt, fee as rateFee, isRateDerived, legacyFee, MIN_GRACE } from '../../../packages/native/src/fee-schedule.ts';
+import { checkFeeRules, fee as rateFee, isRateDerived } from '../../../packages/native/src/fee-schedule.ts';
 import type { FeeRules } from '../../../packages/native/src/fee-schedule.ts';
 import type { NetworkName } from '../../../packages/native/src/network.ts';
-import type { PublicFeeSchedule } from '../../../packages/native/src/public.ts';
 import {
   MAINNET_FEE_SCHEDULE,
-  MINT_FEE,
   PROTOCOL_LABEL,
   QLYPHS_FEE_ACCOUNT,
   saleFee,
@@ -166,40 +164,4 @@ export function checkPayerBalance(
     return;
   }
   checkProtocolPayerBalance(balance, costs, command, ticket);
-}
-
-/** The Qlyphs fee a creation included at `height` paid, from the indexer's public fee schedule, for
- * an Activity entry recorded before the wallet kept the reviewed fee. Display only. Null where the
- * schedule no longer says which rate applied there, and in the overlap after a rate change, when the
- * old fee was still accepted (at least MIN_GRACE blocks). */
-export function scheduledQlyphsFee(kind: string, height: number, schedule: unknown): bigint | null {
-  if (kind === 'mint' && Number.isSafeInteger(height)) return MINT_FEE;
-  if (!isRateDerived(kind) || !Number.isSafeInteger(height) || !isFeeSchedule(schedule)) return null;
-  if (height > schedule.height || schedule.frozen) return null;
-  if (schedule.mode === 'legacy' || (schedule.mode === 'schedule' && schedule.from !== null && height < schedule.from))
-    return legacyFee(kind);
-  if (schedule.mode !== 'schedule') return null;
-  const grid = [schedule.current, schedule.previous].find((g) => g && height >= g.effective);
-  if (!grid || height < grid.effective + MIN_GRACE || !/^[1-9]\d{0,20}$/.test(grid.rate)) return null;
-  try {
-    return feeAt(kind === 'inscribe' ? FEE_TARGETS_CENTS.inscribe : FEE_TARGETS_CENTS.deploy, BigInt(grid.rate));
-  } catch {
-    return null;
-  }
-}
-const isGrid = (g: unknown): boolean =>
-  g === null ||
-  (!!g && typeof g === 'object' && typeof (g as Record<string, unknown>).rate === 'string' &&
-    Number.isSafeInteger((g as Record<string, unknown>).effective));
-function isFeeSchedule(v: unknown): v is PublicFeeSchedule {
-  if (!v || typeof v !== 'object') return false;
-  const s = v as Record<string, unknown>;
-  return (
-    Number.isSafeInteger(s.height) &&
-    (s.mode === 'schedule' || s.mode === 'legacy' || s.mode === 'inactive') &&
-    (s.from === null || Number.isSafeInteger(s.from)) &&
-    typeof s.frozen === 'boolean' &&
-    isGrid(s.current) &&
-    isGrid(s.previous)
-  );
 }

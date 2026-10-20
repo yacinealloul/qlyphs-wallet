@@ -2,7 +2,6 @@ import { policy } from '../native/src/pq/checkpoint.ts';
 import { rulesHash } from '../native/src/pq/node.ts';
 import { DEV_RUNTIME_HASH, DEVELOPMENT, mainnetProfile, progressiveRules } from '../native/src/network.ts';
 import { mainnetReviewed, mainnetRules } from '../../packages/native/src/protocol.ts';
-import { base58, SOLANA_VAULT_DEPLOYMENTS } from '../../packages/provider/src/solana-vault.ts';
 import { licenseNotices } from './licenses.mjs';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
@@ -16,45 +15,6 @@ if (!['development', 'mainnet', 'switchable'].includes(networkName))
 // `switchable`: both networks compiled in, the user picks one in Settings. Not a store build: it
 // keeps the development identity, so it installs over a development wallet and keeps its data.
 const switchable = networkName === 'switchable';
-// Solana vault signing is a development feature: only the fixed development build serves it.
-const solanaVault = networkName === 'development';
-// A development build may also sign for a wQTC program on Solana devnet: both its program id and its
-// mint, base58, or neither. Other builds refuse the variables rather than ignore them.
-const WQTC_ENV = ['QLYPHS_EXTENSION_WQTC_PROGRAM', 'QLYPHS_EXTENSION_WQTC_MINT'];
-const wqtcNamed = WQTC_ENV.filter((name) => process.env[name] !== undefined);
-if (wqtcNamed.length && !solanaVault)
-  throw Error('QLYPHS_EXTENSION_WQTC_* is only read by a development build');
-if (wqtcNamed.length && wqtcNamed.length !== WQTC_ENV.length)
-  throw Error(
-    'A wQTC deployment names both QLYPHS_EXTENSION_WQTC_PROGRAM and QLYPHS_EXTENSION_WQTC_MINT',
-  );
-/** A Solana address, base58 in its one canonical spelling, as 0x + 64 lowercase hex. */
-function solanaAddress(name) {
-  const text = process.env[name];
-  const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-  let n = 0n;
-  for (const c of text) {
-    const digit = ALPHABET.indexOf(c);
-    if (digit < 0) throw Error(`${name} is not base58`);
-    n = n * 58n + BigInt(digit);
-  }
-  const bytes = new Uint8Array(32);
-  for (let i = 31; i >= 0; i--, n >>= 8n) bytes[i] = Number(n & 0xffn);
-  if (n !== 0n || base58(bytes) !== text || bytes.every((x) => x === 0))
-    throw Error(`${name} is not a 32-byte Solana address`);
-  return '0x' + Buffer.from(bytes).toString('hex');
-}
-const wqtc = wqtcNamed.length
-  ? {
-      program: solanaAddress('QLYPHS_EXTENSION_WQTC_PROGRAM'),
-      mint: solanaAddress('QLYPHS_EXTENSION_WQTC_MINT'),
-    }
-  : null;
-if (
-  wqtc &&
-  (wqtc.program === wqtc.mint || SOLANA_VAULT_DEPLOYMENTS.some((d) => d.program === wqtc.program))
-)
-  throw Error('The wQTC program is its own program, distinct from the vault program and the mint');
 const mainnet = networkName === 'mainnet';
 const withMainnet = mainnet || switchable;
 // A switchable build may replace the local development network with a public test network. It keeps
@@ -74,12 +34,6 @@ if (testnetNamed.length && testnetNamed.length !== TESTNET_ENV.length)
     `A testnet names all its endpoints; missing ${TESTNET_ENV.filter((name) => !testnetNamed.includes(name)).join(', ')}`,
   );
 const testnet = testnetNamed.length > 0;
-// The store build: mainnet plus the public test network (hidden until the user shows test networks),
-// under the store identity. It carries each network's own witness policy.
-const store = process.env.QLYPHS_EXTENSION_STORE === '1';
-if (store && !(switchable && testnet))
-  throw Error('QLYPHS_EXTENSION_STORE needs QLYPHS_EXTENSION_NETWORK=switchable and a public testnet');
-const storeIdentity = mainnet || store;
 // The mainnet lock: no pins file, no mainnet (or switchable) build.
 if (withMainnet && !process.env.QLYPHS_EXTENSION_PINS)
   throw Error('A mainnet build requires QLYPHS_EXTENSION_PINS (genesis, runtime and activation pins)');
@@ -145,23 +99,6 @@ if (
     pqPolicy.activation.hash !== pqPolicy.genesis)
 )
   throw Error('PQ policy does not match the installed development protocol/runtime');
-// A switchable build may also carry the reviewed mainnet policy, used on mainnet only.
-const mainnetPolicyBytes = process.env.NATIVE_PQ_POLICY_FILE_MAINNET
-  ? await readFile(process.env.NATIVE_PQ_POLICY_FILE_MAINNET)
-  : null;
-if (mainnetPolicyBytes && !switchable)
-  throw Error('NATIVE_PQ_POLICY_FILE_MAINNET is only read with QLYPHS_EXTENSION_NETWORK=switchable');
-const mainnetPolicy = mainnetPolicyBytes ? policy(JSON.parse(mainnetPolicyBytes.toString('utf8'))) : null;
-if (
-  mainnetPolicy &&
-  (mainnetPolicy.genesis !== mainnetPins.genesis ||
-    mainnetPolicy.activation.height !== mainnetPins.activation.height ||
-    mainnetPolicy.activation.hash !== mainnetPins.activation.hash ||
-    mainnetPolicy.runtimeHash !== mainnetPins.runtime.codeHash ||
-    mainnetPolicy.rulesHash !== rulesHash(undefined, mainnetRules()))
-)
-  throw Error('Mainnet PQ policy does not match the mainnet pins and the reviewed protocol');
-const pqPolicies = mainnetPolicy ? { mainnet: mainnetPolicy, ...(pqPolicy ? { development: pqPolicy } : {}) } : null;
 const STORE_SUMMARY =
   'Self-custody wallet for Quantus. Hold and send QTC, and review every transaction before you sign it.';
 if (STORE_SUMMARY.length > 132) throw Error('Store summary exceeds 132 characters');
@@ -184,18 +121,8 @@ const rpc = process.env.QLYPHS_EXTENSION_RPC ?? (withMainnet ? 'https://rpc1-mai
 const dapps = process.env.QLYPHS_EXTENSION_DAPP_ORIGINS
   ? JSON.parse(process.env.QLYPHS_EXTENSION_DAPP_ORIGINS)
   : withMainnet
-    ? // The Qlyphs sites: the QLYP app first (also the platform origin), then the OTC and the others.
-      [
-        'https://app.qlyphs.com',
-        'https://otc.qlyphs.com',
-        'https://qlyphs.com',
-        'https://www.qlyphs.com',
-        'https://street.qlyphs.com',
-        'https://city.qlyphs.com',
-        'https://docs.qlyphs.com',
-        'https://reserve.qlyphs.com',
-        'https://graduation.qlyphs.com',
-      ]
+    ? // The QLYP app and the OTC (deposits from, withdrawals to the wallet).
+      ['https://app.qlyphs.com', 'https://otc.qlyphs.com']
     : [
         api,
         'http://127.0.0.1:4401',
@@ -216,14 +143,6 @@ const checkList = (list, name) => {
     throw Error(`Dapp origins must be a unique list of 1 to 16 exact ${name} origins`);
 };
 checkList(dapps, networkName);
-// The Qlyphs app: the wallet reads only token logos from it, and opens its token pages. It must be
-// one of the dapp origins, so the wallet never reaches a host the listing does not already name.
-const platformOf = (list, override) => {
-  const value = override ?? list.find((o) => /^https:\/\/app\./.test(o) || o === 'http://127.0.0.1:4403') ?? list[0];
-  if (!list.includes(value)) throw Error(`The Qlyphs app origin must be one of the dapp origins: ${value}`);
-  return value;
-};
-const platform = platformOf(dapps, process.env.QLYPHS_EXTENSION_PLATFORM);
 function checkOrigins(mainnet, values) {
  for (const value of values) {
   const u = new URL(value);
@@ -272,7 +191,6 @@ const development = testnet
       api: process.env.QLYPHS_EXTENSION_TESTNET_API,
       rpc: process.env.QLYPHS_EXTENSION_TESTNET_RPC,
       dapps: JSON.parse(process.env.QLYPHS_EXTENSION_TESTNET_DAPP_ORIGINS),
-      platform: process.env.QLYPHS_EXTENSION_TESTNET_PLATFORM,
       explorer: process.env.QLYPHS_EXTENSION_TESTNET_EXPLORER,
       profile: DEVELOPMENT,
       testnet: true,
@@ -281,17 +199,15 @@ const development = testnet
       api: 'http://127.0.0.1:4400',
       rpc: 'http://127.0.0.1:9955',
       dapps: DEV_DAPPS,
-      platform: 'http://127.0.0.1:4403',
       explorer: 'http://localhost:3000/explorer',
       profile: DEVELOPMENT,
       testnet: false,
     };
 const networks = switchable
-  ? { development, mainnet: { api, rpc, dapps, platform, explorer, profile: mainnetPins, testnet: false } }
+  ? { development, mainnet: { api, rpc, dapps, explorer, profile: mainnetPins, testnet: false } }
   : null;
 if (networks) {
   checkList(development.dapps, testnet ? 'testnet' : 'development');
-  development.platform = platformOf(development.dapps, development.platform);
   checkOrigins(testnet, [development.api, development.rpc, ...development.dapps]);
 }
 if (testnet) {
@@ -306,21 +222,9 @@ if (testnet) {
 const everyApi = networks ? [networks.mainnet.api, networks.development.api] : [api];
 const everyRpc = networks ? [networks.mainnet.rpc, networks.development.rpc] : [rpc];
 const everyDapp = networks ? [...new Set([...networks.mainnet.dapps, ...networks.development.dapps])] : dapps;
-const everyPlatform = networks ? [networks.mainnet.platform, networks.development.platform] : [platform];
-// Endpoints the user may set (Settings → Network → Edit, endpoints.ts), in a development build only:
-// any HTTPS host, and hosts on this machine, where its network runs. The CSP cannot list hosts chosen
-// at run time, so this widens connect-src; a build with mainnet keeps it to the compiled hosts, so
-// nothing running in its pages can reach any other. The browser asks the user for each host
-// (optional host permissions) before the wallet can reach it.
-const customEndpoints = !withMainnet;
-const customHosts = customEndpoints ? ['https://*/*', 'http://127.0.0.1/*', 'http://localhost/*'] : [];
-const customConnect = customEndpoints ? ['https:', 'http://127.0.0.1:*', 'http://localhost:*'] : [];
-// The QTC price in US dollars (src/qtc-price.ts): CoinGecko's public API answers any origin, so it
-// needs no host permission, only this connect-src entry. Display only, and off in Settings.
-const priceOrigin = 'https://api.coingecko.com';
 const sdkDir = dirname(require.resolve('@quantus-network/wasm/package.json'));
 const sdk = JSON.parse(await readFile(resolve(sdkDir, 'package.json'), 'utf8'));
-if (sdk.version !== '1.0.0')
+if (sdk.version !== '0.3.1')
   throw Error(
     'SDK changed; revalidate legacy derivation and regenerate matching glue before building',
   );
@@ -335,7 +239,7 @@ const chromeId = [
   .join('');
 const hosts = [
   ...new Set(
-    [...everyApi, ...everyRpc, ...everyPlatform].map((x) => {
+    [...everyApi, ...everyRpc].map((x) => {
       const u = new URL(x);
       return `${u.protocol}//${u.hostname}/*`;
     }),
@@ -365,15 +269,10 @@ for (const target of ['chrome', 'firefox']) {
       QLYPHS_RPC: JSON.stringify(rpc),
       QLYPHS_DAPP_ORIGINS: JSON.stringify(dapps),
       QLYPHS_EXPLORER: JSON.stringify(explorer),
-      QLYPHS_PLATFORM: JSON.stringify(platform),
       QLYPHS_PQ_POLICY: JSON.stringify(pqPolicy),
-      QLYPHS_PQ_POLICIES: JSON.stringify(pqPolicies),
       QLYPHS_FEE_RULES: JSON.stringify(feeRules),
       QLYPHS_NETWORK_PROFILE: JSON.stringify(profile),
       QLYPHS_NETWORKS: JSON.stringify(networks),
-      QLYPHS_CUSTOM_ENDPOINTS: JSON.stringify(customEndpoints),
-      QLYPHS_SOLANA_VAULT: JSON.stringify(solanaVault),
-      QLYPHS_SOLANA_WQTC: JSON.stringify(wqtc),
     },
     logLevel: 'info',
   };
@@ -411,13 +310,13 @@ for (const target of ['chrome', 'firefox']) {
   await writeFile(`${outdir}/quantus_wasm_bg.wasm`, binary);
   const manifest = {
     manifest_version: 3,
-    name: storeIdentity
+    name: mainnet
       ? 'Qlyphs Wallet'
       : switchable
         ? `Qlyphs Wallet (Mainnet + ${testnet ? 'Testnet' : 'Development'})`
         : 'Qlyphs Wallet (Development)',
     version,
-    description: storeIdentity
+    description: mainnet
       ? STORE_SUMMARY
       : switchable
         ? `Quantus wallet for mainnet and the ${testnet ? 'test' : 'development'} network, switched in Settings.`
@@ -425,10 +324,9 @@ for (const target of ['chrome', 'firefox']) {
     permissions: ['storage', 'alarms', ...(target === 'chrome' ? ['sidePanel'] : [])],
     optional_permissions: ['notifications'],
     host_permissions: hosts,
-    ...(customEndpoints ? { optional_host_permissions: customHosts } : {}),
     action: {
       ...(target === 'firefox' ? { default_popup: 'ui.html?surface=popup' } : {}),
-      default_title: storeIdentity || switchable ? 'Qlyphs Wallet' : 'Qlyphs Wallet · Development',
+      default_title: mainnet ? 'Qlyphs Wallet' : switchable ? 'Qlyphs Wallet' : 'Qlyphs Wallet · Development',
     },
     ...(target === 'chrome' ? { side_panel: { default_path: 'ui.html?surface=sidebar' } } : {}),
     icons: Object.fromEntries([16, 32, 48, 128].map((n) => [String(n), `icon-${n}.png`])),
@@ -449,12 +347,12 @@ for (const target of ['chrome', 'firefox']) {
       },
     ],
     content_security_policy: {
-      extension_pages: `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' ${[...new Set([...everyApi, ...everyRpc, ...everyPlatform, priceOrigin, ...customConnect])].join(' ')}; base-uri 'none'; frame-ancestors 'none'`,
+      extension_pages: `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' ${[...new Set([...everyApi, ...everyRpc])].join(' ')}; base-uri 'none'; frame-ancestors 'none'`,
     },
     ...(target === 'chrome'
       ? {
           minimum_chrome_version: '124',
-          ...(storeIdentity ? {} : { key }),
+          ...(mainnet ? {} : { key }),
           background: { service_worker: 'background.js', type: 'module' },
         }
       : {
@@ -465,7 +363,7 @@ for (const target of ['chrome', 'firefox']) {
           },
           browser_specific_settings: {
             gecko: {
-              id: storeIdentity ? 'wallet@qlyphs.com' : 'wallet-dev@qlyphs.com',
+              id: mainnet ? 'wallet@qlyphs.com' : 'wallet-dev@qlyphs.com',
               strict_min_version: '140.0',
               data_collection_permissions: { required: ['none'] },
             },
@@ -483,35 +381,18 @@ for (const target of ['chrome', 'firefox']) {
     JSON.stringify(
       {
         version,
-        sdk: '@quantus-network/wasm@1.0.0',
+        sdk: '@quantus-network/wasm@0.3.1',
         wasmSHA256: binaryHash,
         api,
         rpc,
         explorer,
-        platform,
-        ...(mainnet ? { network: 'mainnet', pins: profile } : store ? {} : { chromeId }),
+        ...(mainnet ? { network: 'mainnet', pins: profile } : { chromeId }),
         ...(switchable ? { network: 'switchable', pins: mainnetPins, networks } : {}),
-        ...(store ? { store: true } : {}),
-        ...(mainnetPolicyBytes
-          ? {
-              pqPolicyMainnetVersion: mainnetPolicy.version,
-              pqPolicyMainnetSHA256: createHash('sha256').update(mainnetPolicyBytes).digest('hex'),
-            }
-          : {}),
         dappOrigins: everyDapp,
         providerProtocolVersion: 2,
         pqPolicyVersion: pqPolicy?.version ?? null,
         pqRulesHash: pqPolicy?.rulesHash ?? null,
         pqPolicySHA256,
-        ...(solanaVault ? { developmentFeatures: ['solanaVault'] } : {}),
-        ...(wqtc
-          ? {
-              solanaWqtc: {
-                program: process.env.QLYPHS_EXTENSION_WQTC_PROGRAM,
-                mint: process.env.QLYPHS_EXTENSION_WQTC_MINT,
-              },
-            }
-          : {}),
         format: 'QLYP-v1',
         scheme: 'ml-dsa-87',
         derivation: "m/44'/189189'/0'/0'/0'",
@@ -533,4 +414,4 @@ for (const target of ['chrome', 'firefox']) {
     await licenseNotices(meta.metafile, sdkDir),
   );
 }
-if (!storeIdentity) console.log(`Chrome development origin: chrome-extension://${chromeId}`);
+if (!mainnet) console.log(`Chrome development origin: chrome-extension://${chromeId}`);

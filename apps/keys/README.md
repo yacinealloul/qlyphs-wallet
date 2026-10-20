@@ -16,7 +16,7 @@ messaging, windows and passkeys. It is a Qlyphs product, not an official Quantus
   [How it works](#how-it-works); the wallet also requires the witness policy, the progressive
   activation and the pinned ticket charge before it serves one.
 - Accounts: ML-DSA-87 (post-quantum), derivation `m/44'/189189'/0'/0'/0'`, official
-  `@quantus-network/wasm@1.0.0` SDK, whose `.wasm` hash is recorded in `BUILD.json`.
+  `@quantus-network/wasm@0.3.1` SDK, whose `.wasm` hash is recorded in `BUILD.json`.
 - Every release can be rebuilt from this repository and checked byte for byte against the live site
   ([Verify a release](#verify-a-release)).
 
@@ -65,15 +65,6 @@ messaging, windows and passkeys. It is a Qlyphs product, not an official Quantus
 - **Wallet worker**: the extension's `background.ts` in a `SharedWorker` (a dedicated `Worker` where
   `SharedWorker` is missing). It holds the unlocked session and signs. Pages talk to it through
   `hub.ts`, which binds every message to the page or dapp port that really sent it.
-- **Updates while a window is open**: the worker lives until the last Keys page closes, and a dapp
-  reuses its open popup instead of loading it again, so a window can keep running the code of an
-  earlier release. Pages and the worker compare their release, `<version>+<build id>`: the build id is
-  a hash of the three wallet bundles (`build.mjs`, also in `BUILD.json` as `build`), so two builds of
-  the same version still differ. A page that meets an older worker asks you to close the other Keys
-  tabs and windows. A popup open for over a minute reads `/BUILD.json` before it forwards a signing
-  request; when another build is live it refuses the request with reason `wallet-outdated` and
-  reloads itself once nothing is in progress in it, and it also reloads instead of answering a reused
-  popup's `hello` when idle. A failed or skipped read changes nothing: this only decides when to reload.
 - **Confirmations** open as a same-origin overlay inside the keys page. They are never opened from a
   URL chosen by a page. A review a dapp asked for always opens in that dapp's own popup, never in
   another dapp's popup or in the focused tab.
@@ -125,16 +116,8 @@ a running mint session.
   Messages are capped at 8 KiB. There is no `signMessage`.
 - Every signature is shown and approved in the wallet's own confirmation UI. A dapp only makes requests.
 - The endpoints are fixed at build time and recorded in `BUILD.json`: the RPC (`rpc`), the fallback
-  RPC (`rpcFallback`), the indexer (`api`), the explorer, the dapp allowlist and the Qlyphs app
-  (`platform`, one of the dapps). A website cannot change them.
-- Token logos and profiles are the only things read from the Qlyphs app. The wallet worker fetches
-  `/api/token-logo/<asset>` without credentials, accepts only a PNG, JPEG or WebP of at most 128 KB
-  whose bytes match its type, and hands the page a `data:` URL; the page itself never loads a remote
-  image (`img-src 'self' data:`). A missing or refused logo leaves the token's drawn emblem. The
-  profile (`/api/token-profile?asset=`, at most 8 KB) keeps only plain text of at most 280
-  characters without control or direction-override characters, an https website and bare X and
-  Telegram handles; a token's page shows them as text and links that name where they go. The app
-  must allow the keys origin (CORS) for logos and profiles to show; nothing else depends on it.
+  RPC (`rpcFallback`), the indexer (`api`), the explorer and the dapp allowlist. A website cannot
+  change them.
 - On mainnet the wallet reads the chain from the Qlyphs node `https://rpc.qlyphs.com`. When that
   node cannot be reached at all (offline, blocked by a network filter, no answer within 15 s), it
   switches to the public Quantus node `https://rpc1-mainnet.quantus.com` for a minute, then tries the
@@ -158,8 +141,7 @@ a running mint session.
 - Content-Security-Policy on the pages: `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'`.
   No inline scripts, no third-party scripts, no `eval`. The build also fails on `eval`,
   `new Function` or dynamic `import()` in any bundle. `connect-src` lists only this origin, the two
-  RPC nodes, the indexer, the Qlyphs app (logos) and CoinGecko (the QTC price in US dollars, display
-  only; Settings → Advanced turns it off). So the files in `SHA256SUMS.txt` are all the code the page can run.
+  RPC nodes and the indexer. So the files in `SHA256SUMS.txt` are all the code the page can run.
 - `frame-ancestors 'none'` on `/connect` and `'self'` on `/` (wallet setup and confirmation overlays), plus
   `nosniff`, `no-referrer`, `no-store`, HSTS, and a `Permissions-Policy` that turns off camera,
   microphone and geolocation.
@@ -258,11 +240,6 @@ the other requests wait for that page. It never retries a payment. Branch on `ou
 is lost after it reached the popup has `outcome: 'unknown'`, whatever the code (`CONTEXT_CHANGED`,
 `DISCONNECTED`, `TIMEOUT` or `ABORTED`), because it may have been approved and sent. A review always
 opens in the popup of the dapp that asked for it.
-
-A refusal may carry `reason`, one code from the fixed list in
-[`packages/provider/src/reasons.ts`](../../packages/provider/src/reasons.ts), and `retryable`. The
-Keys window names the same reason in words, followed by `Code: <reason>.`. See
-[Failure reasons](../../docs/extension/PROVIDER.md#failure-reasons).
 
 `mintSession` and `stopMintSession` never open or wait for a popup: until a popup page has announced
 itself to this provider, they return `null` without asking the wallet. That `null` does not prove

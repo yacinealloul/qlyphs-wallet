@@ -31,10 +31,6 @@ import {
 } from './vault.ts';
 import { MAINNET_BUILD } from './profile.ts';
 import { SIGN_IN_ERRORS } from './sign-in-copy.ts';
-import { ENDPOINT_ERRORS } from './endpoints.ts';
-import { reasonLine, reasonOf } from './reasons.ts';
-import { FAILURE_REASON_CODES } from '../../../packages/provider/src/index.ts';
-import { SOLANA_VAULT_ERRORS } from './solana-vault-copy.ts';
 // Mainnet talks to hosted services, not a local node. Both wordings are known-safe messages; the
 // active network (fixed, or chosen in a switchable build) picks which one is shown.
 const TIMEOUT_MAINNET = 'The Quantus network did not respond in time. Retry the connection.';
@@ -94,11 +90,9 @@ const safe = new Set([
   'This window was reloaded before minting started, so nothing was signed. Start again from the site.',
   'Too many mint sessions are still settling; try again once their payments are final',
   ...SIGN_IN_ERRORS,
-  ...ENDPOINT_ERRORS,
-  ...SOLANA_VAULT_ERRORS,
 
   'Wallet reset in progress. Try again.',
-  'Reset requires a locked wallet and explicit confirmation',
+  'Reset requires one locked wallet and explicit confirmation',
   VAULT_PASSWORD_ERROR,
   VAULT_MODULE_ERROR,
   VAULT_IDENTITY_ERROR,
@@ -182,13 +176,6 @@ const safe = new Set([
   'Password must contain 6–256 characters',
   'Cannot unlock: incorrect password, damaged backup or incompatible identity',
 ]);
-/** Texts uiError returns, accepted again as they are: the background rethrows a refusal with its
- * user wording, and the UI channel passes it through uiError a second time. */
-const shown = new Set([
-  ...safe,
-  ...Object.values(REWORDED),
-  ...FAILURE_REASON_CODES.map(reasonLine),
-]);
 export function uiError(error: unknown): string {
   const message = error instanceof Error ? error.message : '';
   if (Object.hasOwn(REWORDED, message)) return REWORDED[message]!;
@@ -197,7 +184,7 @@ export function uiError(error: unknown): string {
   if (error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name))
     return pick(TIMEOUT_MAINNET, TIMEOUT_DEV);
   if (
-    shown.has(message) ||
+    safe.has(message) ||
     SYMBOL_TAKEN_PATTERN.test(message) ||
     /^Lot \d{1,4} (is no longer the next lot; lot \d{1,4} is|was just taken; review again)$/.test(message) ||
     /^Service refused request \(\d{3}\); check network and permissions$/.test(message)
@@ -208,8 +195,5 @@ export function uiError(error: unknown): string {
     message === 'NetworkError when attempting to fetch resource.'
   )
     return pick(UNREACHABLE_MAINNET, UNREACHABLE_DEV);
-  // Any other refusal the wallet knows is named by its reason, never by its internal message.
-  const reason = reasonOf(error);
-  if (reason) return reasonLine(reason);
   return pick(FALLBACK_MAINNET, FALLBACK_DEV);
 }
